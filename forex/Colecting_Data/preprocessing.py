@@ -5,14 +5,11 @@ from sklearn.preprocessing import StandardScaler
 
 # Load the data from XAUUSD.csv
 data = pd.read_csv('GBPUSD_1h.csv')
-
-# Normalize the price data
-scaler = MinMaxScaler()
-scaled_data = scaler.fit_transform(data[['Open', 'High', 'Low', 'Close']].values)
+data = data[['Open', 'High', 'Low', 'Close', 'Volume']]
 
 # Create a function to label the next candle based on price change
-def label_next_candle(current_close, current_open):
-    price_change =  current_close - current_open
+def label_next_candle(current_close, next_close):
+    price_change =  next_close - current_close
     # if price_change > 0.02:
     #     return 2
     # elif price_change > 0.005:
@@ -24,14 +21,13 @@ def label_next_candle(current_close, current_open):
     # else:
     #     return 0
     if price_change > 0:
-        return 1
+        return 2
     elif price_change < 0:
-        return -1
+        return 1
     else:
         return 0
 # Add the classification column to the data
-data['Classification'] = [label_next_candle(current_close, current_open)
-                          for current_close, current_open in zip(data['Close'], data['Open'])]
-
+data['Classification'] = [label_next_candle(current_close, next_close)
+                          for current_close, next_close in zip(data['Close'], data['Close'].shift(-1))]
 # save the data to a csv file
 data.to_csv('GBPUSD_1h_preprocessed.csv', index=False)
