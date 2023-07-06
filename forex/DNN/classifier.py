@@ -14,8 +14,8 @@ import keras_tuner as kt
 import tensorflow_addons as tfa
 
 #Read the data
-data = pd.read_csv("/home/mhossein/my_projects/forex/GBPUSD_1h_preprocessed.csv")
-data = data.drop(['Datetime'], axis=1)
+data = pd.read_csv("GBPUSD_1h_preprocessed.csv")
+# data = data.drop(['Datetime'], axis=1)
 #Define sets of 100 days data
 # x = []
 # y = []
@@ -49,7 +49,7 @@ def build_model(hp):
                              min_value=32, 
                              max_value=256, 
                              step=32),
-                activation="tanh"),
+                activation="relu"),
             )
         if hp.Boolean(f"norm_{i}"):
             model.add(Normalization())
@@ -63,7 +63,7 @@ def build_model(hp):
                              sampling="log")
     # Compile the model
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate), 
-                  loss='binary_crossentropy', 
+                  loss='categorical_hinge', 
                   metrics=['accuracy'])
     return model
 
@@ -78,7 +78,7 @@ tuner.search(X_train,
              y_train,
              validation_data=(X_val, y_val),
              batch_size=64, 
-             epochs=500,
+             epochs=200,
              workers=10,
              use_multiprocessing=True)
 # Get the top 2 models.
@@ -86,7 +86,7 @@ models = tuner.get_best_models(num_models=2)
 best_model = models[0]
 # Build the model.
 # Needed for `Sequential` without specified `input_shape`.
-best_model.build()
+best_model.build(input_shape=(1,5))
 best_model.summary()
 
 # Evaluate the model on the validation set
