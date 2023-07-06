@@ -96,4 +96,4 @@ eval_metrics = best_model.evaluate(X_val, y_val)
 print('Evaluation metrics:', best_model.metrics_names)
 
 #Saving the best model
-best_model.save('forex_classifier_1.h5')
+best_model.save('forex_classifier_2.h5')
