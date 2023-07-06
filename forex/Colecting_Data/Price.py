@@ -1,3 +1,4 @@
+#!/bin/python3
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -28,7 +29,7 @@ def update_data():
         forex_data = pd.concat([forex_data, data])
         
         # Save the data to the file
-        forex_data.to_csv('GBPUSD_1h.csv')
+        forex_data.to_csv('/home/mhossein/my_projects/Forex_DNN/GBPUSD_1h.csv')
         
         # Wait for 5 minutes before the next update
         time.sleep(300)

@@ -69,7 +69,7 @@ def build_model(hp):
 
 tuner = kt.RandomSearch(hypermodel=build_model,
                         objective="val_loss",
-                        max_trials=10,
+                        max_trials=20,
                         executions_per_trial=1,
                         overwrite=True,
                         directory='output',
@@ -78,7 +78,7 @@ tuner.search(X_train,
              y_train,
              validation_data=(X_val, y_val),
              batch_size=64, 
-             epochs=200,
+             epochs=300,
              workers=10,
              use_multiprocessing=True)
 # Get the top 2 models.
@@ -94,3 +94,6 @@ eval_metrics = best_model.evaluate(X_val, y_val)
 
 # Print the evaluation metrics
 print('Evaluation metrics:', best_model.metrics_names)
+
+#Saving the best model
+best_model.save('forex_classifier_1.h5')
