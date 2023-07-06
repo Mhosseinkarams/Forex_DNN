@@ -5,7 +5,7 @@ import tensorflow as tf
 import time
 
 #Open model
-model = tf.keras.models.load_model('forex_classifier_1.h5')
+model = tf.keras.models.load_model('forex_classifier_2.h5')
 
 #Open data
 data = pd.read_csv('GBPUSD_1h.csv')
