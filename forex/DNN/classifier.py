@@ -81,3 +81,16 @@ tuner.search(X_train,
              epochs=500,
              workers=10,
              use_multiprocessing=True)
+# Get the top 2 models.
+models = tuner.get_best_models(num_models=2)
+best_model = models[0]
+# Build the model.
+# Needed for `Sequential` without specified `input_shape`.
+best_model.build()
+best_model.summary()
+
+# Evaluate the model on the validation set
+eval_metrics = best_model.evaluate(X_val, y_val)
+
+# Print the evaluation metrics
+print('Evaluation metrics:', best_model.metrics_names)
