@@ -16,6 +16,7 @@ end_date = tz.localize(dt.now())
 # Function to continuously update and save data
 def update_data():
     while True:
+
         # Create an empty DataFrame
         forex_data = pd.DataFrame()
         
