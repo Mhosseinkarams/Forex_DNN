@@ -14,10 +14,15 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.utils import plot_model
 import matplotlib.pyplot as plt
+from pathlib import Path
+
+# Use project root relative paths
+base_path = Path(__file__).resolve().parent.parent.parent
+data_path = base_path / "Data"
 
 #load data
-data_1h = pd.read_csv("/home/mhossein/my_projects/Forex_DNN/Data/GBPUSD_1d_2.csv")
-test_data = pd.read_csv("/home/mhossein/my_projects/Forex_DNN/Data/GBPUSD_1h_2.csv")
+data_1h = pd.read_csv(data_path / "GBPUSD_1d_2.csv")
+test_data = pd.read_csv(data_path / "GBPUSD_1h_2.csv")
 
 #nomalize data
 scaler = StandardScaler()
@@ -47,10 +52,10 @@ for i in range(len(data_1h) - num_input_candles_1h - num_output_candles + 1):
     # Calculate the price differences
     price_diffs = (output_candles['Close'] - output_candles['Open']).values
     # Encode the output data based on the price differences
-    output = np.where(price_diffs > 0.001, out[3],
-                      np.where(price_diffs < -0.001, out[2],
+    output = np.where(price_diffs > 0.01, out[4],
+                      np.where(price_diffs > 0.001, out[3],
                                 np.where(price_diffs < -0.01 , out[1],
-                                    np.where(price_diffs > 0.01, out[4] ,out[0]))))
+                                    np.where(price_diffs < -0.001, out[2] ,out[0]))))
     #append data to list
     input_data_1h.append(input_candles)
     output_data.append(output)
@@ -61,10 +66,10 @@ for i in range(len(test_data) - num_input_candles_1h - num_output_candles + 1):
     # Calculate the price differences
     test_price_diffs = (test_output_candles['Close'] - test_output_candles['Open']).values
     # Encode the output data based on the price differences
-    test_output = np.where(test_price_diffs > 0.001, out[3],
-                           np.where(test_price_diffs < -0.001, out[2],
+    test_output = np.where(test_price_diffs > 0.01, out[4],
+                           np.where(test_price_diffs > 0.001, out[3],
                                     np.where(test_price_diffs < -0.01 , out[1],
-                                            np.where(test_price_diffs > 0.01, out[4] ,out[0]))))
+                                            np.where(test_price_diffs < -0.001, out[2] ,out[0]))))
     test_input.append(test_candles)
     test_output_data.append(test_output)
    
@@ -145,6 +150,6 @@ history = model.fit(input_data_1h, output_data ,
 loss = model.evaluate(h_test, o_test)
 print('evaluate loss:', loss)
 #save model
-model.save('multiclassifier_2.h5')
+model.save(base_path / 'multiclassifier_2.h5')
 
 print(model.predict(h_test),o_test)
