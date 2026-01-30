@@ -14,7 +14,7 @@ import keras_tuner as kt
 import tensorflow_addons as tfa
 
 #Read the data
-data = pd.read_csv("GBPUSD_1h_preprocessed.csv")
+data = pd.read_csv("Data/GBPUSD_1h_preprocessed.csv")
 # data = data.drop(['Datetime'], axis=1)
 #Define sets of 100 days data
 # x = []
@@ -28,9 +28,9 @@ data = pd.read_csv("GBPUSD_1h_preprocessed.csv")
 # y = np.array(y)
 x = data[['Open' , 'High' , 'Low' , 'Close' , 'Volume']]
 y = data['Classification']
-#Split the data to train, test and validation sets
-X_train, X_test, y_train, y_test = train_test_split(x, y, test_size=0.05,)
-X_test, X_val, y_test, y_val = train_test_split(X_test, y_test, test_size=0.5,)
+#Split the data to train, test and validation sets (shuffle=False to prevent data leakage in time series)
+X_train, X_test, y_train, y_test = train_test_split(x, y, test_size=0.05, shuffle=False)
+X_test, X_val, y_test, y_val = train_test_split(X_test, y_test, test_size=0.5, shuffle=False)
 
 #Build the 
 model = tf.keras.Sequential([

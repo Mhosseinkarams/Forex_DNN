@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 #load data
-data_1h = pd.read_csv("/home/mhossein/My_Projects/Forex_DNN/Data/GBPUSD_1h.csv")
+data_1h = pd.read_csv("Data/GBPUSD_1h.csv")
 
 # Define the number of past hourly candles to consider as input
 num_input_candles_1h = 100 
@@ -36,5 +36,5 @@ for i in range(len(data_1h) - num_input_candles_1h - num_output_candles + 1):
 input_data_1h = np.array(input_data_1h)
 output_data = np.array(output_data)
 #save inputs and outputs in different files
-np.savez_compressed("/home/mhossein/My_Projects/Forex_DNN/Data/GBPUSD_1h_multi_inout.npz", input_data_1h=input_data_1h)
-np.savez_compressed("/home/mhossein/My_Projects/Forex_DNN/Data/GBPUSD_1h_multi_out.npz", output_data=output_data)
+np.savez_compressed("Data/GBPUSD_1h_multi_inout.npz", input_data_1h=input_data_1h)
+np.savez_compressed("Data/GBPUSD_1h_multi_out.npz", output_data=output_data)

@@ -6,7 +6,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, RepeatVector, TimeDistributed
 
 # Readin data from the csv file
-data = pd.read_csv('/home/mhossein/My_Projects/Forex_DNN/Data/GBPUSD_1h.csv')
+data = pd.read_csv('Data/GBPUSD_1h.csv')
 
 # Extract the 'close' column
 prices = data['Close'].values.reshape(-1, 1)

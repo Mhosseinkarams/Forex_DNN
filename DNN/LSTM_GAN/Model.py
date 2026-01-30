@@ -13,7 +13,7 @@ for device in gpu_devices:
     tf.config.experimental.set_memory_growth(device, True)
 
 # Load and preprocess your input data
-data = pd.read_csv('/home/mhossein/my_projects/Forex_DNN/Data/GBPUSD_1d_2.csv')
+data = pd.read_csv('Data/GBPUSD_1d_2.csv')
 features = data[['Open', 'High', 'Low', 'Close', 'Vol']].values
 
 # Normalize the data
