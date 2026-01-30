@@ -12,7 +12,9 @@ Forex_DNN/
 │   ├── preproc_multi_inout.py    # Preprocessing for multi-output models
 │   └── utils.py                  # Centralized technical indicators (EMA, RSI, MACD, etc.)
 ├── DNN/                    # Deep Neural Network implementations
-│   ├── single_inout/       # Dense networks for simple classification
+│   ├── single_inout/       # Dense networks for price prediction
+│   │   ├── classifier_binary.py # Predicts direction (Up/Down)
+│   │   └── classifier_multi.py  # Predicts direction and movement size
 │   ├── multi_inout/        # LSTM-based multi-class classification
 │   ├── Unsup_LSTM/         # LSTM Autoencoders for anomaly detection
 │   └── LSTM_GAN/           # GANs for synthetic data and price forecasting

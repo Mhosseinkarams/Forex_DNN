@@ -82,8 +82,8 @@ class ForexEnv(gym.Env):
         elif action == 2: # Sell
             if self.shares_held > 0:
                 self.balance = self.shares_held * current_price
-                self.shares_held = 0
                 self.total_shares_sold += self.shares_held
+                self.shares_held = 0
                 self.total_sales_value += self.balance
 
         self.net_worth = self.balance + self.shares_held * current_price

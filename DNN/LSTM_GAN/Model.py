@@ -115,3 +115,7 @@ def train_gan(epochs=20, batch_size=64):
         print(f"Epoch {e + 1}, D Loss: {d_loss}, G Loss: {g_loss}")
 
 train_gan()
+
+# Prediction example (on normalized data)
+test_predictions = lstm_model.predict(X_test)
+print("Predictions on test data complete.")
