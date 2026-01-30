@@ -15,7 +15,9 @@ Forex_DNN/
 │   ├── single_inout/       # Dense networks for price prediction
 │   │   ├── classifier_binary.py # Predicts direction (Up/Down)
 │   │   └── classifier_multi.py  # Predicts direction and movement size
-│   ├── multi_inout/        # LSTM-based multi-class classification
+│   ├── multi_inout/        # LSTM-based sequence classification
+│   │   ├── classifier_binary.py # Predicts direction using LSTMs
+│   │   └── classifier_multi.py  # Predicts direction and size using LSTMs
 │   ├── Unsup_LSTM/         # LSTM Autoencoders for anomaly detection
 │   └── LSTM_GAN/           # GANs for synthetic data and price forecasting
 ├── RL_Approach/            # Reinforcement Learning strategies
@@ -52,9 +54,9 @@ Forex_DNN/
 
 ### Training Models
 
-Each subdirectory in `DNN/` contains a `classifier.py` or `train.py` script. For example:
+Each subdirectory in `DNN/` contains several training scripts. For example:
 ```bash
-python3 DNN/multi_inout/classifier.py
+python3 DNN/multi_inout/classifier_multi.py
 ```
 
 For the RL approach:
