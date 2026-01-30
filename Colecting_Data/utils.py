@@ -38,5 +38,27 @@ def add_technical_indicators(df):
     df['Upper_Shadow'] = df['High'] - df[['Open', 'Close']].max(axis=1)
     df['Lower_Shadow'] = df[['Open', 'Close']].min(axis=1) - df['Low']
 
+    # Ichimoku Cloud
+    # Tenkan-sen (Conversion Line): (9-period high + 9-period low) / 2
+    period9_high = df['High'].rolling(window=9).max()
+    period9_low = df['Low'].rolling(window=9).min()
+    df['Tenkan_Sen'] = (period9_high + period9_low) / 2
+
+    # Kijun-sen (Base Line): (26-period high + 26-period low) / 2
+    period26_high = df['High'].rolling(window=26).max()
+    period26_low = df['Low'].rolling(window=26).min()
+    df['Kijun_Sen'] = (period26_high + period26_low) / 2
+
+    # Senkou Span A (Leading Span A): (Conversion Line + Base Line) / 2
+    df['Senkou_Span_A'] = ((df['Tenkan_Sen'] + df['Kijun_Sen']) / 2).shift(26)
+
+    # Senkou Span B (Leading Span B): (52-period high + 52-period low) / 2
+    period52_high = df['High'].rolling(window=52).max()
+    period52_low = df['Low'].rolling(window=52).min()
+    df['Senkou_Span_B'] = ((period52_high + period52_low) / 2).shift(26)
+
+    # Chikou Span (Lagging Span): Close price compared to 26 periods ago
+    df['Chikou_Span_Rel'] = df['Close'] - df['Close'].shift(26)
+
     df.dropna(inplace=True)
     return df

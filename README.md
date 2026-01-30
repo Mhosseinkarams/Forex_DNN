@@ -10,14 +10,16 @@ Forex_DNN/
 │   ├── mt5data.py                # Bridge from MetaTrader 5 to Python
 │   ├── preproc_single_inout.py   # Preprocessing for single-output models
 │   ├── preproc_multi_inout.py    # Preprocessing for multi-output models
-│   └── utils.py                  # Centralized technical indicators (EMA, RSI, MACD, etc.)
+│   ├── preproc_pivot.py          # Preprocessing for pivot/trend change detection
+│   └── utils.py                  # Centralized indicators (EMA, RSI, MACD, Ichimoku, etc.)
 ├── DNN/                    # Deep Neural Network implementations
 │   ├── single_inout/       # Dense networks for price prediction
 │   │   ├── classifier_binary.py # Predicts direction (Up/Down)
 │   │   └── classifier_multi.py  # Predicts direction and movement size
 │   ├── multi_inout/        # LSTM-based sequence classification
 │   │   ├── classifier_binary.py # Predicts direction using LSTMs
-│   │   └── classifier_multi.py  # Predicts direction and size using LSTMs
+│   │   ├── classifier_multi.py  # Predicts direction and size using LSTMs
+│   │   └── classifier_pivot.py  # Predicts major trend pivots
 │   ├── Unsup_LSTM/         # LSTM Autoencoders for anomaly detection
 │   └── LSTM_GAN/           # GANs for synthetic data and price forecasting
 ├── RL_Approach/            # Reinforcement Learning strategies
@@ -30,7 +32,7 @@ Forex_DNN/
 ## Features
 
 - **Data Pipeline**: Seamless integration with MetaTrader 5 (MT5) for real-time data collection.
-- **Technical Indicators**: Automated calculation of EMA (50/200), RSI, MACD, ATR, and Candle geometry.
+- **Technical Indicators**: Automated calculation of EMA (50/200), RSI, MACD, ATR, Ichimoku Cloud, and Candle geometry.
 - **Diverse Model Architectures**:
   - **LSTMs**: Sequential models designed to capture temporal dependencies in financial time-series.
   - **Autoencoders**: Unsupervised learning for trend identification and anomaly detection.
