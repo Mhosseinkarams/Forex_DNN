@@ -4,18 +4,41 @@ import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, RepeatVector, TimeDistributed
+from pathlib import Path
+import sys
+
+# Set up paths
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir.parent.parent
+data_dir = project_root / "Data"
+
+# Add Colecting_Data to sys.path
+sys.path.append(str(project_root / "Colecting_Data"))
+try:
+    from utils import add_technical_indicators
+except ImportError:
+    print("Warning: utils not found.")
+    add_technical_indicators = lambda x: x
 
 # Readin data from the csv file
-data = pd.read_csv('Data/GBPUSD_1h.csv')
+data_file = data_dir / 'GBPUSD_1h.csv'
+try:
+    data = pd.read_csv(data_file)
+except FileNotFoundError:
+    print(f"Error: {data_file} not found.")
+    exit(1)
 
-# Extract the 'close' column
-prices = data['Close'].values.reshape(-1, 1)
+# Add indicators
+data = add_technical_indicators(data)
 
-# Normalize the data between 0 and 1
+# Features to use (numeric only)
+features = data.select_dtypes(include=[np.number]).values
+
+# Normalize the data
 scaler = MinMaxScaler(feature_range=(0, 1))
-prices_normalized = scaler.fit_transform(prices)
+features_normalized = scaler.fit_transform(features)
 
-# Function to create sequences for training the autoencoder
+# Function to create sequences
 def create_sequences(dataset, sequence_length):
     sequences = []
     for i in range(len(dataset) - sequence_length):
@@ -23,42 +46,25 @@ def create_sequences(dataset, sequence_length):
         sequences.append(sequence)
     return np.array(sequences)
 
-# Set the sequence length (number of time steps in each input sequence)
-sequence_length = 10
+sequence_length = 24
+sequences = create_sequences(features_normalized, sequence_length)
+num_features = features.shape[1]
 
-# Create sequences for training
-sequences = create_sequences(prices_normalized, sequence_length)
-
-# Reshape input data to be (samples, time steps, features)
-X_train = sequences.reshape(sequences.shape[0], sequences.shape[1], 1)
+X_train = sequences
 
 # Build the LSTM autoencoder model
-model = Sequential()
-model.add(LSTM(units=50, activation='relu', input_shape=(sequence_length, 1)))
-model.add(RepeatVector(sequence_length))
-model.add(LSTM(units=50, activation='relu', return_sequences=True))
-model.add(TimeDistributed(Dense(units=1)))
+model = Sequential([
+    LSTM(units=128, activation='relu', input_shape=(sequence_length, num_features)),
+    RepeatVector(sequence_length),
+    LSTM(units=128, activation='relu', return_sequences=True),
+    TimeDistributed(Dense(units=num_features))
+])
 model.compile(optimizer='adam', loss='mse')
 
 # Train the autoencoder
-model.fit(X_train, X_train, epochs=50, batch_size=32, verbose=2)
+model.fit(X_train, X_train, epochs=30, batch_size=32, verbose=1)
 
-# Use the trained autoencoder to reconstruct the input sequences
+# Calculate the reconstruction error
 reconstructed_sequences = model.predict(X_train)
-
-# Calculate the reconstruction error (mean squared error)
-mse = np.mean(np.square(X_train - reconstructed_sequences))
-print(f"Mean Squared Error on Training Data: {mse}")
-
-
-# Example: If reconstruction error is above a certain threshold, consider it an anomaly or trend
-threshold = 0.02
-anomalies = (mse > threshold).astype(int)
-print("Anomalies or Trends Detected:", anomalies)
-
-# Use the trained autoencoder to reconstruct the input sequences
-reconstructed_sequences = model.predict(X_train)
-
-# Calculate the reconstruction error (mean squared error)
 mse = np.mean(np.square(X_train - reconstructed_sequences))
 print(f"Mean Squared Error on Training Data: {mse}")

@@ -10,51 +10,62 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.layers import Normalization, Dense, Dropout
 from tensorflow.keras.models import Sequential
-import keras_tuner as kt
-import tensorflow_addons as tfa
+from pathlib import Path
+
+# Use project root relative paths
+base_path = Path(__file__).resolve().parent.parent.parent
+data_file = base_path / "Data" / "GBPUSD_1h_preprocessed.csv"
 
 #Read the data
-data = pd.read_csv("Data/GBPUSD_1h_preprocessed.csv")
-# data = data.drop(['Datetime'], axis=1)
-#Define sets of 100 days data
-# x = []
-# y = []
-# for i in range(len(data)-101):
-#     if (i+101<=len(data)-101): 
-#         x.append(np.array(data.iloc[i:i+100]))
-#         y.append(data.iloc[i+100]['Classification'])
-# # Convert the training data to numpy arrays
-# x = np.array(x)
-# y = np.array(y)
-x = data[['Open' , 'High' , 'Low' , 'Close' , 'Volume']]
+try:
+    data = pd.read_csv(data_file)
+except FileNotFoundError:
+    print(f"Error: Data file {data_file} not found. Please run preprocessing first.")
+    exit(1)
+
+# Use all columns except Classification as features
+x = data.drop(['Classification'], axis=1)
+# Drop non-numeric columns if any (like Datetime)
+x = x.select_dtypes(include=[np.number])
 y = data['Classification']
+
 #Split the data to train, test and validation sets (shuffle=False to prevent data leakage in time series)
-X_train, X_test, y_train, y_test = train_test_split(x, y, test_size=0.05, shuffle=False)
+X_train, X_test, y_train, y_test = train_test_split(x, y, test_size=0.1, shuffle=False)
 X_test, X_val, y_test, y_val = train_test_split(X_test, y_test, test_size=0.5, shuffle=False)
 
-#Build the 
+# Normalize the data
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_val = scaler.transform(X_val)
+X_test = scaler.transform(X_test)
+
+input_dim = X_train.shape[1]
+
+#Build the model
 model = tf.keras.Sequential([
-    tf.keras.layers.Dense(128, activation='tanh', input_shape=(5,)),
-    tf.keras.layers.Dense(64, activation='tanh'),
-    tf.keras.layers.Dense(32, activation='tanh'),
+    tf.keras.layers.Dense(256, activation='relu', input_shape=(input_dim,)),
+    tf.keras.layers.Dropout(0.2),
+    tf.keras.layers.Dense(128, activation='relu'),
+    tf.keras.layers.Dropout(0.2),
+    tf.keras.layers.Dense(64, activation='relu'),
     tf.keras.layers.Dense(3, activation='softmax')
 ])
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), 
+
+model.compile(optimizer='adam',
                   loss='sparse_categorical_crossentropy', 
                   metrics=['accuracy'])
-model.fit(X_train, 
+
+# Train the model
+history = model.fit(X_train,
              y_train,
              validation_data=(X_val, y_val),
-             batch_size=8, 
-             epochs=500,
-             workers=10,
-             use_multiprocessing=True)
-#Get model summary
-model.summary()
+             batch_size=32,
+             epochs=50,
+             verbose=1)
 
-# Evaluate the model on the validation set
+# Evaluate the model on the test set
 eval_metrics = model.evaluate(X_test, y_test)
 
 # Print the evaluation metrics
-print('Evaluation metrics:', model.metrics_names)
-model.save('forex_classifier_2.h5')
+print('Evaluation metrics:', dict(zip(model.metrics_names, eval_metrics)))
+model.save(base_path / 'forex_classifier_2.h5')
