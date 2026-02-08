@@ -4,86 +4,83 @@ import numpy as np
 from pathlib import Path
 import sys
 
-# Set up paths
-current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parent
-data_dir = project_root / "Data"
-
-# Add current dir to sys.path for utils
-sys.path.append(str(current_dir))
-try:
-    from utils import add_technical_indicators
-except ImportError:
-    print("Error: Colecting_Data/utils.py not found.")
-    exit(1)
-
-def get_pivots(df, window=24):
+class PivotPreprocessor:
     """
-    Identifies local peaks and troughs in a given window.
+    Preprocessor for major trend pivot detection.
     """
-    close = df['Close'].values
-    peaks = np.zeros(len(df))
-    troughs = np.zeros(len(df))
 
-    for i in range(window, len(df) - window):
-        chunk = close[i-window : i+window+1]
-        if close[i] == np.max(chunk):
-            peaks[i] = 1
-        if close[i] == np.min(chunk):
-            troughs[i] = 1
+    def __init__(self):
+        self.current_dir = Path(__file__).resolve().parent
+        self.project_root = self.current_dir.parent
+        self.data_dir = self.project_root / "Data"
 
-    df['Peak'] = peaks
-    df['Trough'] = troughs
-    return df
+        if str(self.current_dir) not in sys.path:
+            sys.path.append(str(self.current_dir))
 
-def label_pivots(df, horizon=24):
-    """
-    Labels each step based on the next major pivot within the horizon.
-    1: Next major pivot is a Peak (Trend change to Down soon)
-    2: Next major pivot is a Trough (Trend change to Up soon)
-    0: No major pivot in the immediate horizon
-    """
-    peaks = df['Peak'].values
-    troughs = df['Trough'].values
-    labels = np.zeros(len(df))
+        try:
+            from utils import TechnicalIndicators
+            self.indicators = TechnicalIndicators()
+        except ImportError:
+            self.indicators = None
 
-    for i in range(len(df) - horizon):
-        next_peaks = peaks[i+1 : i+horizon+1]
-        next_troughs = troughs[i+1 : i+horizon+1]
+    def get_pivots(self, df, window=24):
+        close = df['Close'].values
+        peaks = np.zeros(len(df))
+        troughs = np.zeros(len(df))
 
-        if np.any(next_peaks == 1):
-            labels[i] = 1
-        elif np.any(next_troughs == 1):
-            labels[i] = 2
+        for i in range(window, len(df) - window):
+            chunk = close[i-window : i+window+1]
+            if close[i] == np.max(chunk):
+                peaks[i] = 1
+            if close[i] == np.min(chunk):
+                troughs[i] = 1
 
-    df['Pivot_Label'] = labels
-    return df
+        df['Peak'] = peaks
+        df['Trough'] = troughs
+        return df
 
-# Load data
-input_file = data_dir / "GBPUSD_1h.csv"
-try:
-    df = pd.read_csv(input_file)
-except FileNotFoundError:
-    print(f"Error: {input_file} not found.")
-    exit(1)
+    def label_pivots(self, df, horizon=24):
+        peaks = df['Peak'].values
+        troughs = df['Trough'].values
+        labels = np.zeros(len(df))
 
-# Standardize Volume column if needed
-if 'Volume' in df.columns and 'Vol' not in df.columns:
-    df.rename(columns={'Volume': 'Vol'}, inplace=True)
+        for i in range(len(df) - horizon):
+            next_peaks = peaks[i+1 : i+horizon+1]
+            next_troughs = troughs[i+1 : i+horizon+1]
 
-# Add indicators
-df = add_technical_indicators(df)
+            if np.any(next_peaks == 1):
+                labels[i] = 1
+            elif np.any(next_troughs == 1):
+                labels[i] = 2
 
-# Identify major pivots (24-hour window for "major")
-df = get_pivots(df, window=24)
+        df['Pivot_Label'] = labels
+        return df
 
-# Label data (Predicting pivot in the next 24 hours)
-df = label_pivots(df, horizon=24)
+    def preprocess(self, filename="GBPUSD_1h.csv", window=24, horizon=24):
+        input_file = self.data_dir / filename
+        if not input_file.exists():
+            return None
 
-# Drop rows where we can't determine labels (at the end)
-df = df.iloc[:-24]
+        df = pd.read_csv(input_file)
+        if 'Volume' in df.columns and 'Vol' not in df.columns:
+            df.rename(columns={'Volume': 'Vol'}, inplace=True)
 
-# Save
-output_file = data_dir / "GBPUSD_1h_pivot.csv"
-df.to_csv(output_file, index=False)
-print(f"Pivot preprocessing complete. Saved to {output_file}")
+        if self.indicators:
+            df = self.indicators.add_all_indicators(df)
+
+        df = self.get_pivots(df, window=window)
+        df = self.label_pivots(df, horizon=horizon)
+        df = df.iloc[:-horizon]
+
+        return df
+
+    def save(self, df, output_filename="GBPUSD_1h_pivot.csv"):
+        output_path = self.data_dir / output_filename
+        df.to_csv(output_path, index=False)
+        print(f"Pivot preprocessing complete. Saved to {output_path}")
+
+if __name__ == "__main__":
+    preprocessor = PivotPreprocessor()
+    df = preprocessor.preprocess()
+    if df is not None:
+        preprocessor.save(df)

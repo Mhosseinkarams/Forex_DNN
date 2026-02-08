@@ -7,99 +7,96 @@ from pathlib import Path
 import sys
 import MetaTrader5 as mt5
 
-# Set up paths
-current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parent
-data_dir = project_root / "Data"
+class MT5DataLoader:
+    """
+    A class to handle data acquisition from MetaTrader 5.
+    """
 
-# Add current dir to sys.path for utils
-sys.path.append(str(current_dir))
-try:
-    from utils import add_technical_indicators
-except ImportError:
-    print("Warning: utils not found. Technical indicators will not be added.")
-    add_technical_indicators = lambda x: x
+    def __init__(self, mt5_id=None, password=None, server=None):
+        self.mt5_id = mt5_id
+        self.password = password
+        self.server = server
 
-# MT5 Login Credentials - FILL THESE IN
-MT5_ID = 12345678  # Replace with your account ID
-MT5_PASSWORD = 'YourPassword'  # Replace with your password
-MT5_SERVER = 'YourBrokerServer'  # Replace with your broker server
+        current_dir = Path(__file__).resolve().parent
+        self.project_root = current_dir.parent
+        self.data_dir = self.project_root / "Data"
 
-def initialize_mt5():
-    """Initializes connection to MT5 terminal."""
-    if not mt5.initialize():
-        print("Failed to initialize MT5, error code:", mt5.last_error())
-        return False
+        # Add current dir to sys.path for utils
+        if str(current_dir) not in sys.path:
+            sys.path.append(str(current_dir))
 
-    # Optional: Login if the terminal is not already logged in
-    # if not mt5.login(MT5_ID, password=MT5_PASSWORD, server=MT5_SERVER):
-    #     print("Failed to login to MT5, error code:", mt5.last_error())
-    #     return False
+        try:
+            from utils import TechnicalIndicators
+            self.indicators = TechnicalIndicators()
+        except ImportError:
+            print("Warning: TechnicalIndicators not found. Indicators will not be added.")
+            self.indicators = None
 
-    return True
+    def initialize(self):
+        """Initializes connection to MT5 terminal."""
+        if not mt5.initialize():
+            print("Failed to initialize MT5, error code:", mt5.last_error())
+            return False
 
-def get_data(symbol="GBPUSD", timeframe=mt5.TIMEFRAME_H1, count=10000):
-    """Fetches historical rates and current tick info from MT5."""
-    # Ensure the symbol is visible in Market Watch
-    if not mt5.symbol_select(symbol, True):
-        print(f"Failed to select symbol {symbol}, error code:", mt5.last_error())
-        return None
+        if self.mt5_id and self.password and self.server:
+            if not mt5.login(self.mt5_id, password=self.password, server=self.server):
+                print("Failed to login to MT5, error code:", mt5.last_error())
+                return False
 
-    # Fetch historical rates
-    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, count)
-    if rates is None:
-        print(f"Failed to copy rates for {symbol}, error code:", mt5.last_error())
-        return None
+        return True
 
-    df = pd.DataFrame(rates)
-    df['time'] = pd.to_datetime(df['time'], unit='s')
+    def get_historical_data(self, symbol="GBPUSD", timeframe=mt5.TIMEFRAME_H1, count=10000):
+        """Fetches historical rates and current tick info from MT5."""
+        if not mt5.symbol_select(symbol, True):
+            print(f"Failed to select symbol {symbol}, error code:", mt5.last_error())
+            return None
 
-    # Rename columns to match project standards
-    df.rename(columns={
-        'time': 'Datetime',
-        'open': 'Open',
-        'high': 'High',
-        'low': 'Low',
-        'close': 'Close',
-        'tick_volume': 'Vol'
-    }, inplace=True)
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, count)
+        if rates is None:
+            print(f"Failed to copy rates for {symbol}, error code:", mt5.last_error())
+            return None
 
-    # Fetch the latest tick for current Ask and Bid prices
-    last_tick = mt5.symbol_info_tick(symbol)
-    if last_tick is None:
-        print(f"Failed to fetch latest tick for {symbol}, error code:", mt5.last_error())
-    else:
-        # Add Ask and Bid to the entire dataframe (representing the current market state)
-        df['Ask'] = last_tick.ask
-        df['Bid'] = last_tick.bid
-        # Spread in points
-        df['Current_Spread'] = last_tick.spread
-        print(f"Current Ask: {last_tick.ask}, Bid: {last_tick.bid}, Spread: {last_tick.spread}")
+        df = pd.DataFrame(rates)
+        df['time'] = pd.to_datetime(df['time'], unit='s')
 
-    return df
+        df.rename(columns={
+            'time': 'Datetime',
+            'open': 'Open',
+            'high': 'High',
+            'low': 'Low',
+            'close': 'Close',
+            'tick_volume': 'Vol'
+        }, inplace=True)
 
-while True:
-    print(f"Attempting to fetch data at {time.ctime()}...")
-    if initialize_mt5():
-        # Configuration
-        symbol = "GBPUSD"
-        timeframe = mt5.TIMEFRAME_H1
-        output_file = data_dir / 'GBPUSD_1h_2.csv'
+        last_tick = mt5.symbol_info_tick(symbol)
+        if last_tick is not None:
+            df['Ask'] = last_tick.ask
+            df['Bid'] = last_tick.bid
+            df['Current_Spread'] = last_tick.spread
 
-        data = get_data(symbol, timeframe)
+        if self.indicators:
+            df = self.indicators.add_all_indicators(df)
 
-        if data is not None:
-            # Add technical indicators from utils.py
-            data = add_technical_indicators(data)
+        return df
 
-            # Save the DataFrame as a .csv file
-            data.to_csv(output_file, index=False)
-            print(f"******************* Successfully updated {output_file} *******************")
+    def run_update_loop(self, symbol="GBPUSD", timeframe=mt5.TIMEFRAME_H1, interval=900):
+        """Runs a periodic update loop to fetch and save data."""
+        output_file = self.data_dir / f'{symbol}_{timeframe}_live.csv'
 
-        # Shutdown connection until next iteration
-        mt5.shutdown()
-    else:
-        print("MT5 Initialization failed. Retrying in next cycle.")
+        while True:
+            print(f"Attempting to fetch data at {time.ctime()}...")
+            if self.initialize():
+                data = self.get_historical_data(symbol, timeframe)
+                if data is not None:
+                    data.to_csv(output_file, index=False)
+                    print(f"******************* Successfully updated {output_file} *******************")
+                mt5.shutdown()
+            else:
+                print("MT5 Initialization failed. Retrying in next cycle.")
 
-    # Wait for 15 minutes (900 seconds)
-    time.sleep(900)
+            time.sleep(interval)
+
+if __name__ == "__main__":
+    loader = MT5DataLoader()
+    # Note: For actual use, you'd call loader.run_update_loop()
+    print("MT5DataLoader class ready.")

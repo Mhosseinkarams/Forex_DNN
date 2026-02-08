@@ -3,74 +3,73 @@ import pandas as pd
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
-from trading_env import ForexEnv
 from pathlib import Path
 import sys
+import os
 
-# Set up paths
-base_path = Path(__file__).resolve().parent.parent
-data_path = base_path / "Data"
+class PPOTradingAgent:
+    """
+    A class to train and evaluate a PPO agent for Forex trading.
+    """
 
-def train_ppo(use_enriched=True):
-    # Load data
-    filename = "GBPUSD_1h_enriched.csv" if use_enriched else "GBPUSD_1h.csv"
-    input_file = data_path / filename
+    def __init__(self, use_enriched=True):
+        self.base_path = Path(__file__).resolve().parent.parent
+        self.data_path = self.base_path / "Data"
+        self.use_enriched = use_enriched
+        self.model = None
 
-    if not input_file.exists():
-        if use_enriched:
-            print(f"Enriched data not found at {input_file}. Run generate_signals.py first.")
-            # Fallback
-            input_file = data_path / "GBPUSD_1h.csv"
-        else:
-            print(f"Data not found at {input_file}")
+        # Add RL_Approach to path to find trading_env
+        rl_path = str(self.base_path / "RL_Approach")
+        if rl_path not in sys.path:
+            sys.path.append(rl_path)
+        from trading_env import ForexEnv
+        self.ForexEnv = ForexEnv
+
+    def load_data(self):
+        filename = "GBPUSD_1h_enriched.csv" if self.use_enriched else "GBPUSD_1h.csv"
+        input_file = self.data_path / filename
+        if not input_file.exists():
+            return None
+        return pd.read_csv(input_file)
+
+    def train(self, total_timesteps=100000, model_name="ppo_forex_model"):
+        df = self.load_data()
+        if df is None:
             return
 
-    print(f"Loading data from {input_file}...")
-    df = pd.read_csv(input_file)
+        train_size = int(len(df) * 0.8)
+        train_df = df.iloc[:train_size]
 
-    # Temporal split
-    train_size = int(len(df) * 0.8)
-    train_df = df.iloc[:train_size]
-    test_df = df.iloc[train_size:]
+        env = DummyVecEnv([lambda: self.ForexEnv(train_df)])
 
-    # Create environments
-    # We can pass custom market friction parameters here
-    env = DummyVecEnv([lambda: ForexEnv(train_df, spread=0.0002, commission=0.00005, slippage=0.0001)])
+        self.model = PPO("MlpPolicy", env, verbose=1,
+                         learning_rate=3e-4, n_steps=2048, batch_size=64,
+                         tensorboard_log=str(self.base_path / "ppo_forex_tensorboard"))
 
-    # Initialize PPO agent with improved hyperparameters for trading
-    model = PPO("MlpPolicy", env, verbose=1,
-                learning_rate=3e-4,
-                n_steps=2048,
-                batch_size=64,
-                n_epochs=10,
-                gamma=0.99,
-                gae_lambda=0.95,
-                clip_range=0.2,
-                ent_coef=0.01, # Encourage exploration
-                tensorboard_log="./ppo_forex_tensorboard/")
+        print(f"Starting training for {total_timesteps} steps...")
+        self.model.learn(total_timesteps=total_timesteps)
 
-    print("Starting training...")
-    model.learn(total_timesteps=200000)
+        model_path = self.base_path / "RL_Approach" / model_name
+        self.model.save(model_path)
+        print(f"Model saved to {model_path}")
 
-    # Save the model
-    model_path = base_path / "RL_Approach" / "ppo_forex_model"
-    model.save(model_path)
-    print(f"Model saved to {model_path}")
+    def evaluate(self, df_test=None):
+        if df_test is None:
+            df = self.load_data()
+            if df is None: return
+            train_size = int(len(df) * 0.8)
+            df_test = df.iloc[train_size:]
 
-    # Evaluate
-    test_env = DummyVecEnv([lambda: ForexEnv(test_df, spread=0.0002, commission=0.00005, slippage=0.0001)])
-    obs = test_env.reset()
+        env = self.ForexEnv(df_test)
+        obs = env.reset()
+        done = False
+        while not done:
+            action, _ = self.model.predict(obs, deterministic=True)
+            obs, reward, done, info = env.step(action)
 
-    net_worths = []
-    for _ in range(len(test_df) - 25):
-        action, _states = model.predict(obs, deterministic=True)
-        obs, rewards, done, info = test_env.step(action)
-        net_worths.append(info[0]['net_worth'])
-        if done:
-            break
-
-    final_profit = net_worths[-1] - 1000
-    print(f"Evaluation complete. Final Profit: {final_profit:.2f}")
+        return env.equity_curve, env.returns
 
 if __name__ == "__main__":
-    train_ppo(use_enriched=True)
+    agent = PPOTradingAgent()
+    # Note: For actual use, call agent.train()
+    print("PPOTradingAgent class ready.")

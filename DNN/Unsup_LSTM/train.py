@@ -6,65 +6,70 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, RepeatVector, TimeDistributed
 from pathlib import Path
 import sys
+import os
 
-# Set up paths
-current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parent.parent
-data_dir = project_root / "Data"
+class UnsupLSTMAutoencoder:
+    """
+    An unsupervised LSTM Autoencoder for anomaly detection and trend analysis.
+    """
 
-# Add Colecting_Data to sys.path
-sys.path.append(str(project_root / "Colecting_Data"))
-try:
-    from utils import add_technical_indicators
-except ImportError:
-    print("Warning: utils not found.")
-    add_technical_indicators = lambda x: x
+    def __init__(self, sequence_length=24, num_features=None):
+        self.base_path = Path(__file__).resolve().parent.parent.parent
+        self.sequence_length = sequence_length
+        self.num_features = num_features
+        self.model = None
+        self.scaler = MinMaxScaler(feature_range=(0, 1))
 
-# Readin data from the csv file
-data_file = data_dir / 'GBPUSD_1h.csv'
-try:
-    data = pd.read_csv(data_file)
-except FileNotFoundError:
-    print(f"Error: {data_file} not found.")
-    exit(1)
+        if num_features:
+            self.model = self._build_model(sequence_length, num_features)
 
-# Add indicators
-data = add_technical_indicators(data)
+    def _build_model(self, sequence_length, num_features):
+        model = Sequential([
+            LSTM(units=128, activation='relu', input_shape=(sequence_length, num_features)),
+            RepeatVector(sequence_length),
+            LSTM(units=128, activation='relu', return_sequences=True),
+            TimeDistributed(Dense(units=num_features))
+        ])
+        model.compile(optimizer='adam', loss='mse')
+        return model
 
-# Features to use (numeric only)
-features = data.select_dtypes(include=[np.number]).values
+    def load_and_preprocess(self, filename='GBPUSD_1h.csv'):
+        data_file = self.base_path / "Data" / filename
+        if not data_file.exists():
+            return None
 
-# Normalize the data
-scaler = MinMaxScaler(feature_range=(0, 1))
-features_normalized = scaler.fit_transform(features)
+        data = pd.read_csv(data_file)
 
-# Function to create sequences
-def create_sequences(dataset, sequence_length):
-    sequences = []
-    for i in range(len(dataset) - sequence_length):
-        sequence = dataset[i:i+sequence_length]
-        sequences.append(sequence)
-    return np.array(sequences)
+        sys.path.append(str(self.base_path / "Colecting_Data"))
+        from utils import TechnicalIndicators
+        data = TechnicalIndicators.add_all_indicators(data)
 
-sequence_length = 24
-sequences = create_sequences(features_normalized, sequence_length)
-num_features = features.shape[1]
+        features = data.select_dtypes(include=[np.number])
+        self.num_features = features.shape[1]
 
-X_train = sequences
+        scaled_features = self.scaler.fit_transform(features)
 
-# Build the LSTM autoencoder model
-model = Sequential([
-    LSTM(units=128, activation='relu', input_shape=(sequence_length, num_features)),
-    RepeatVector(sequence_length),
-    LSTM(units=128, activation='relu', return_sequences=True),
-    TimeDistributed(Dense(units=num_features))
-])
-model.compile(optimizer='adam', loss='mse')
+        sequences = []
+        for i in range(len(scaled_features) - self.sequence_length):
+            sequences.append(scaled_features[i : i + self.sequence_length])
 
-# Train the autoencoder
-model.fit(X_train, X_train, epochs=30, batch_size=32, verbose=1)
+        return np.array(sequences)
 
-# Calculate the reconstruction error
-reconstructed_sequences = model.predict(X_train)
-mse = np.mean(np.square(X_train - reconstructed_sequences))
-print(f"Mean Squared Error on Training Data: {mse}")
+    def train(self, X, epochs=50, batch_size=32):
+        if self.model is None:
+            self.model = self._build_model(self.sequence_length, self.num_features)
+
+        print("Training LSTM Autoencoder...")
+        history = self.model.fit(X, X, epochs=epochs, batch_size=batch_size, verbose=1)
+        return history
+
+    def calculate_reconstruction_error(self, X):
+        reconstructed = self.model.predict(X)
+        mse = np.mean(np.square(X - reconstructed), axis=(1, 2))
+        return mse
+
+if __name__ == "__main__":
+    autoencoder = UnsupLSTMAutoencoder()
+    X = autoencoder.load_and_preprocess()
+    if X is not None:
+        autoencoder.train(X, epochs=10)

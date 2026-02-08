@@ -2,95 +2,71 @@ import pandas as pd
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
-from trading_env import ForexEnv
-from metrics import calculate_metrics, print_metrics
 from pathlib import Path
+import sys
 
-# Set up paths
-base_path = Path(__file__).resolve().parent.parent
-data_path = base_path / "Data"
-
-def run_walk_forward(n_windows=4, train_hours=4000, test_hours=1000):
+class WalkForwardOptimizer:
     """
-    Implements Walk-Forward Optimization (WFO).
-    Trains on a rolling window and tests on the subsequent period.
+    A class to perform Walk-Forward Optimization for RL trading agents.
     """
-    # Prefer enriched data with LSTM signals
-    input_file = data_path / "GBPUSD_1h_enriched.csv"
-    if not input_file.exists():
-        input_file = data_path / "GBPUSD_1h.csv"
-        print("Warning: Enriched data not found. Using raw data for WFO.")
 
-    df = pd.read_csv(input_file)
-    total_len = len(df)
+    def __init__(self, n_windows=4, train_hours=4000, test_hours=1000):
+        self.base_path = Path(__file__).resolve().parent.parent
+        self.data_path = self.base_path / "Data"
+        self.n_windows = n_windows
+        self.train_hours = train_hours
+        self.test_hours = test_hours
 
-    all_window_results = []
+        # Imports
+        rl_path = str(self.base_path / "RL_Approach")
+        if rl_path not in sys.path: sys.path.append(rl_path)
+        from trading_env import ForexEnv
+        from metrics import TradingMetrics
+        self.ForexEnv = ForexEnv
+        self.Metrics = TradingMetrics
 
-    # Market frictions for realistic simulation
-    frictions = {
-        'spread': 0.0002,
-        'commission': 0.00005,
-        'slippage': 0.0001
-    }
+    def run(self, filename="GBPUSD_1h_enriched.csv"):
+        input_file = self.data_path / filename
+        if not input_file.exists():
+            input_file = self.data_path / "GBPUSD_1h.csv"
 
-    for i in range(n_windows):
-        # Calculate indices
-        # We move forward by test_hours each time
-        start_train = i * test_hours
-        end_train = start_train + train_hours
-        start_test = end_train
-        end_test = start_test + test_hours
+        df = pd.read_csv(input_file)
+        total_len = len(df)
+        all_window_results = []
 
-        if end_test > total_len:
-            print(f"Stopping at window {i+1}: end_test exceeds data length.")
-            break
+        frictions = {'spread': 0.0002, 'commission': 0.00005, 'slippage': 0.0001}
 
-        train_df = df.iloc[start_train:end_train]
-        test_df = df.iloc[start_test:end_test]
+        for i in range(self.n_windows):
+            start_train = i * self.test_hours
+            end_train = start_train + self.train_hours
+            start_test = end_train
+            end_test = start_test + self.test_hours
 
-        print(f"\n{'='*20}")
-        print(f"WINDOW {i+1} / {n_windows}")
-        print(f"Train: {start_train} -> {end_train} ({len(train_df)} hrs)")
-        print(f"Test : {start_test} -> {end_test} ({len(test_df)} hrs)")
-        print(f"{'='*20}")
+            if end_test > total_len: break
 
-        # Training
-        train_env = DummyVecEnv([lambda: ForexEnv(train_df, **frictions)])
-        model = PPO("MlpPolicy", train_env, verbose=0,
-                    learning_rate=3e-4,
-                    n_steps=1024,
-                    batch_size=64)
+            train_df = df.iloc[start_train:end_train]
+            test_df = df.iloc[start_test:end_test]
 
-        print(f"Training window {i+1}...")
-        model.learn(total_timesteps=80000)
+            print(f"\nWINDOW {i+1} / {self.n_windows}")
 
-        # Testing
-        test_env = ForexEnv(test_df, **frictions)
-        obs = test_env.reset()
-        done = False
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, info = test_env.step(action)
+            train_env = DummyVecEnv([lambda: self.ForexEnv(train_df, **frictions)])
+            model = PPO("MlpPolicy", train_env, verbose=0)
+            model.learn(total_timesteps=50000)
 
-        # Evaluation
-        metrics = calculate_metrics(test_env.equity_curve, test_env.returns)
-        print_metrics(metrics)
-        all_window_results.append(metrics)
+            test_env = self.ForexEnv(test_df, **frictions)
+            obs = test_env.reset()
+            done = False
+            while not done:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, reward, done, info = test_env.step(action)
 
-    if not all_window_results:
-        print("No windows were processed.")
-        return
+            metrics = self.Metrics.calculate_metrics(test_env.equity_curve, test_env.returns)
+            self.Metrics.print_metrics(metrics)
+            all_window_results.append(metrics)
 
-    # Aggregate Results
-    summary = {}
-    for key in all_window_results[0].keys():
-        values = [res[key] for res in all_window_results if not np.isinf(res[key])]
-        summary[key] = np.mean(values) if values else 0
-
-    print("\n" + "#"*40)
-    print("WALK-FORWARD AGGREGATE SUMMARY")
-    print("#"*40)
-    print_metrics(summary)
+        return all_window_results
 
 if __name__ == "__main__":
-    run_walk_forward()
+    wfo = WalkForwardOptimizer()
+    # wfo.run()
+    print("WalkForwardOptimizer class ready.")
