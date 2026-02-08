@@ -21,21 +21,15 @@ except ImportError:
     add_technical_indicators = lambda x: x
 
 # MT5 Login Credentials - FILL THESE IN
-MT5_ID = 12345678  # Replace with your account ID
-MT5_PASSWORD = 'YourPassword'  # Replace with your password
-MT5_SERVER = 'YourBrokerServer'  # Replace with your broker server
+MT5_ID = 90874984  # Replace with your account ID
+MT5_PASSWORD = 'Lord@7516'  # Replace with your password
+MT5_SERVER = 'LiteFinance-MT5-Demo'  # Replace with your broker server
 
 def initialize_mt5():
     """Initializes connection to MT5 terminal."""
-    if not mt5.initialize():
+    if not mt5.initialize(login=MT5_ID, password=MT5_PASSWORD, server=MT5_SERVER):
         print("Failed to initialize MT5, error code:", mt5.last_error())
         return False
-
-    # Optional: Login if the terminal is not already logged in
-    # if not mt5.login(MT5_ID, password=MT5_PASSWORD, server=MT5_SERVER):
-    #     print("Failed to login to MT5, error code:", mt5.last_error())
-    #     return False
-
     return True
 
 def get_data(symbol="GBPUSD", timeframe=mt5.TIMEFRAME_H1, count=10000):
@@ -73,8 +67,9 @@ def get_data(symbol="GBPUSD", timeframe=mt5.TIMEFRAME_H1, count=10000):
         df['Ask'] = last_tick.ask
         df['Bid'] = last_tick.bid
         # Spread in points
-        df['Current_Spread'] = last_tick.spread
-        print(f"Current Ask: {last_tick.ask}, Bid: {last_tick.bid}, Spread: {last_tick.spread}")
+        spread = last_tick.ask - last_tick.bid
+        df['Current_Spread'] = spread
+        print(f"Current Ask: {last_tick.ask}, Bid: {last_tick.bid}, Spread: {spread}")
 
     return df
 
@@ -82,9 +77,9 @@ while True:
     print(f"Attempting to fetch data at {time.ctime()}...")
     if initialize_mt5():
         # Configuration
-        symbol = "GBPUSD"
-        timeframe = mt5.TIMEFRAME_H1
-        output_file = data_dir / 'GBPUSD_1h_2.csv'
+        symbol = "GBPUSD_i"
+        timeframe = mt5.TIMEFRAME_M5
+        output_file = data_dir / 'GBPUSD_M5.csv'
 
         data = get_data(symbol, timeframe)
 
@@ -102,4 +97,4 @@ while True:
         print("MT5 Initialization failed. Retrying in next cycle.")
 
     # Wait for 15 minutes (900 seconds)
-    time.sleep(900)
+    time.sleep(300)

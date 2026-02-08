@@ -27,7 +27,7 @@ for device in gpu_devices:
     tf.config.experimental.set_memory_growth(device, True)
 
 # Load and preprocess your input data
-data_file = data_dir / 'GBPUSD_1d_2.csv'
+data_file = data_dir / 'GBPUSD_M5.csv'
 try:
     data = pd.read_csv(data_file)
 except FileNotFoundError:
@@ -112,7 +112,7 @@ def train_gan(epochs=20, batch_size=64):
             y_gen = np.ones(batch_size)
             discriminator.trainable = False
             g_loss = gan.train_on_batch(noise, y_gen)
-        print(f"Epoch {e + 1}, D Loss: {d_loss}, G Loss: {g_loss}")
+        print(f"Epoch {e + 1}, D Loss: {d_loss}, G Loss: {g_loss}",end='\r')
 
 train_gan()
 

@@ -60,7 +60,7 @@ def label_pivots(df, horizon=24):
     return df
 
 # Load data
-input_file = data_dir / "GBPUSD_1h.csv"
+input_file = data_dir / "GBPUSD_M5.csv"
 try:
     df = pd.read_csv(input_file)
 except FileNotFoundError:
@@ -84,6 +84,6 @@ df = label_pivots(df, horizon=24)
 df = df.iloc[:-24]
 
 # Save
-output_file = data_dir / "GBPUSD_1h_pivot.csv"
+output_file = data_dir / "GBPUSD_M5_pivot.csv"
 df.to_csv(output_file, index=False)
 print(f"Pivot preprocessing complete. Saved to {output_file}")
