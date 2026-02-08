@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.h5
+Data/GBPUSD_1h_enriched.csv
+Data/GBPUSD_1h_pivot.csv
+ppo_forex_tensorboard/
