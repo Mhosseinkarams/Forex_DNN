@@ -6,63 +6,60 @@ import sys
 import os
 from pathlib import Path
 
-# Set up paths relative to project root
-current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parent
-data_dir = project_root / "Data"
+class MultiInOutPreprocessor:
+    """
+    Preprocessor for multi-input/output models (LSTM/Sequence models).
+    """
 
-# Add the current directory to sys.path to import utils
-sys.path.append(str(current_dir))
-try:
-    from utils import add_technical_indicators
-except ImportError:
-    print("Error: Colecting_Data/utils.py not found.")
-    exit(1)
+    def __init__(self):
+        self.current_dir = Path(__file__).resolve().parent
+        self.project_root = self.current_dir.parent
+        self.data_dir = self.project_root / "Data"
 
-#load data
-input_file = data_dir / "GBPUSD_1h.csv"
-try:
-    data_1h = pd.read_csv(input_file)
-except FileNotFoundError:
-    print(f"Error: {input_file} not found.")
-    exit(1)
+        if str(self.current_dir) not in sys.path:
+            sys.path.append(str(self.current_dir))
 
-# Add technical indicators
-data_1h = add_technical_indicators(data_1h)
+        try:
+            from utils import TechnicalIndicators
+            self.indicators = TechnicalIndicators()
+        except ImportError:
+            self.indicators = None
 
-# Define the number of past hourly candles to consider as input
-num_input_candles_1h = 100 
+    def preprocess(self, filename="GBPUSD_1h.csv", num_input_candles=100, num_output_candles=5):
+        input_file = self.data_dir / filename
+        if not input_file.exists():
+            print(f"Error: {input_file} not found.")
+            return None, None
 
-# Define the number of future hourly candles to predict
-num_output_candles = 5
+        df = pd.read_csv(input_file)
+        if self.indicators:
+            df = self.indicators.add_all_indicators(df)
 
-# Create the input data
-input_data_1h = []
-output_data = []
+        input_data = []
+        output_data = []
 
-# Iterate over the data to create input and output samples
-for i in range(len(data_1h) - num_input_candles_1h - num_output_candles + 1):
-    # Use all numeric columns
-    cols_to_use = data_1h.select_dtypes(include=[np.number]).columns
-    input_candles = data_1h.iloc[i:i + num_input_candles_1h][cols_to_use].values
-    output_candles = data_1h.iloc[i + num_input_candles_1h:i + num_input_candles_1h + num_output_candles][['Open', 'Close']].values
-    
-    # Calculate the price differences
-    price_diffs = output_candles[:, 1] - output_candles[:, 0]
-    
-    # Encode the output data based on the price differences
-    output = np.where(price_diffs > 0.0005, 1, np.where(price_diffs < -0.0005, -1, 0))
-    
-    input_data_1h.append(input_candles)
-    output_data.append(output)
-    
+        # Use numeric columns
+        cols_to_use = df.select_dtypes(include=[np.number]).columns
 
+        for i in range(len(df) - num_input_candles - num_output_candles + 1):
+            input_candles = df.iloc[i : i + num_input_candles][cols_to_use].values
+            output_candles = df.iloc[i + num_input_candles : i + num_input_candles + num_output_candles][['Open', 'Close']].values
 
-# Convert the lists to arrays
-input_data_1h = np.array(input_data_1h)
-output_data = np.array(output_data)
+            price_diffs = output_candles[:, 1] - output_candles[:, 0]
+            output = np.where(price_diffs > 0.0005, 1, np.where(price_diffs < -0.0005, -1, 0))
 
-#save inputs and outputs in different files
-np.savez_compressed(data_dir / "GBPUSD_1h_multi_inout.npz", input_data_1h=input_data_1h)
-np.savez_compressed(data_dir / "GBPUSD_1h_multi_out.npz", output_data=output_data)
-print(f"Preprocessing complete. Saved to {data_dir}")
+            input_data.append(input_candles)
+            output_data.append(output)
+
+        return np.array(input_data), np.array(output_data)
+
+    def save_numpy(self, input_data, output_data, prefix="GBPUSD_1h_multi"):
+        np.savez_compressed(self.data_dir / f"{prefix}_inout.npz", input_data=input_data)
+        np.savez_compressed(self.data_dir / f"{prefix}_out.npz", output_data=output_data)
+        print(f"Preprocessing complete. Saved to {self.data_dir}")
+
+if __name__ == "__main__":
+    preprocessor = MultiInOutPreprocessor()
+    X, y = preprocessor.preprocess()
+    if X is not None:
+        preprocessor.save_numpy(X, y)

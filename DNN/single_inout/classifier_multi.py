@@ -8,60 +8,65 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from pathlib import Path
 
-# Use project root relative paths
-base_path = Path(__file__).resolve().parent.parent.parent
-data_file = base_path / "Data" / "GBPUSD_1h_preprocessed.csv"
+class MultiDNNClassifier:
+    """
+    A class for multi-class classification using a Dense Neural Network.
+    Predicts movement direction and size (5 categories).
+    """
 
-# Read the data
-try:
-    data = pd.read_csv(data_file)
-except FileNotFoundError:
-    print(f"Error: Data file {data_file} not found. Please run preprocessing first.")
-    exit(1)
+    def __init__(self, input_dim=None):
+        self.base_path = Path(__file__).resolve().parent.parent.parent
+        self.model = None
+        self.scaler = StandardScaler()
+        if input_dim:
+            self.model = self._build_model(input_dim)
 
-# Features: All except labels and price change
-drop_cols = ['Binary_Label', 'Multi_Label', 'Price_Change']
-x = data.drop(drop_cols, axis=1)
-# Ensure only numeric features
-x = x.select_dtypes(include=[np.number])
-y = data['Multi_Label']
+    def _build_model(self, input_dim):
+        model = Sequential([
+            Dense(256, activation='relu', input_shape=(input_dim,)),
+            Dropout(0.3),
+            Dense(128, activation='relu'),
+            Dropout(0.3),
+            Dense(64, activation='relu'),
+            Dense(5, activation='softmax')
+        ])
+        model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        return model
 
-# Split data (shuffle=False for time-series)
-X_train, X_test, y_train, y_test = train_test_split(x, y, test_size=0.1, shuffle=False)
-X_test, X_val, y_test, y_val = train_test_split(X_test, y_test, test_size=0.5, shuffle=False)
+    def load_data(self, filename="GBPUSD_1h_preprocessed.csv"):
+        data_file = self.base_path / "Data" / filename
+        if not data_file.exists():
+            return None, None
 
-# Normalize
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_val = scaler.transform(X_val)
-X_test = scaler.transform(X_test)
+        data = pd.read_csv(data_file)
+        drop_cols = ['Binary_Label', 'Multi_Label', 'Price_Change']
+        x = data.drop(drop_cols, axis=1)
+        x = x.select_dtypes(include=[np.number])
+        y = data['Multi_Label']
+        return x, y
 
-# Build Multi-class Classifier Model (5 classes)
-model = Sequential([
-    Dense(256, activation='relu', input_shape=(X_train.shape[1],)),
-    Dropout(0.3),
-    Dense(128, activation='relu'),
-    Dropout(0.3),
-    Dense(64, activation='relu'),
-    Dense(5, activation='softmax') # Softmax for multi-class classification
-])
+    def train(self, X, y, epochs=50, batch_size=32, val_size=0.1):
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=val_size, shuffle=False)
 
-model.compile(optimizer='adam',
-              loss='sparse_categorical_crossentropy',
-              metrics=['accuracy'])
+        X_train = self.scaler.fit_transform(X_train)
+        X_test = self.scaler.transform(X_test)
 
-print("Training Multi-class Classifier (Direction + Size)...")
-history = model.fit(X_train, y_train,
-                    validation_data=(X_val, y_val),
-                    batch_size=32,
-                    epochs=50,
-                    verbose=1)
+        if self.model is None:
+            self.model = self._build_model(X_train.shape[1])
 
-# Evaluate
-eval_metrics = model.evaluate(X_test, y_test)
-print('\nTest Evaluation:', dict(zip(model.metrics_names, eval_metrics)))
+        print("Training Multi-class DNN Classifier...")
+        history = self.model.fit(X_train, y_train, validation_split=0.1,
+                                 epochs=epochs, batch_size=batch_size, verbose=1)
 
-# Save model
-model_path = base_path / 'forex_multi_classifier.h5'
-model.save(model_path)
-print(f"Model saved to {model_path}")
+        eval_metrics = self.model.evaluate(X_test, y_test)
+        return history, eval_metrics
+
+    def save_model(self, filename='forex_multi_classifier.h5'):
+        self.model.save(self.base_path / filename)
+
+if __name__ == "__main__":
+    classifier = MultiDNNClassifier()
+    X, y = classifier.load_data()
+    if X is not None:
+        classifier.train(X, y)
+        classifier.save_model()

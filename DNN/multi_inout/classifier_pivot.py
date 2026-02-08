@@ -9,85 +9,101 @@ from sklearn.preprocessing import StandardScaler
 from pathlib import Path
 import sys
 
-# Use project root relative paths
-base_path = Path(__file__).resolve().parent.parent.parent
-data_path = base_path / "Data"
+class PivotLSTMClassifier:
+    """
+    A class for pivot detection using LSTMs.
+    Predicts major trend reversal points.
+    """
 
-# load data
-data_file = data_path / "GBPUSD_1h_pivot.csv"
-try:
-    data = pd.read_csv(data_file)
-except FileNotFoundError:
-    print(f"Error: {data_file} not found. Please run preproc_pivot.py first.")
-    exit(1)
+    def __init__(self, num_input_candles=48, num_features=None):
+        self.base_path = Path(__file__).resolve().parent.parent.parent
+        self.num_input_candles = num_input_candles
+        self.num_features = num_features
+        self.model = None
+        self.scaler = StandardScaler()
+        if num_features:
+            self.model = self._build_model(num_input_candles, num_features)
 
-# Features to use
-feature_cols = [c for c in data.columns if c not in ['DTYYYYMMDD', '<Time>', 'Datetime', 'Classification', 'Binary_Label', 'Multi_Label', 'Peak', 'Trough', 'Pivot_Label']]
+    def _build_model(self, num_input_candles, num_features):
+        model = Sequential([
+            Bidirectional(LSTM(128, return_sequences=True), input_shape=(num_input_candles, num_features)),
+            BatchNormalization(),
+            Dropout(0.3),
+            Bidirectional(LSTM(64)),
+            BatchNormalization(),
+            Dropout(0.3),
+            Dense(64, activation='relu'),
+            Dense(3, activation='softmax')
+        ])
+        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0005),
+                      loss='categorical_crossentropy', metrics=['accuracy'])
+        return model
 
-# Normalize
-scaler = StandardScaler()
-data[feature_cols] = scaler.fit_transform(data[feature_cols])
+    def load_and_preprocess(self, filename="GBPUSD_1h.csv"):
+        data_file = self.base_path / "Data" / filename
+        if not data_file.exists():
+            return None, None
 
-# Parameters
-num_input_candles = 48
-num_features = len(feature_cols)
+        data = pd.read_csv(data_file)
 
-# Prepare sequences
-X = []
-y = []
-for i in range(len(data) - num_input_candles):
-    X.append(data.iloc[i : i + num_input_candles][feature_cols].values)
-    y.append(data.iloc[i + num_input_candles]['Pivot_Label'])
+        sys.path.append(str(self.base_path / "Colecting_Data"))
+        from utils import TechnicalIndicators
+        data = TechnicalIndicators.add_all_indicators(data)
 
-X = np.array(X)
-y = to_categorical(np.array(y), num_classes=3)
+        # Define pivots (simplified inline for load_and_preprocess if preproc_pivot wasn't used)
+        close = data['Close'].values
+        peaks = np.zeros(len(data))
+        troughs = np.zeros(len(data))
+        window = 24
+        for i in range(window, len(data) - window):
+            chunk = close[i-window : i+window+1]
+            if close[i] == np.max(chunk): peaks[i] = 1
+            if close[i] == np.min(chunk): troughs[i] = 1
 
-# Split (Temporal)
-train_split = int(len(X) * 0.8)
-val_split = int(len(X) * 0.9)
+        data['Peak'] = peaks
+        data['Trough'] = troughs
 
-X_train, y_train = X[:train_split], y[:train_split]
-X_val, y_val = X[train_split:val_split], y[train_split:val_split]
-X_test, y_test = X[val_split:], y[val_split:]
+        labels = np.zeros(len(data))
+        horizon = 24
+        for i in range(len(data) - horizon):
+            if np.any(peaks[i+1 : i+horizon+1] == 1): labels[i] = 1
+            elif np.any(troughs[i+1 : i+horizon+1] == 1): labels[i] = 2
+        data['Pivot_Label'] = labels
+        data = data.iloc[:-horizon]
 
-# Build Bidirectional LSTM Model for Pivot Prediction
-model = Sequential([
-    Bidirectional(LSTM(128, return_sequences=True), input_shape=(num_input_candles, num_features)),
-    BatchNormalization(),
-    Dropout(0.3),
+        feature_cols = [c for c in data.columns if c not in ['DTYYYYMMDD', '<Time>', 'Datetime', 'Classification', 'Binary_Label', 'Multi_Label', 'Pivot_Label', 'Price_Change', 'Peak', 'Trough']]
+        self.num_features = len(feature_cols)
 
-    Bidirectional(LSTM(64)),
-    BatchNormalization(),
-    Dropout(0.3),
+        data[feature_cols] = self.scaler.fit_transform(data[feature_cols])
 
-    Dense(64, activation='relu'),
-    Dropout(0.2),
-    Dense(3, activation='softmax') # Classes: 0 (None), 1 (Peak), 2 (Trough)
-])
+        X, y = [], []
+        for i in range(len(data) - self.num_input_candles):
+            X.append(data.iloc[i : i + self.num_input_candles][feature_cols].values)
+            y.append(data.iloc[i + self.num_input_candles]['Pivot_Label'])
 
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=0.0005),
-    loss='categorical_crossentropy',
-    metrics=['accuracy']
-)
+        return np.array(X), to_categorical(np.array(y), num_classes=3)
 
-print("Training Pivot LSTM Classifier (Trend Change Detection)...")
-history = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
-    epochs=50,
-    batch_size=64,
-    callbacks=[
-        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-        tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5)
-    ]
-)
+    def train(self, X, y, epochs=30, batch_size=64):
+        train_split = int(len(X) * 0.8)
+        X_train, y_train = X[:train_split], y[:train_split]
+        X_test, y_test = X[train_split:], y[train_split:]
 
-# Evaluate
-loss, accuracy = model.evaluate(X_test, y_test)
-print(f'Test Accuracy: {accuracy:.4f}')
+        if self.model is None:
+            self.model = self._build_model(self.num_input_candles, self.num_features)
 
-# Save
-model_path = base_path / 'lstm_pivot_classifier.h5'
-model.save(model_path)
-print(f"Model saved to {model_path}")
+        print("Training Pivot LSTM...")
+        history = self.model.fit(X_train, y_train, validation_split=0.1,
+                                 epochs=epochs, batch_size=batch_size, verbose=1)
+
+        eval_metrics = self.model.evaluate(X_test, y_test)
+        return history, eval_metrics
+
+    def save_model(self, filename='lstm_pivot_classifier.h5'):
+        self.model.save(self.base_path / filename)
+
+if __name__ == "__main__":
+    classifier = PivotLSTMClassifier()
+    X, y = classifier.load_and_preprocess()
+    if X is not None:
+        classifier.train(X, y)
+        classifier.save_model()

@@ -27,7 +27,7 @@ for device in gpu_devices:
     tf.config.experimental.set_memory_growth(device, True)
 
 # Load and preprocess your input data
-data_file = data_dir / 'GBPUSD_M5.csv'
+data_file = data_dir / 'GBPUSD_1d_2.csv'
 try:
     data = pd.read_csv(data_file)
 except FileNotFoundError:
@@ -43,24 +43,15 @@ features = data[feature_cols].values
 scaler = MinMaxScaler()
 scaled_features = scaler.fit_transform(features)
 
-sequence_length = 24
+        sequences = []
+        next_closes = []
+        close_idx = feature_cols.index('Close') if 'Close' in feature_cols else 3
 
-# Create sequences
-sequences = []
-next_closes = []
-if 'Close' in feature_cols:
-    close_idx = feature_cols.index('Close')
-else:
-    close_idx = 3
+        for i in range(len(scaled_features) - self.sequence_length - 1):
+            sequences.append(scaled_features[i : i + self.sequence_length])
+            next_closes.append(scaled_features[i + self.sequence_length + 1][close_idx])
 
-for i in range(len(scaled_features) - sequence_length - 1):
-    seq = scaled_features[i:i + sequence_length]
-    target = scaled_features[i + sequence_length + 1][close_idx]
-    sequences.append(seq)
-    next_closes.append(target)
-
-X = np.array(sequences)
-y = np.array(next_closes)
+        return np.array(sequences), np.array(next_closes)
 
 train_size = int(0.8 * len(X))
 X_train, X_test = X[:train_size], X[train_size:]
@@ -112,10 +103,11 @@ def train_gan(epochs=20, batch_size=64):
             y_gen = np.ones(batch_size)
             discriminator.trainable = False
             g_loss = gan.train_on_batch(noise, y_gen)
-        print(f"Epoch {e + 1}, D Loss: {d_loss}, G Loss: {g_loss}",end='\r')
+        print(f"Epoch {e + 1}, D Loss: {d_loss}, G Loss: {g_loss}")
 
-train_gan()
-
-# Prediction example (on normalized data)
-test_predictions = lstm_model.predict(X_test)
-print("Predictions on test data complete.")
+if __name__ == "__main__":
+    gan = LSTM_GAN()
+    X, y = gan.load_and_preprocess()
+    if X is not None:
+        gan.train_lstm(X, y, epochs=5)
+        gan.train_gan(X, epochs=5)

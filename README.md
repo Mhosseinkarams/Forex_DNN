@@ -4,74 +4,79 @@ A comprehensive Deep Learning and Reinforcement Learning project for Forex tradi
 
 ## Project Structure
 
+The project has been refactored into a modular, object-oriented structure. Every component is now a class, and testing notebooks (`.ipynb`) are provided for each module.
+
 ```text
 Forex_DNN/
-├── Colecting_Data/         # Data acquisition and preprocessing
-│   ├── mt5data.py                # Bridge from MetaTrader 5 to Python
-│   ├── preproc_single_inout.py   # Preprocessing for single-output models
-│   ├── preproc_multi_inout.py    # Preprocessing for multi-output models
-│   ├── preproc_pivot.py          # Preprocessing for pivot/trend change detection
-│   └── utils.py                  # Centralized indicators (EMA, RSI, MACD, Ichimoku, etc.)
-├── DNN/                    # Deep Neural Network implementations
-│   ├── single_inout/       # Dense networks for price prediction
-│   │   ├── classifier_binary.py # Predicts direction (Up/Down)
-│   │   └── classifier_multi.py  # Predicts direction and movement size
-│   ├── multi_inout/        # LSTM-based sequence classification
-│   │   ├── classifier_binary.py # Predicts direction using LSTMs
-│   │   ├── classifier_multi.py  # Predicts direction and size using LSTMs
-│   │   └── classifier_pivot.py  # Predicts major trend pivots
-│   ├── Unsup_LSTM/         # LSTM Autoencoders for anomaly detection
-│   └── LSTM_GAN/           # GANs for synthetic data and price forecasting
-├── RL_Approach/            # Reinforcement Learning strategies
-│   ├── trading_env.py      # Custom OpenAI Gym environment for Forex
-│   └── ppo_trading.py      # PPO (Proximal Policy Optimization) implementation
-├── Data/                   # Storage for raw and preprocessed CSV/NPZ files
-└── README.md               # Project documentation
+├── Colecting_Data/               # Data acquisition and preprocessing
+│   ├── mt5data.py                # Class: MT5DataLoader
+│   ├── preproc_single_inout.py   # Class: SingleInOutPreprocessor
+│   ├── preproc_multi_inout.py    # Class: MultiInOutPreprocessor
+│   ├── preproc_pivot.py          # Class: PivotPreprocessor
+│   ├── utils.py                  # Class: TechnicalIndicators
+│   └── Colecting_Data_Test.ipynb # Visualization and test of preprocessors
+├── DNN/                          # Deep Neural Network implementations
+│   ├── single_inout/             # Dense networks for price prediction
+│   │   ├── classifier_binary.py  # Class: BinaryDNNClassifier
+│   │   ├── classifier_multi.py   # Class: MultiDNNClassifier
+│   │   └── DNN_Single_InOut_Test.ipynb
+│   ├── multi_inout/              # LSTM-based sequence classification
+│   │   ├── classifier_binary.py  # Class: BinaryLSTMClassifier
+│   │   ├── classifier_multi.py   # Class: MultiLSTMClassifier
+│   │   ├── classifier_pivot.py   # Class: PivotLSTMClassifier
+│   │   └── DNN_Multi_InOut_Test.ipynb
+│   ├── Unsup_LSTM/               # LSTM Autoencoders for anomaly detection
+│   │   ├── train.py              # Class: UnsupLSTMAutoencoder
+│   │   └── Unsup_LSTM_Test.ipynb
+│   └── LSTM_GAN/                 # GANs for synthetic data and forecasting
+│       ├── Model.py              # Class: LSTM_GAN
+│       └── LSTM_GAN_Test.ipynb
+├── RL_Approach/                  # Reinforcement Learning strategies
+│   ├── trading_env.py            # Class: ForexEnv (OpenAI Gym)
+│   ├── ppo_trading.py            # Class: PPOTradingAgent
+│   ├── generate_signals.py       # Class: SignalGenerator (LSTM-to-RL pipeline)
+│   ├── metrics.py                # Class: TradingMetrics
+│   ├── walk_forward.py           # Class: WalkForwardOptimizer
+│   └── RL_Approach_Test.ipynb    # Full RL system testing
+├── Data/                         # Storage for CSV/NPZ files
+└── README.md                     # Project documentation
 ```
 
 ## Features
 
-- **Data Pipeline**: Seamless integration with MetaTrader 5 (MT5) for real-time data collection.
-- **Technical Indicators**: Automated calculation of EMA (50/200), RSI, MACD, ATR, Ichimoku Cloud, and Candle geometry.
-- **Diverse Model Architectures**:
-  - **LSTMs**: Sequential models designed to capture temporal dependencies in financial time-series.
-  - **Autoencoders**: Unsupervised learning for trend identification and anomaly detection.
-  - **GANs**: Generative Adversarial Networks for data augmentation and robust forecasting.
-  - **RL (PPO)**: Deep Reinforcement Learning using Proximal Policy Optimization for automated trade execution.
+- **Object-Oriented Design**: Every component is implemented as a class, allowing easy integration and reusability.
+- **Interactive Notebooks**: Test files (`.ipynb`) are included in every directory to provide immediate feedback and performance plots.
+- **Realistic Evaluation**:
+  - **Market Frictions**: Spreads, commissions, and slippage are incorporated into backtests.
+  - **Walk-Forward Optimization**: Industry-standard rolling window validation to prevent overfitting.
+  - **Financial Metrics**: Detailed tracking of Sharpe Ratio, Sortino Ratio, Drawdown, and Profit Factor.
+- **Hybrid Modeling**: A pipeline to use LSTM predictions as features for Reinforcement Learning agents.
 
 ## Getting Started
 
 ### Prerequisites
 
-- Python 3.8+
-- TensorFlow 2.x
-- Pandas, NumPy, Scikit-learn
-- Stable-Baselines3 (for RL Approach)
-- Gym (for RL Approach)
+```bash
+pip install pandas numpy scikit-learn tensorflow matplotlib seaborn gym stable-baselines3
+```
 
 ### Data Preparation
 
-1.  Run `Colecting_Data/mt5data.py` to fetch data from your MT5 terminal.
-2.  Use `Colecting_Data/preproc_single_inout.py` or `preproc_multi_inout.py` to generate the feature-enriched datasets.
+Use the `Colecting_Data_Test.ipynb` notebook to see how data is fetched from MT5 and preprocessed with technical indicators.
 
-### Training Models
+### Model Training & Testing
 
-Each subdirectory in `DNN/` contains several training scripts. For example:
-```bash
-python3 DNN/multi_inout/classifier_multi.py
-```
+Each directory contains a `*_Test.ipynb` notebook. Open these to:
+1.  Initialize the model class.
+2.  Load and preprocess data.
+3.  Train the model.
+4.  Visualize training history and performance plots.
 
-For the RL approach:
-```bash
-python3 RL_Approach/ppo_trading.py
-```
+## Best Practices
 
-## Best Practices Implemented
-
-- **No Data Leakage**: All time-series splits use `shuffle=False` to respect chronological order.
-- **Portability**: Path handling is managed via `pathlib` to ensure the project works across different OS environments.
-- **Efficiency**: Data processing is optimized for performance using vectorized operations and efficient DataFrame handling.
-- **Centralized Logic**: Technical indicators are calculated in a shared utility to ensure consistency across all models.
+- **Chronological Splitting**: All time-series data is split using `shuffle=False` to maintain temporal integrity.
+- **Dynamic Pathing**: The project uses `pathlib` for robust cross-platform path handling.
+- **Vectorized Calculations**: Data processing is optimized for speed using NumPy and Pandas vectorized operations.
 
 ## License
 
