@@ -14,7 +14,12 @@ class MT5DataLoader:
     Incorporates historical data fetching, spread analysis, and latency measurement.
     """
 
-    def __init__(self, mt5_id=None, password=None, server=None):
+    # User-provided Credentials
+    DEFAULT_MT5_ID = 90874984
+    DEFAULT_PASSWORD = 'Lord@7516'
+    DEFAULT_SERVER = 'LiteFinance-MT5-Demo'
+
+    def __init__(self, mt5_id=DEFAULT_MT5_ID, password=DEFAULT_PASSWORD, server=DEFAULT_SERVER):
         self.mt5_id = mt5_id
         self.password = password
         self.server = server
@@ -38,16 +43,10 @@ class MT5DataLoader:
             self.indicators = None
 
     def initialize(self):
-        """Initializes connection to MT5 terminal."""
-        if not mt5.initialize():
+        """Initializes connection to MT5 terminal with provided credentials."""
+        if not mt5.initialize(login=self.mt5_id, password=self.password, server=self.server):
             print("Failed to initialize MT5, error code:", mt5.last_error())
             return False
-
-        if self.mt5_id and self.password and self.server:
-            if not mt5.login(self.mt5_id, password=self.password, server=self.server):
-                print("Failed to login to MT5, error code:", mt5.last_error())
-                return False
-
         return True
 
     def get_max_bars(self, symbol, timeframe):
@@ -59,7 +58,7 @@ class MT5DataLoader:
 
         while low <= high:
             mid = (low + high) // 2
-            if mid == 0:
+            if mid <= 0:
                 low = 1
                 continue
 
@@ -101,29 +100,19 @@ class MT5DataLoader:
             return avg_latency, avg_exec
         return None, None
 
-    def get_historical_data(self, symbol="EURUSD_i", timeframe=mt5.TIMEFRAME_H4, count=None):
+    def get_historical_data(self, symbol="GBPUSD_i", timeframe=mt5.TIMEFRAME_M5, count=10000):
         """Fetches historical rates and current market state from MT5."""
         if not mt5.symbol_select(symbol, True):
             print(f"Failed to select symbol '{symbol}'. Error:", mt5.last_error())
             return None
 
-        if count is None:
-            max_candles, rates = self.get_max_bars(symbol, timeframe)
-            print(f"Maximum accessible candles for {symbol}: {max_candles}")
-        else:
-            rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, count)
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, count)
 
         if rates is None:
             print("No historical data available. Error:", mt5.last_error())
             return None
 
         df = pd.DataFrame(rates)
-
-        # Standardized columns: time, open, high, low, close, tick_volume, spread, real_volume
-        expected_columns = ['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread', 'real_volume']
-        if len(df.columns) == len(expected_columns):
-             df.columns = expected_columns
-
         df['time'] = pd.to_datetime(df['time'], unit='s')
 
         # Map to project internal naming standards
@@ -133,8 +122,7 @@ class MT5DataLoader:
             'high': 'High',
             'low': 'Low',
             'close': 'Close',
-            'tick_volume': 'Vol',
-            'spread': 'Historical_Spread'
+            'tick_volume': 'Vol'
         }, inplace=True)
 
         # Collect Ask and Bid price for spread calculation
@@ -142,12 +130,14 @@ class MT5DataLoader:
         if last_tick is not None:
             df['Ask'] = last_tick.ask
             df['Bid'] = last_tick.bid
-            df['Current_Spread'] = last_tick.spread
+            # Calculate spread as Ask - Bid
+            spread = last_tick.ask - last_tick.bid
+            df['Current_Spread'] = spread
 
             # Latency measurement for this specific tick
             current_time = time.time()
             latency = (current_time - last_tick.time) * 1000
-            print(f"Live Tick - Ask: {last_tick.ask} | Bid: {last_tick.bid} | Latency: {latency:.2f} ms")
+            print(f"Live Tick - Ask: {last_tick.ask} | Bid: {last_tick.bid} | Spread: {spread:.5f} | Latency: {latency:.2f} ms")
 
         # Add Technical Indicators
         if self.indicators:
@@ -155,14 +145,14 @@ class MT5DataLoader:
 
         return df
 
-    def run_update_loop(self, symbol="EURUSD_i", timeframe=mt5.TIMEFRAME_H4, interval=900):
+    def run_update_loop(self, symbol="GBPUSD_i", timeframe=mt5.TIMEFRAME_M5, interval=300):
         """Runs a periodic update loop to fetch and save data."""
-        output_file = self.data_dir / f'{symbol}_history.csv'
+        output_file = self.data_dir / 'GBPUSD_M5.csv'
 
         while True:
             print(f"\n--- Update Cycle Started: {time.ctime()} ---")
             if self.initialize():
-                # Measure latency before fetching data
+                # Measure latency
                 self.measure_latency(symbol)
 
                 data = self.get_historical_data(symbol, timeframe)
@@ -178,5 +168,5 @@ class MT5DataLoader:
 
 if __name__ == "__main__":
     loader = MT5DataLoader()
-    print("MT5DataLoader initialized. Class parameters updated to match user request.")
-    # Example to run: loader.run_update_loop()
+    print("MT5DataLoader initialized with user corrections.")
+    # To run the loop: loader.run_update_loop()
