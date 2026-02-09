@@ -8,6 +8,7 @@ gym
 stable-baselines3
 python-dotenv
 MetaTrader5
+yfinance
 mplfinance
 scipy
 jupyter

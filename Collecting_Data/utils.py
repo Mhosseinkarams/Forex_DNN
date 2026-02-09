@@ -13,6 +13,14 @@ class TechnicalIndicators:
         """
         df = df.copy()
 
+        # Ensure numeric types and handle potential string artifacts from yfinance MultiIndex headers
+        for col in ['Open', 'High', 'Low', 'Close', 'Vol', 'Volume']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Drop rows where essential price data is missing or corrupted (like ticker strings)
+        df.dropna(subset=['Close'], inplace=True)
+
         # EMA
         df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
         df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
