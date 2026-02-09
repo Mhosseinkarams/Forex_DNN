@@ -8,13 +8,13 @@ The project has been refactored into a modular, object-oriented structure. Every
 
 ```text
 Forex_DNN/
-├── Colecting_Data/               # Data acquisition and preprocessing
+├── Collecting_Data/               # Data acquisition and preprocessing
 │   ├── mt5data.py                # Class: MT5DataLoader
 │   ├── preproc_single_inout.py   # Class: SingleInOutPreprocessor
 │   ├── preproc_multi_inout.py    # Class: MultiInOutPreprocessor
 │   ├── preproc_pivot.py          # Class: PivotPreprocessor
 │   ├── utils.py                  # Class: TechnicalIndicators
-│   └── Colecting_Data_Test.ipynb # Visualization and test of preprocessors
+│   └── Collecting_Data_Test.ipynb # Visualization and test of preprocessors
 ├── DNN/                          # Deep Neural Network implementations
 │   ├── single_inout/             # Dense networks for price prediction
 │   │   ├── classifier_binary.py  # Class: BinaryDNNClassifier
@@ -57,12 +57,14 @@ Forex_DNN/
 ### Prerequisites
 
 ```bash
-pip install pandas numpy scikit-learn tensorflow matplotlib seaborn gym stable-baselines3
+pip install -r requirements.txt
 ```
+
+**Note**: The `MetaTrader5` library requires a Windows environment and the MT5 terminal installed.
 
 ### Data Preparation
 
-Use the `Colecting_Data_Test.ipynb` notebook to see how data is fetched from MT5 and preprocessed with technical indicators.
+Use the `Collecting_Data_Test.ipynb` notebook to see how data is fetched from MT5 and preprocessed with technical indicators.
 
 ### Model Training & Testing
 

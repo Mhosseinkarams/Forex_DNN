@@ -1,0 +1,13 @@
+pandas
+numpy
+scikit-learn
+tensorflow
+matplotlib
+seaborn
+gym
+stable-baselines3
+python-dotenv
+MetaTrader5
+mplfinance
+scipy
+jupyter

@@ -70,11 +70,12 @@ class LSTM_GAN:
     def load_and_preprocess(self, filename='GBPUSD_1d_2.csv'):
         data_file = self.base_path / "Data" / filename
         if not data_file.exists():
+            print(f"Error: {data_file} not found.")
             return None, None
 
         data = pd.read_csv(data_file)
 
-        sys.path.append(str(self.base_path / "Colecting_Data"))
+        sys.path.append(str(self.base_path / "Collecting_Data"))
         from utils import TechnicalIndicators
         data = TechnicalIndicators.add_all_indicators(data)
 

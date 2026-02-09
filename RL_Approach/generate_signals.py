@@ -26,7 +26,7 @@ class SignalGenerator:
         df = pd.read_csv(input_file)
 
         # Add indicators
-        sys.path.append(str(self.base_path / "Colecting_Data"))
+        sys.path.append(str(self.base_path / "Collecting_Data"))
         from utils import TechnicalIndicators
         df = TechnicalIndicators.add_all_indicators(df)
 
