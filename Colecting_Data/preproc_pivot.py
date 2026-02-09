@@ -21,7 +21,7 @@ class PivotPreprocessor:
 
         try:
             from utils import TechnicalIndicators
-            self.indicators = TechnicalIndicators
+            self.indicators = TechnicalIndicators()
         except ImportError:
             print("Warning: TechnicalIndicators not found in utils.py")
             self.indicators = None
