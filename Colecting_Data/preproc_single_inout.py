@@ -20,7 +20,7 @@ class SingleInOutPreprocessor:
 
         try:
             from utils import TechnicalIndicators
-            self.indicators = TechnicalIndicators()
+            self.indicators = TechnicalIndicators
         except ImportError:
             print("Error: Colecting_Data/utils.py not found.")
             self.indicators = None

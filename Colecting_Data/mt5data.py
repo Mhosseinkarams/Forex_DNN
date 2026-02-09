@@ -7,6 +7,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+import os
+
+# Try to load environment variables from .env
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 class MT5DataLoader:
     """
@@ -14,15 +22,11 @@ class MT5DataLoader:
     Incorporates historical data fetching, spread analysis, and latency measurement.
     """
 
-    # User-provided Credentials
-    DEFAULT_MT5_ID = 90874984
-    DEFAULT_PASSWORD = 'Lord@7516'
-    DEFAULT_SERVER = 'LiteFinance-MT5-Demo'
-
-    def __init__(self, mt5_id=DEFAULT_MT5_ID, password=DEFAULT_PASSWORD, server=DEFAULT_SERVER):
-        self.mt5_id = mt5_id
-        self.password = password
-        self.server = server
+    def __init__(self, mt5_id=None, password=None, server=None):
+        # Use provided parameters or fall back to environment variables
+        self.mt5_id = int(mt5_id or os.getenv("MT5_ID", 0))
+        self.password = password or os.getenv("MT5_PASSWORD", "")
+        self.server = server or os.getenv("MT5_SERVER", "")
 
         current_dir = Path(__file__).resolve().parent
         self.project_root = current_dir.parent
@@ -31,31 +35,23 @@ class MT5DataLoader:
         # Ensure Data directory exists
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-# Add current dir to sys.path for utils
-sys.path.append(str(current_dir))
-try:
-    from utils import add_technical_indicators
-except ImportError:
-    print("Warning: utils not found. Technical indicators will not be added.")
-    add_technical_indicators = lambda x: x
+        # Add current dir to sys.path for utils
+        if str(current_dir) not in sys.path:
+            sys.path.append(str(current_dir))
 
-# MT5 Login Credentials - FILL THESE IN
-MT5_ID = 12345678  # Replace with your account ID
-MT5_PASSWORD = 'YourPassword'  # Replace with your password
-MT5_SERVER = 'YourBrokerServer'  # Replace with your broker server
+        try:
+            from utils import TechnicalIndicators
+            self.indicators = TechnicalIndicators()
+        except ImportError:
+            print("Warning: TechnicalIndicators not found. Indicators will not be added.")
+            self.indicators = None
 
-def initialize_mt5():
-    """Initializes connection to MT5 terminal."""
-    if not mt5.initialize():
-        print("Failed to initialize MT5, error code:", mt5.last_error())
-        return False
-
-    # Optional: Login if the terminal is not already logged in
-    # if not mt5.login(MT5_ID, password=MT5_PASSWORD, server=MT5_SERVER):
-    #     print("Failed to login to MT5, error code:", mt5.last_error())
-    #     return False
-
-    return True
+    def initialize(self):
+        """Initializes connection to MT5 terminal with provided credentials."""
+        if not mt5.initialize(login=self.mt5_id, password=self.password, server=self.server):
+            print("Failed to initialize MT5, error code:", mt5.last_error())
+            return False
+        return True
 
     def get_max_bars(self, symbol, timeframe):
         """Determines maximum accessible historical candles using binary search."""
@@ -170,5 +166,10 @@ while True:
     else:
         print("MT5 Initialization failed. Retrying in next cycle.")
 
-    # Wait for 15 minutes (900 seconds)
-    time.sleep(900)
+            print(f"Waiting {interval} seconds...")
+            time.sleep(interval)
+
+if __name__ == "__main__":
+    loader = MT5DataLoader()
+    print("MT5DataLoader initialized with user corrections.")
+    # To run the loop: loader.run_update_loop()
