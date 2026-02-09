@@ -74,7 +74,7 @@ class PivotLSTMClassifier:
         feature_cols = [c for c in data.columns if c not in ['DTYYYYMMDD', '<Time>', 'Datetime', 'Classification', 'Binary_Label', 'Multi_Label', 'Pivot_Label', 'Price_Change', 'Peak', 'Trough']]
         self.num_features = len(feature_cols)
 
-        data[feature_cols] = self.scaler.fit_transform(data[feature_cols])
+        # Scaling will be done in train() to avoid leakage
 
         X, y = [], []
         for i in range(len(data) - self.num_input_candles):
@@ -85,8 +85,21 @@ class PivotLSTMClassifier:
 
     def train(self, X, y, epochs=30, batch_size=64):
         train_split = int(len(X) * 0.8)
-        X_train, y_train = X[:train_split], y[:train_split]
-        X_test, y_test = X[train_split:], y[train_split:]
+
+        # Scaling correction: Fit on train, transform both
+        X_train_raw = X[:train_split]
+        X_test_raw = X[train_split:]
+
+        n_train, n_window, n_features = X_train_raw.shape
+        X_train_flat = X_train_raw.reshape(-1, n_features)
+        X_train_scaled = self.scaler.fit_transform(X_train_flat).reshape(n_train, n_window, n_features)
+
+        n_test = X_test_raw.shape[0]
+        X_test_flat = X_test_raw.reshape(-1, n_features)
+        X_test_scaled = self.scaler.transform(X_test_flat).reshape(n_test, n_window, n_features)
+
+        X_train, y_train = X_train_scaled, y[:train_split]
+        X_test, y_test = X_test_scaled, y[train_split:]
 
         if self.model is None:
             self.model = self._build_model(self.num_input_candles, self.num_features)
