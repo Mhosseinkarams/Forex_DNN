@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import sys
+import os
 
 class PivotPreprocessor:
     """
@@ -14,13 +15,15 @@ class PivotPreprocessor:
         self.project_root = self.current_dir.parent
         self.data_dir = self.project_root / "Data"
 
+        # Ensure Colecting_Data is in path for utils import
         if str(self.current_dir) not in sys.path:
             sys.path.append(str(self.current_dir))
 
         try:
             from utils import TechnicalIndicators
-            self.indicators = TechnicalIndicators()
+            self.indicators = TechnicalIndicators
         except ImportError:
+            print("Warning: TechnicalIndicators not found in utils.py")
             self.indicators = None
 
     def get_pivots(self, df, window=24):
@@ -59,6 +62,7 @@ class PivotPreprocessor:
     def preprocess(self, filename="GBPUSD_1h.csv", window=24, horizon=24):
         input_file = self.data_dir / filename
         if not input_file.exists():
+            print(f"Error: {input_file} not found.")
             return None
 
         df = pd.read_csv(input_file)

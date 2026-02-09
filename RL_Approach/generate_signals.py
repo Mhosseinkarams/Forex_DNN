@@ -20,6 +20,7 @@ class SignalGenerator:
     def generate_all_signals(self, input_filename="GBPUSD_1h.csv", output_filename="GBPUSD_1h_enriched.csv"):
         input_file = self.data_path / input_filename
         if not input_file.exists():
+            print(f"Error: {input_file} not found.")
             return None
 
         df = pd.read_csv(input_file)
@@ -34,10 +35,15 @@ class SignalGenerator:
 
         scaled_features = self.scaler.fit_transform(df[feature_cols])
 
+        # Generate sequences: X[i] is [i, i + seq_len), predicts for index i + seq_len
         X = []
-        for i in range(len(scaled_features) - self.seq_len + 1):
+        for i in range(len(scaled_features) - self.seq_len):
             X.append(scaled_features[i : i + self.seq_len])
         X = np.array(X)
+
+        if len(X) == 0:
+            print("Error: Not enough data to generate sequences.")
+            return None
 
         signals = pd.DataFrame(index=df.index)
         models = {
@@ -52,12 +58,14 @@ class SignalGenerator:
                 model = tf.keras.models.load_model(path)
                 preds = model.predict(X, batch_size=512, verbose=0)
 
+                # preds has length N - seq_len.
+                # Align starting from index seq_len.
                 if name == 'binary':
-                    signals.loc[self.seq_len:, 'signal_binary'] = preds.flatten()
+                    signals.loc[df.index[self.seq_len:], 'signal_binary'] = preds.flatten()
                 elif name == 'multi':
-                    signals.loc[self.seq_len:, 'signal_multi'] = np.argmax(preds, axis=1)
+                    signals.loc[df.index[self.seq_len:], 'signal_multi'] = np.argmax(preds, axis=1)
                 elif name == 'pivot':
-                    signals.loc[self.seq_len:, 'signal_pivot'] = np.argmax(preds, axis=1)
+                    signals.loc[df.index[self.seq_len:], 'signal_pivot'] = np.argmax(preds, axis=1)
 
         df = pd.concat([df, signals], axis=1)
         df.fillna(0, inplace=True)
@@ -67,5 +75,4 @@ class SignalGenerator:
 
 if __name__ == "__main__":
     generator = SignalGenerator()
-    # generator.generate_all_signals()
     print("SignalGenerator class ready.")

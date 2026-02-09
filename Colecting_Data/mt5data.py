@@ -7,6 +7,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+import os
+
+# Try to load environment variables from .env
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 class MT5DataLoader:
     """
@@ -14,15 +22,11 @@ class MT5DataLoader:
     Incorporates historical data fetching, spread analysis, and latency measurement.
     """
 
-    # User-provided Credentials
-    DEFAULT_MT5_ID = 90874984
-    DEFAULT_PASSWORD = 'Lord@7516'
-    DEFAULT_SERVER = 'LiteFinance-MT5-Demo'
-
-    def __init__(self, mt5_id=DEFAULT_MT5_ID, password=DEFAULT_PASSWORD, server=DEFAULT_SERVER):
-        self.mt5_id = mt5_id
-        self.password = password
-        self.server = server
+    def __init__(self, mt5_id=None, password=None, server=None):
+        # Use provided parameters or fall back to environment variables
+        self.mt5_id = int(mt5_id or os.getenv("MT5_ID", 0))
+        self.password = password or os.getenv("MT5_PASSWORD", "")
+        self.server = server or os.getenv("MT5_SERVER", "")
 
         current_dir = Path(__file__).resolve().parent
         self.project_root = current_dir.parent
@@ -44,6 +48,10 @@ class MT5DataLoader:
 
     def initialize(self):
         """Initializes connection to MT5 terminal with provided credentials."""
+        if not self.mt5_id or not self.password or not self.server:
+            print("Error: MT5 credentials missing. Set MT5_ID, MT5_PASSWORD, and MT5_SERVER env variables.")
+            return False
+
         if not mt5.initialize(login=self.mt5_id, password=self.password, server=self.server):
             print("Failed to initialize MT5, error code:", mt5.last_error())
             return False
@@ -168,5 +176,4 @@ class MT5DataLoader:
 
 if __name__ == "__main__":
     loader = MT5DataLoader()
-    print("MT5DataLoader initialized with user corrections.")
-    # To run the loop: loader.run_update_loop()
+    print("MT5DataLoader class ready.")
