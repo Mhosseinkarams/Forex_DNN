@@ -46,7 +46,7 @@ class MultiLSTMClassifier:
 
         data = pd.read_csv(data_file)
 
-        sys.path.append(str(self.base_path / "Colecting_Data"))
+        sys.path.append(str(self.base_path / "Collecting_Data"))
         from utils import TechnicalIndicators
         data = TechnicalIndicators.add_all_indicators(data)
 

@@ -22,7 +22,7 @@ class SingleInOutPreprocessor:
             from utils import TechnicalIndicators
             self.indicators = TechnicalIndicators()
         except ImportError:
-            print("Error: Colecting_Data/utils.py not found.")
+            print("Error: Collecting_Data/utils.py not found.")
             self.indicators = None
 
     def preprocess(self, filename="GBPUSD_1h.csv"):

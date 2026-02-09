@@ -9,35 +9,78 @@ from tensorflow.keras.optimizers import Adam
 from pathlib import Path
 import sys
 
-# Set up paths
-current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parent.parent
-data_dir = project_root / "Data"
+class LSTM_GAN:
+    """
+    A Generative Adversarial Network with LSTM for Forex data synthesis and prediction.
+    """
 
-# Add Colecting_Data to sys.path
-sys.path.append(str(project_root / "Colecting_Data"))
-try:
-    from utils import add_technical_indicators
-except ImportError:
-    print("Warning: utils not found.")
-    add_technical_indicators = lambda x: x
+    def __init__(self, sequence_length=24, latent_dim=100, num_features=None):
+        self.base_path = Path(__file__).resolve().parent.parent.parent
+        self.sequence_length = sequence_length
+        self.latent_dim = latent_dim
+        self.num_features = num_features
+        self.scaler = MinMaxScaler()
 
-gpu_devices = tf.config.experimental.list_physical_devices("GPU")
-for device in gpu_devices:
-    tf.config.experimental.set_memory_growth(device, True)
+        self.generator = None
+        self.discriminator = None
+        self.gan = None
+        self.lstm_model = None
 
-# Load and preprocess your input data
-data_file = data_dir / 'GBPUSD_1d_2.csv'
-try:
-    data = pd.read_csv(data_file)
-except FileNotFoundError:
-    print(f"Error: {data_file} not found.")
-    exit(1)
+        if num_features:
+            self._build_all_models()
 
-# Add indicators
-data = add_technical_indicators(data)
-feature_cols = data.select_dtypes(include=[np.number]).columns.tolist()
-features = data[feature_cols].values
+    def _build_generator(self):
+        model = Sequential([
+            Dense(128, input_dim=self.latent_dim),
+            Dense(self.sequence_length * self.num_features, activation='tanh'),
+            Reshape((self.sequence_length, self.num_features))
+        ])
+        return model
+
+    def _build_discriminator(self):
+        model = Sequential([
+            Flatten(input_shape=(self.sequence_length, self.num_features)),
+            Dense(128, activation='relu'),
+            Dense(1, activation='sigmoid')
+        ])
+        model.compile(loss='binary_crossentropy', optimizer=Adam(0.0002, 0.5))
+        return model
+
+    def _build_lstm_predictor(self):
+        model = Sequential([
+            LSTM(128, input_shape=(self.sequence_length, self.num_features)),
+            Dense(1, activation='linear')
+        ])
+        model.compile(loss='mean_squared_error', optimizer='adam')
+        return model
+
+    def _build_all_models(self):
+        self.generator = self._build_generator()
+        self.discriminator = self._build_discriminator()
+        self.lstm_model = self._build_lstm_predictor()
+
+        # Combine into GAN
+        self.discriminator.trainable = False
+        gan_input = Input(shape=(self.latent_dim,))
+        x = self.generator(gan_input)
+        gan_output = self.discriminator(x)
+        self.gan = Model(gan_input, gan_output)
+        self.gan.compile(loss='binary_crossentropy', optimizer=Adam(0.0002, 0.5))
+
+    def load_and_preprocess(self, filename='GBPUSD_1d_2.csv'):
+        data_file = self.base_path / "Data" / filename
+        if not data_file.exists():
+            return None, None
+
+        data = pd.read_csv(data_file)
+
+        sys.path.append(str(self.base_path / "Colecting_Data"))
+        from utils import TechnicalIndicators
+        data = TechnicalIndicators.add_all_indicators(data)
+
+        feature_cols = data.select_dtypes(include=[np.number]).columns.tolist()
+        features = data[feature_cols].values
+        self.num_features = features.shape[1]
 
 # Normalize the data
 scaler = MinMaxScaler()

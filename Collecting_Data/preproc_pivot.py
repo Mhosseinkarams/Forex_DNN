@@ -14,7 +14,7 @@ class PivotPreprocessor:
         self.current_dir = Path(__file__).resolve().parent
         self.project_root = self.current_dir.parent
         self.data_dir = self.project_root / "Data"
-        
+
         # Ensure Colecting_Data is in path for utils import
         if str(self.current_dir) not in sys.path:
             sys.path.append(str(self.current_dir))

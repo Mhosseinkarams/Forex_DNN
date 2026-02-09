@@ -45,8 +45,8 @@ class BinaryLSTMClassifier:
 
         data = pd.read_csv(data_file)
 
-        # Add indicators (assumes Colecting_Data/utils.py is available)
-        sys.path.append(str(self.base_path / "Colecting_Data"))
+        # Add indicators (assumes Collecting_Data/utils.py is available)
+        sys.path.append(str(self.base_path / "Collecting_Data"))
         from utils import TechnicalIndicators
         data = TechnicalIndicators.add_all_indicators(data)
 

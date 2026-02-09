@@ -59,9 +59,12 @@ class ForexEnv(gym.Env):
         current_price = self.df.loc[self.current_step - 1, "Close"]
         unrealized_pnl = (current_price - self.cost_basis) * self.shares_held if self.shares_held > 0 else 0
 
+        # Normalize shares_held as a fraction of current net worth
+        position_ratio = (self.shares_held * current_price) / self.net_worth if self.net_worth > 0 else 0
+
         account_info = np.column_stack((
             np.full(self.window_size, self.balance / self.initial_balance),
-            np.full(self.window_size, self.shares_held), # Might need better normalization for shares
+            np.full(self.window_size, position_ratio),
             np.full(self.window_size, unrealized_pnl / self.initial_balance),
             np.full(self.window_size, self.net_worth / self.initial_balance)
         ))
