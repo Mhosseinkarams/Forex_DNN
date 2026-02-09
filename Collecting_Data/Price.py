@@ -2,33 +2,57 @@
 import numpy as np
 import pandas as pd
 import yfinance as yf
-import datetime
-from datetime import datetime as dt
 import time
-import pytz
+from datetime import datetime as dt
+from pathlib import Path
+import os
 
-# Set the ticker as 'XAUUSD=X'
-ticker = 'GBPUSD=X'
+class YFinanceDataLoader:
+    """
+    Class to handle data acquisition from Yahoo Finance.
+    """
 
-# Set the end date as the current date
-tz = pytz.timezone("America/New_York")
-end_date = tz.localize(dt.now())
-# Function to continuously update and save data
-def update_data():
-    while True:
+    def __init__(self, ticker='GBPUSD=X'):
+        self.ticker = ticker
+        current_dir = Path(__file__).resolve().parent
+        self.project_root = current_dir.parent
+        self.data_dir = self.project_root / "Data"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create an empty DataFrame
-        forex_data = pd.DataFrame()
-        
-        # Fetch data for each interval and append to the DataFrame
-        data = yf.download(ticker, period='2y', interval='1h', auto_adjust=True)
-        forex_data = pd.concat([forex_data, data])
-        
-        # Save the data to the file
-        forex_data.to_csv('/home/mhossein/My_Projects/Forex_DNN/Data/GBPUSD_1h.csv')
-        
-        # Wait for 5 minutes before the next update
-        time.sleep(300)
+    def download_data(self, period='2y', interval='1h'):
+        """Downloads historical data and saves to CSV."""
+        print(f"Downloading data for {self.ticker}...")
+        try:
+            data = yf.download(self.ticker, period=period, interval=interval, auto_adjust=True)
+            if data.empty:
+                print("No data downloaded.")
+                return None
 
-# Call the function to start updating and saving data
-update_data()
+            # Flatten MultiIndex if present (common in recent yfinance versions)
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+
+            # Map columns to internal standard
+            data.reset_index(inplace=True)
+            # yfinance returns 'Datetime' or 'Date'
+            date_col = 'Datetime' if 'Datetime' in data.columns else 'Date'
+            data.rename(columns={date_col: 'Datetime'}, inplace=True)
+
+            output_file = self.data_dir / f'GBPUSD_{interval}.csv'
+            data.to_csv(output_file, index=False)
+            print(f"Data saved to {output_file}")
+            return data
+        except Exception as e:
+            print(f"Error downloading data: {e}")
+            return None
+
+    def run_update_loop(self, interval_download='1h', sleep_time=300):
+        """Continuously updates data."""
+        while True:
+            self.download_data(interval=interval_download)
+            print(f"Waiting {sleep_time} seconds before next update...")
+            time.sleep(sleep_time)
+
+if __name__ == "__main__":
+    loader = YFinanceDataLoader()
+    loader.download_data()
