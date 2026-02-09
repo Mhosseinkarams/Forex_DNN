@@ -21,7 +21,7 @@ class MultiInOutPreprocessor:
 
         try:
             from utils import TechnicalIndicators
-            self.indicators = TechnicalIndicators
+            self.indicators = TechnicalIndicators()
         except ImportError:
             self.indicators = None
 
