@@ -1,72 +1,77 @@
 import pandas as pd
 import numpy as np
+from .indicators import IndicatorEngine
 
 class TechnicalIndicators:
     """
     A class to calculate technical indicators for Forex data.
+    Refactored to use IndicatorEngine for Module 2 consistency.
     """
 
     @staticmethod
     def add_all_indicators(df):
         """
         Adds all available technical indicators to the dataframe.
+        Wraps IndicatorEngine to maintain backward compatibility.
         """
-        df = df.copy()
-
         # Ensure numeric types and handle potential string artifacts from yfinance MultiIndex headers
-        for col in ['Open', 'High', 'Low', 'Close', 'Vol', 'Volume']:
+        # We perform basic cleaning before passing to IndicatorEngine
+        df = df.copy()
+        for col in ['Open', 'High', 'Low', 'Close', 'Vol', 'Volume', 'TickVolume', 'Spread']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        # Drop rows where essential price data is missing or corrupted (like ticker strings)
-        df.dropna(subset=['Close'], inplace=True)
+        # Map 'Vol' or 'Volume' to 'TickVolume' if missing, as IndicatorEngine expects 'TickVolume'
+        if 'TickVolume' not in df.columns:
+            if 'Vol' in df.columns:
+                df['TickVolume'] = df['Vol']
+            elif 'Volume' in df.columns:
+                df['TickVolume'] = df['Volume']
+            else:
+                df['TickVolume'] = 0
 
-        # EMA
-        df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
-        df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+        if 'Spread' not in df.columns:
+            df['Spread'] = 0
 
-        # RSI (14)
-        delta = df['Close'].diff()
+        # Drop rows where essential price data is missing
+        df.dropna(subset=['Open', 'High', 'Low', 'Close'], inplace=True)
+
+        engine = IndicatorEngine(dropna=True)
+        df_enriched = engine.calculate(df)
+
+        # For legacy compatibility, map some columns back to previous names if they differ
+        # (Though most scripts should transition to the new names)
+        # Old names: EMA_50, EMA_200, ATR, Candle_Body, Upper_Shadow, Lower_Shadow
+        if 'ema_50' in df_enriched.columns:
+            df_enriched['EMA_50'] = df_enriched['ema_50']
+
+        # EMA_200 was in old utils but not in new IndicatorEngine defaults.
+        # We can add it manually or add it to ema_periods.
+        if 'EMA_200' not in df_enriched.columns:
+            df_enriched['EMA_200'] = df_enriched['Close'].ewm(span=200, adjust=False).mean()
+
+        if 'atr_14' in df_enriched.columns:
+            df_enriched['ATR'] = df_enriched['atr_14']
+
+        if 'body_size' in df_enriched.columns:
+            df_enriched['Candle_Body'] = df_enriched['body_size']
+
+        if 'upper_shadow' in df_enriched.columns:
+            df_enriched['Upper_Shadow'] = df_enriched['upper_shadow']
+
+        if 'lower_shadow' in df_enriched.columns:
+            df_enriched['Lower_Shadow'] = df_enriched['lower_shadow']
+
+        # Legacy RSI and MACD (not in new IndicatorEngine but might be used by existing scripts)
+        delta = df_enriched['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
+        rs = gain / (loss + 1e-9)
+        df_enriched['RSI'] = 100 - (100 / (1 + rs))
 
-        # MACD
-        exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-        exp2 = df['Close'].ewm(span=26, adjust=False).mean()
-        df['MACD'] = exp1 - exp2
-        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        exp1 = df_enriched['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = df_enriched['Close'].ewm(span=26, adjust=False).mean()
+        df_enriched['MACD'] = exp1 - exp2
+        df_enriched['MACD_Signal'] = df_enriched['MACD'].ewm(span=9, adjust=False).mean()
 
-        # ATR (14)
-        high_low = df['High'] - df['Low']
-        high_close = np.abs(df['High'] - df['Close'].shift())
-        low_close = np.abs(df['Low'] - df['Close'].shift())
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = np.max(ranges, axis=1)
-        df['ATR'] = true_range.rolling(14).mean()
-
-        # Candle and Shadow Sizes
-        df['Candle_Body'] = np.abs(df['Close'] - df['Open'])
-        df['Upper_Shadow'] = df['High'] - df[['Open', 'Close']].max(axis=1)
-        df['Lower_Shadow'] = df[['Open', 'Close']].min(axis=1) - df['Low']
-
-        # Ichimoku Cloud
-        period9_high = df['High'].rolling(window=9).max()
-        period9_low = df['Low'].rolling(window=9).min()
-        df['Tenkan_Sen'] = (period9_high + period9_low) / 2
-
-        period26_high = df['High'].rolling(window=26).max()
-        period26_low = df['Low'].rolling(window=26).min()
-        df['Kijun_Sen'] = (period26_high + period26_low) / 2
-
-        df['Senkou_Span_A'] = ((df['Tenkan_Sen'] + df['Kijun_Sen']) / 2).shift(26)
-
-        period52_high = df['High'].rolling(window=52).max()
-        period52_low = df['Low'].rolling(window=52).min()
-        df['Senkou_Span_B'] = ((period52_high + period52_low) / 2).shift(26)
-
-        df['Chikou_Span_Rel'] = df['Close'] - df['Close'].shift(26)
-
-        df.dropna(inplace=True)
-        return df
+        return df_enriched
