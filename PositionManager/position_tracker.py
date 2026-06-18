@@ -145,7 +145,7 @@ class PositionTracker:
                 "floating_pnl": p.profit,
                 "remaining_risk_dollars": risk,
                 "reward_dollars": reward,
-                "open_time": datetime.fromtimestamp(p.time, tz=timezone.utc),
+                "open_time": datetime.fromtimestamp(p.time, tz=timezone.utc).isoformat(),
             }
             new_positions.append(snapshot)
             new_total_risk += risk

@@ -24,6 +24,11 @@ if not hasattr(mt5, "TRADE_ACTION_SLTP"):
 else:
     TRADE_ACTION_SLTP = mt5.TRADE_ACTION_SLTP
 
+if not hasattr(mt5, "ORDER_TIME_GTC"):
+    ORDER_TIME_GTC = 0
+else:
+    ORDER_TIME_GTC = mt5.ORDER_TIME_GTC
+
 logger = logging.getLogger("PositionManager")
 
 class PositionManager:
@@ -117,7 +122,7 @@ class PositionManager:
             tp_price=tp_price,
             strategy=strategy,
             comment=comment,
-            error_code=mt5.last_error()[0],
+            error_code=0 if success else mt5.last_error()[0],
             retcode=result.retcode
         )
 
@@ -198,7 +203,7 @@ class PositionManager:
             tp_price=pos.tp,
             strategy=strategy,
             comment=result.comment if not success else "Success",
-            error_code=mt5.last_error()[0],
+            error_code=0 if success else mt5.last_error()[0],
             retcode=result.retcode
         )
 
@@ -260,7 +265,7 @@ class PositionManager:
             tp_price=new_tp,
             strategy=strategy,
             comment=result.comment if not success else "Success",
-            error_code=mt5.last_error()[0],
+            error_code=0 if success else mt5.last_error()[0],
             retcode=result.retcode
         )
 
