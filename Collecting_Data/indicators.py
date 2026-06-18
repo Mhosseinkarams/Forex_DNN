@@ -67,8 +67,14 @@ class IndicatorEngine:
         layer2_cols.append('avg_body_size')
 
         # body_ratio: use 0.0 where avg is 0
-        df['body_ratio'] = np.where(df['avg_body_size'] != 0, df['body_size'] / df['avg_body_size'], 0.0)
-        layer2_cols.append('body_ratio')
+        df['body_vs_avg'] = np.where(df['avg_body_size'] != 0, df['body_size'] / df['avg_body_size'], 0.0)
+        layer2_cols.append('body_vs_avg')
+
+        df['candle_size']=abs(df['High'] - df['Low'])
+        layer2_cols.append('candle_size')
+
+        df['body_pct'] = np.where(df['candle_size'] != 0, df['body_size'] / df['candle_size'], 0.0)
+        layer2_cols.append('body_pct')
 
         df['upper_shadow'] = df['High'] - df[['Open', 'Close']].max(axis=1)
         layer2_cols.append('upper_shadow')

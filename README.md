@@ -13,7 +13,7 @@ Forex_DNN/
 │   ├── preproc_single_inout.py   # Class: SingleInOutPreprocessor
 │   ├── preproc_multi_inout.py    # Class: MultiInOutPreprocessor
 │   ├── preproc_pivot.py          # Class: PivotPreprocessor
-│   ├── utils.py                  # Class: TechnicalIndicators
+│   ├── indicators.py                  # Class: IndicatorEngine
 │   └── Collecting_Data_Test.ipynb # Visualization and test of preprocessors
 ├── DNN/                          # Deep Neural Network implementations
 │   ├── single_inout/             # Dense networks for price prediction

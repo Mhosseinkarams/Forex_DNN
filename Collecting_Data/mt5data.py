@@ -151,4 +151,9 @@ class MT5DataLoader:
 
 if __name__ == "__main__":
     loader = MT5DataLoader()
-    print("MT5DataLoader initialized.")
+    if loader.initialize():
+        df = loader.get_historical_data()
+        if df is not None:
+            print("Fetched and enriched data sample:")
+            print(df.head())
+        mt5.shutdown()

@@ -27,8 +27,10 @@ class SignalGenerator:
 
         # Add indicators
         sys.path.append(str(self.base_path / "Collecting_Data"))
-        from utils import TechnicalIndicators
-        df = TechnicalIndicators.add_all_indicators(df)
+        from indicators import IndicatorEngine
+        if 'TickVolume' not in df.columns: df['TickVolume'] = df['Vol'] if 'Vol' in df.columns else 0
+        if 'Spread' not in df.columns: df['Spread'] = 0
+        df = IndicatorEngine(dropna=True).calculate(df)
 
         exclude_cols = ['DTYYYYMMDD', '<Time>', 'Datetime', 'Classification', 'Binary_Label', 'Multi_Label', 'Pivot_Label', 'Price_Change', 'Peak', 'Trough']
         feature_cols = [c for c in df.columns if c not in exclude_cols]
