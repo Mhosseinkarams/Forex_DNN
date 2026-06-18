@@ -145,7 +145,7 @@ class MT5DataFeed:
         if symbols is None:
             logger.error(f"Failed to get symbols: {mt5.last_error()}")
             return []
-
+        
         symbol_names = sorted([s.name for s in symbols])
         logger.info(f"Retrieved {len(symbol_names)} symbols from broker.")
         return symbol_names
@@ -156,7 +156,7 @@ class MT5DataFeed:
         if info is None:
             logger.error(f"Symbol {symbol} not found.")
             return None
-
+        
         return {
             "digits": info.digits,
             "point": info.point,
@@ -165,6 +165,19 @@ class MT5DataFeed:
             "volume_max": info.volume_max,
             "trade_contract_size": info.trade_contract_size
         }
+
+    def get_history_depth(self, symbol: str, timeframe: int) -> datetime | None:
+        """Fast check for earliest available data for a symbol/timeframe."""
+        # Use a large enough count to find the broker's typical history depth
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, 99999)
+        if rates is None or len(rates) == 0:
+            logger.error(f"Could not retrieve history depth for {symbol}: {mt5.last_error()}")
+            return None
+        
+        earliest_ts = rates[0]['time']
+        earliest_dt = datetime.fromtimestamp(earliest_ts, tz=timezone.utc)
+        logger.info(f"History depth for {symbol} TF={timeframe}: {earliest_dt}")
+        return earliest_dt
 
     # ── Health monitoring ──────────────────────────────────────────────────────
 
@@ -335,6 +348,16 @@ class MT5DataFeed:
             return None
 
         df = self._to_dataframe(rates)
+        
+        # Validation: Check if returned data starts reasonably close to requested date_from
+        earliest_returned = df['Datetime'].min()
+        if earliest_returned > date_from + timedelta(days=7):
+            logger.error(
+                f"Broker lacks data for requested period for {symbol}. "
+                f"Requested start: {date_from}, Earliest available: {earliest_returned}."
+            )
+            return None
+
         logger.info(
             f"Fetched {len(df)} bars for {symbol} "
             f"({df['Datetime'].iloc[0]} → {df['Datetime'].iloc[-1]})"

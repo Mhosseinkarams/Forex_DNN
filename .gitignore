@@ -1,6 +1,34 @@
 __pycache__/
 *.pyc
 *.h5
+*.keras
+*.ckpt
+*.pb
+*.pkl
+*.joblib
+*.log
+.pytest_cache/
+.ipynb_checkpoints/
+.env
+.venv/
+venv/
+env/
+
+# Generated model-search and training outputs
+output/
+DNN/output/
+ppo_forex_tensorboard/
+runs/
+logs/
+checkpoints/
+models/
+
+# Local/generated data. Keep small documented samples only when intentional.
+Data/*_enriched.csv
+Data/*_preprocessed.csv
+Data/*_pivot.csv
+Data/*.npz
+Data/*.parquet
+
 Data/GBPUSD_1h_enriched.csv
 Data/GBPUSD_1h_pivot.csv
-ppo_forex_tensorboard/

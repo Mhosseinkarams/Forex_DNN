@@ -19,11 +19,11 @@ class SingleInOutPreprocessor:
             sys.path.append(str(self.current_dir))
 
         try:
-            from utils import TechnicalIndicators
-            self.indicators = TechnicalIndicators()
+            from indicators import IndicatorEngine
+            self.engine = IndicatorEngine(dropna=True)
         except ImportError:
-            print("Error: Collecting_Data/utils.py not found.")
-            self.indicators = None
+            print("Error: Collecting_Data/indicators.py not found.")
+            self.engine = None
 
     def preprocess(self, filename="GBPUSD_1h.csv"):
         input_file = self.data_dir / filename
@@ -37,11 +37,16 @@ class SingleInOutPreprocessor:
         if 'Volume' in df.columns and 'Vol' not in df.columns:
             df.rename(columns={'Volume': 'Vol'}, inplace=True)
 
-        cols = ['Open', 'High', 'Low', 'Close', 'Vol']
+        cols = ['Open', 'High', 'Low', 'Close', 'Vol', 'TickVolume', 'Spread']
         df = df[[c for c in cols if c in df.columns]]
+        
+        if 'TickVolume' not in df.columns and 'Vol' in df.columns:
+            df['TickVolume'] = df['Vol']
+        if 'Spread' not in df.columns:
+            df['Spread'] = 0
 
-        if self.indicators:
-            df = self.indicators.add_all_indicators(df)
+        if self.engine:
+            df = self.engine.calculate(df)
 
         # Price change for labeling
         df['Price_Change'] = df['Close'].shift(-1) - df['Close']

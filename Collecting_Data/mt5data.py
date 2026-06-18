@@ -35,16 +35,16 @@ class MT5DataLoader:
         # Ensure Data directory exists
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        # Add current dir to sys.path for utils
+        # Add current dir to sys.path for indicators
         if str(current_dir) not in sys.path:
             sys.path.append(str(current_dir))
 
         try:
-            from utils import TechnicalIndicators
-            self.indicators = TechnicalIndicators()
+            from indicators import IndicatorEngine
+            self.engine = IndicatorEngine(dropna=True)
         except ImportError:
-            print("Warning: TechnicalIndicators not found. Indicators will not be added.")
-            self.indicators = None
+            print("Warning: IndicatorEngine not found. Indicators will not be added.")
+            self.engine = None
 
     def initialize(self):
         """Initializes connection to MT5 terminal with provided credentials."""
@@ -128,48 +128,32 @@ class MT5DataLoader:
             'close': 'Close',
             'tick_volume': 'Vol'
         }, inplace=True)
+        
+        # Standardize for IndicatorEngine
+        df['TickVolume'] = df['Vol']
+        df['Spread'] = 0 # Placeholder
 
-    # Fetch the latest tick for current Ask and Bid prices
-    last_tick = mt5.symbol_info_tick(symbol)
-    if last_tick is None:
-        print(f"Failed to fetch latest tick for {symbol}, error code:", mt5.last_error())
-    else:
-        # Add Ask and Bid to the entire dataframe (representing the current market state)
-        df['Ask'] = last_tick.ask
-        df['Bid'] = last_tick.bid
-        # Spread in points
-        df['Current_Spread'] = last_tick.spread
-        print(f"Current Ask: {last_tick.ask}, Bid: {last_tick.bid}, Spread: {last_tick.spread}")
+        # Fetch the latest tick for current Ask and Bid prices
+        last_tick = mt5.symbol_info_tick(symbol)
+        if last_tick is not None:
+            # Add Ask and Bid to the entire dataframe (representing the current market state)
+            df['Ask'] = last_tick.ask
+            df['Bid'] = last_tick.bid
+            # Spread in points
+            df['Current_Spread'] = last_tick.spread
+            df['Spread'] = last_tick.spread
+            print(f"Current Ask: {last_tick.ask}, Bid: {last_tick.bid}, Spread: {last_tick.spread}")
+        
+        if self.engine:
+            df = self.engine.calculate(df)
 
         return df
 
-while True:
-    print(f"Attempting to fetch data at {time.ctime()}...")
-    if initialize_mt5():
-        # Configuration
-        symbol = "GBPUSD"
-        timeframe = mt5.TIMEFRAME_H1
-        output_file = data_dir / 'GBPUSD_1h_2.csv'
-
-        data = get_data(symbol, timeframe)
-
-        if data is not None:
-            # Add technical indicators from utils.py
-            data = add_technical_indicators(data)
-
-            # Save the DataFrame as a .csv file
-            data.to_csv(output_file, index=False)
-            print(f"******************* Successfully updated {output_file} *******************")
-
-        # Shutdown connection until next iteration
-        mt5.shutdown()
-    else:
-        print("MT5 Initialization failed. Retrying in next cycle.")
-
-            print(f"Waiting {interval} seconds...")
-            time.sleep(interval)
-
 if __name__ == "__main__":
     loader = MT5DataLoader()
-    print("MT5DataLoader initialized with user corrections.")
-    # To run the loop: loader.run_update_loop()
+    if loader.initialize():
+        df = loader.get_historical_data()
+        if df is not None:
+            print("Fetched and enriched data sample:")
+            print(df.head())
+        mt5.shutdown()

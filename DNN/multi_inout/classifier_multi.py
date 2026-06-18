@@ -47,8 +47,10 @@ class MultiLSTMClassifier:
         data = pd.read_csv(data_file)
 
         sys.path.append(str(self.base_path / "Collecting_Data"))
-        from utils import TechnicalIndicators
-        data = TechnicalIndicators.add_all_indicators(data)
+        from indicators import IndicatorEngine
+        if 'TickVolume' not in data.columns: data['TickVolume'] = data['Vol'] if 'Vol' in data.columns else 0
+        if 'Spread' not in data.columns: data['Spread'] = 0
+        data = IndicatorEngine(dropna=True).calculate(data)
 
         feature_cols = [c for c in data.columns if c not in ['DTYYYYMMDD', '<Time>', 'Datetime', 'Classification', 'Binary_Label', 'Multi_Label', 'Pivot_Label', 'Price_Change', 'Peak', 'Trough']]
         self.num_features = len(feature_cols)

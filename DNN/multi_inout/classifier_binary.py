@@ -44,11 +44,20 @@ class BinaryLSTMClassifier:
             return None, None
 
         data = pd.read_csv(data_file)
+        
+        # Standardize columns for IndicatorEngine
+        if 'Volume' in data.columns and 'Vol' not in data.columns:
+            data.rename(columns={'Volume': 'Vol'}, inplace=True)
+        if 'TickVolume' not in data.columns and 'Vol' in data.columns:
+            data['TickVolume'] = data['Vol']
+        if 'Spread' not in data.columns:
+            data['Spread'] = 0
 
-        # Add indicators (assumes Collecting_Data/utils.py is available)
+        # Add indicators (assumes Collecting_Data/indicators.py is available)
         sys.path.append(str(self.base_path / "Collecting_Data"))
-        from utils import TechnicalIndicators
-        data = TechnicalIndicators.add_all_indicators(data)
+        from indicators import IndicatorEngine
+        engine = IndicatorEngine(dropna=True)
+        data = engine.calculate(data)
 
         feature_cols = [c for c in data.columns if c not in ['DTYYYYMMDD', '<Time>', 'Datetime', 'Classification', 'Binary_Label', 'Multi_Label', 'Pivot_Label', 'Price_Change', 'Peak', 'Trough']]
         self.num_features = len(feature_cols)

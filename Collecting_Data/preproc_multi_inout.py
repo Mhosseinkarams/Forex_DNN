@@ -20,10 +20,10 @@ class MultiInOutPreprocessor:
             sys.path.append(str(self.current_dir))
 
         try:
-            from utils import TechnicalIndicators
-            self.indicators = TechnicalIndicators()
+            from indicators import IndicatorEngine
+            self.engine = IndicatorEngine(dropna=True)
         except ImportError:
-            self.indicators = None
+            self.engine = None
 
     def preprocess(self, filename="GBPUSD_1h.csv", num_input_candles=100, num_output_candles=5):
         input_file = self.data_dir / filename
@@ -32,8 +32,17 @@ class MultiInOutPreprocessor:
             return None, None
 
         df = pd.read_csv(input_file)
-        if self.indicators:
-            df = self.indicators.add_all_indicators(df)
+        
+        # Standardize columns for IndicatorEngine
+        if 'Volume' in df.columns and 'Vol' not in df.columns:
+            df.rename(columns={'Volume': 'Vol'}, inplace=True)
+        if 'TickVolume' not in df.columns and 'Vol' in df.columns:
+            df['TickVolume'] = df['Vol']
+        if 'Spread' not in df.columns:
+            df['Spread'] = 0
+
+        if self.engine:
+            df = self.engine.calculate(df)
 
         input_data = []
         output_data = []

@@ -15,16 +15,16 @@ class PivotPreprocessor:
         self.project_root = self.current_dir.parent
         self.data_dir = self.project_root / "Data"
 
-        # Ensure Colecting_Data is in path for utils import
+        # Ensure Collecting_Data is in path for indicators import
         if str(self.current_dir) not in sys.path:
             sys.path.append(str(self.current_dir))
             
         try:
-            from utils import TechnicalIndicators
-            self.indicators = TechnicalIndicators()
+            from indicators import IndicatorEngine
+            self.engine = IndicatorEngine(dropna=True)
         except ImportError:
-            print("Warning: TechnicalIndicators not found in utils.py")
-            self.indicators = None
+            print("Warning: IndicatorEngine not found in indicators.py")
+            self.engine = None
 
     def get_pivots(self, df, window=24):
         close = df['Close'].values
@@ -68,9 +68,13 @@ class PivotPreprocessor:
         df = pd.read_csv(input_file)
         if 'Volume' in df.columns and 'Vol' not in df.columns:
             df.rename(columns={'Volume': 'Vol'}, inplace=True)
+        if 'TickVolume' not in df.columns and 'Vol' in df.columns:
+            df['TickVolume'] = df['Vol']
+        if 'Spread' not in df.columns:
+            df['Spread'] = 0
 
-        if self.indicators:
-            df = self.indicators.add_all_indicators(df)
+        if self.engine:
+            df = self.engine.calculate(df)
 
         df = self.get_pivots(df, window=window)
         df = self.label_pivots(df, horizon=horizon)
