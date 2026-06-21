@@ -141,9 +141,6 @@ if __name__ == "__main__":
     import pandas as pd 
     import numpy as np 
  
-    # Set up basic logging to see output
-    logging.basicConfig(level=logging.INFO)
-
     # Synthetic test: verifies columns are produced and 
     # types are correct. Not a strategy test. 
     n = 700  # sufficient to warm EMA 600 
