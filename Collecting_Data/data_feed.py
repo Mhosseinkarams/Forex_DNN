@@ -81,10 +81,10 @@ class MT5DataFeed:
     """
 
     def __init__(self, login: int = None, password: str = None, server: str = None):
-        creds = load_credentials()
-        self.login    = login    or creds["login"]
-        self.password = password or creds["password"]
-        self.server   = server   or creds["server"]
+        creds = load_credentials(path="..\credentials.json")
+        self.login    = creds["login"]
+        self.password =  creds["password"]
+        self.server   =  creds["server"]
 
         self._health  = FeedHealth.DISCONNECTED
         self._connected = False
@@ -99,7 +99,7 @@ class MT5DataFeed:
             self._connected = False
             return False
 
-        logger.info(f"MT5 connected — {mt5.terminal_info().name} / {mt5.version()}")
+        logger.info(f"MT5 connected — {mt5.terminal_info()} / {mt5.version()}")
         self._connected = True
         self._health = FeedHealth.HEALTHY
         return True
