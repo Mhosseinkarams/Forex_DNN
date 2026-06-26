@@ -9,12 +9,10 @@ from pathlib import Path
 import sys
 import os
 
-# Try to load environment variables from .env
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    from auth import load_credentials
 except ImportError:
-    pass
+    from Collecting_Data.auth import load_credentials
 
 class MT5DataLoader:
     """
@@ -23,10 +21,13 @@ class MT5DataLoader:
     """
 
     def __init__(self, mt5_id=None, password=None, server=None):
-        # Use provided parameters or fall back to environment variables
-        self.mt5_id = int(mt5_id or os.getenv("MT5_ID", 0))
-        self.password = password or os.getenv("MT5_PASSWORD", "")
-        self.server = server or os.getenv("MT5_SERVER", "")
+        # Load credentials from auth utility
+        creds = load_credentials()
+
+        # Use provided parameters or fall back to credentials loader
+        self.mt5_id = int(mt5_id or creds["login"])
+        self.password = password or creds["password"]
+        self.server = server or creds["server"]
 
         current_dir = Path(__file__).resolve().parent
         self.project_root = current_dir.parent

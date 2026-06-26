@@ -14,21 +14,18 @@ __pycache__/
 venv/
 env/
 
-# Generated model-search and training outputs
+# Credentials
+credentials.json
+
+# Data files
+*.csv
+Data/
 output/
 DNN/output/
+
+# Generated model-search and training outputs
 ppo_forex_tensorboard/
 runs/
 logs/
 checkpoints/
 models/
-
-# Local/generated data. Keep small documented samples only when intentional.
-Data/*_enriched.csv
-Data/*_preprocessed.csv
-Data/*_pivot.csv
-Data/*.npz
-Data/*.parquet
-
-Data/GBPUSD_1h_enriched.csv
-Data/GBPUSD_1h_pivot.csv

@@ -32,10 +32,9 @@ import numpy as np
 import pandas as pd
 
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    from auth import load_credentials
 except ImportError:
-    pass
+    from Collecting_Data.auth import load_credentials
 
 import os
 
@@ -82,9 +81,10 @@ class MT5DataFeed:
     """
 
     def __init__(self, login: int = None, password: str = None, server: str = None):
-        self.login    = login    or int(os.getenv("MT5_ID", 0))
-        self.password = password or os.getenv("MT5_PASSWORD", "")
-        self.server   = server   or os.getenv("MT5_SERVER", "")
+        creds = load_credentials()
+        self.login    = login    or creds["login"]
+        self.password = password or creds["password"]
+        self.server   = server   or creds["server"]
 
         self._health  = FeedHealth.DISCONNECTED
         self._connected = False
