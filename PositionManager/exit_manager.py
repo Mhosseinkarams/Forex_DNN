@@ -47,11 +47,13 @@ class ExitManager:
         position_manager,
         poll_interval_seconds: float = 1.0,
         state_file: str = "exit_manager_state.json",
+        trading_journal = None,
     ):
         self.position_tracker = position_tracker
         self.position_manager = position_manager
         self.poll_interval_seconds = poll_interval_seconds
         self.state_file = state_file
+        self.trading_journal = trading_journal
         
         self.tracked_tickets = {}  # ticket -> state dict
         self._lock = threading.Lock()
@@ -163,6 +165,31 @@ class ExitManager:
         else:
             logger.warning(f"Ticket {ticket} disappeared via unexpected closure ({label}). Possible manual intervention, EA conflict, or desync.")
 
+        # Journal Hook
+        state = self.tracked_tickets.get(ticket)
+        if state and self.trading_journal and state.get("signal_id"):
+            try:
+                pnl = 0.0
+                deals = mt5.history_deals_get(position=ticket)
+                if deals:
+                    pnl = sum(d.profit for d in deals)
+                
+                duration = 0
+                if state.get("open_time"):
+                    ot = datetime.fromisoformat(state["open_time"])
+                    duration = int((datetime.now(timezone.utc) - ot).total_seconds())
+
+                self.trading_journal.log_outcome(
+                    signal_id=state["signal_id"],
+                    ticket=ticket,
+                    outcome=label,
+                    close_price=0.0, # Will be 0 if we can't find it easily from disappeared
+                    pnl_dollars=pnl,
+                    duration_seconds=duration
+                )
+            except Exception as e:
+                logger.error(f"Failed to log outcome for disappeared ticket {ticket}: {e}")
+
         with self._lock:
             if ticket in self.tracked_tickets:
                 del self.tracked_tickets[ticket]
@@ -226,6 +253,17 @@ class ExitManager:
                     logger.error(f"Failed to execute partial close for ticket {ticket} at stage {next_stage}")
                     return
 
+                # Journal Hook
+                if self.trading_journal and state.get("signal_id"):
+                    self.trading_journal.log_partial_close(
+                        signal_id=state["signal_id"],
+                        ticket=ticket,
+                        stage_reached=next_stage,
+                        closed_volume=vol,
+                        close_price=current_price,
+                        new_sl=state["entry_price"] if next_stage == 1 else state["tp_prices"][next_stage - 1]
+                    )
+
                 # Move SL
                 new_sl = state["entry_price"] if next_stage == 1 else state["tp_prices"][next_stage - 1]
                 mod_res = self.position_manager.modify_position(ticket, sl_price=new_sl)
@@ -277,6 +315,34 @@ class ExitManager:
                 logger.error(f"Failed to execute final close for ticket {ticket}")
 
     def _finalize_ticket(self, ticket: int):
+        state = self.tracked_tickets.get(ticket)
+        if state and self.trading_journal and state.get("signal_id"):
+            try:
+                pnl = 0.0
+                deals = mt5.history_deals_get(position=ticket)
+                if deals:
+                    pnl = sum(d.profit for d in deals)
+                
+                duration = 0
+                if state.get("open_time"):
+                    ot = datetime.fromisoformat(state["open_time"])
+                    duration = int((datetime.now(timezone.utc) - ot).total_seconds())
+                
+                # Get outcome label
+                next_stage = state.get("current_stage_reached", 0) + 1
+                outcome_label = f"tp{next_stage}"
+
+                self.trading_journal.log_outcome(
+                    signal_id=state["signal_id"],
+                    ticket=ticket,
+                    outcome=outcome_label,
+                    close_price=0.0, # Handled by journal context for routing
+                    pnl_dollars=pnl,
+                    duration_seconds=duration
+                )
+            except Exception as e:
+                logger.error(f"Failed to log outcome for ticket {ticket}: {e}")
+
         with self._lock:
             if ticket in self.tracked_tickets:
                 self.tracked_tickets[ticket]["closed"] = True
@@ -294,6 +360,7 @@ class ExitManager:
         direction: int,       # 1 = buy, -1 = sell
         stage: str,           # "single" or "multi"
         final_tp: int,        # 1, 2, 3, or 4
+        signal_id: str = None,
     ) -> None:
         """
         Registers an open position for exit management.
@@ -312,6 +379,8 @@ class ExitManager:
             }
 
             self.tracked_tickets[ticket] = {
+                "signal_id": signal_id,
+                "open_time": datetime.now(timezone.utc).isoformat(),
                 "entry_price": float(entry_price),
                 "sl_price_original": float(sl_price),
                 "direction": int(direction),

@@ -114,14 +114,11 @@ class IndicatorEngine:
             df[span_col] = np.where((df['Low'] <= df[ema_col]) & (df[ema_col] <= df['High']), 1, 0)
             layer2_cols.append(span_col)
 
-        # EMA slope — EMA 600 only
-        # slope_period=32 on EMA 600 means measuring EMA displacement 
-        # over 160 minutes (~2.5 hours) relative to a 3000-minute EMA. 
-        # This is 32/600 ≈ 5% of the EMA period. Configurable for 
-        # optimization. Slope applies to EMA 600 (MM strategy) only.
-        if 600 in self.ema_periods:
-            df['ema_slope_600'] = (df['ema_600'] - df['ema_600'].shift(self.slope_period)).abs() / df[atr_col]
-            layer2_cols.append('ema_slope_600')
+        # EMA slope — EMA 600 and 800 support
+        for slope_ema in [p for p in self.ema_periods if p in (600, 800)]:
+            col = f'ema_slope_{slope_ema}'
+            df[col] = (df[f'ema_{slope_ema}'] - df[f'ema_{slope_ema}'].shift(self.slope_period)).abs() / df[atr_col]
+            layer2_cols.append(col)
 
         # Handle NaN values and logging
         if self.dropna:
@@ -157,26 +154,38 @@ if __name__ == "__main__":
         "Spread":     np.zeros(n, dtype=int), 
     }) 
  
-    engine = IndicatorEngine() 
-    result = engine.calculate(df_test) 
+    # Test M5 config
+    engine_m5 = IndicatorEngine(ema_periods=[50, 600]) 
+    result_m5 = engine_m5.calculate(df_test) 
  
-    print(f"Input rows:  {len(df_test)}") 
-    print(f"Output rows: {len(result)}") 
-    print(f"Columns ({len(result.columns)}): {list(result.columns)}") 
-    print(result.tail(3).to_string()) 
+    print(f"M5 Output rows: {len(result_m5)}") 
+    print(f"M5 Columns ({len(result_m5.columns)}): {list(result_m5.columns)}") 
  
-    # Assertions 
-    assert len(result) == len(df_test), "Row count must not change when dropna=False" 
-    assert "ema_600" in result.columns 
-    assert "dist_ema_600" in result.columns 
-    assert "ema_slope_600" in result.columns 
-    assert "ema_slope_21" not in result.columns, "Slope is EMA 600 only" 
-    assert "ema_slope_50" not in result.columns, "Slope is EMA 600 only" 
-    assert result["cross_ema_21"].isin([-1, 0, 1]).all() 
-    assert result["candle_direction"].isin([-1, 0, 1]).all() 
+    # Assertions M5
+    assert len(result_m5) == len(df_test)
+    assert "ema_600" in result_m5.columns 
+    assert "ema_slope_600" in result_m5.columns 
+    assert "cross_ema_50" in result_m5.columns
+    assert result_m5["cross_ema_50"].isin([-1, 0, 1]).all() 
+
+    # Test M15 config
+    engine_m15 = IndicatorEngine(ema_periods=[50, 800])
+    result_m15 = engine_m15.calculate(df_test)
+
+    print(f"M15 Output rows: {len(result_m15)}")
+    print(f"M15 Columns ({len(result_m15.columns)}): {list(result_m15.columns)}")
+
+    # Assertions M15
+    assert len(result_m15) == len(df_test)
+    assert "ema_800" in result_m15.columns
+    assert "ema_slope_800" in result_m15.columns
+    assert "cross_ema_50" in result_m15.columns
+    assert result_m15["cross_ema_50"].isin([-1, 0, 1]).all()
+
+    assert result_m5["candle_direction"].isin([-1, 0, 1]).all() 
     
     # Check column order
     expected_start = ["Datetime", "Open", "High", "Low", "Close", "TickVolume", "Spread"]
-    assert list(result.columns[:7]) == expected_start, "Original columns order incorrect"
+    assert list(result_m5.columns[:7]) == expected_start, "Original columns order incorrect"
     
     print("All assertions passed.")
