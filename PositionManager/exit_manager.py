@@ -6,6 +6,38 @@ import math
 from datetime import datetime, timezone
 import MetaTrader5 as mt5
 
+# Constants for when MetaTrader5 is not installed (e.g. during local testing),
+# matching the fallback convention already used in position_manager.py
+if not hasattr(mt5, "DEAL_REASON_CLIENT"):
+    DEAL_REASON_CLIENT = 0
+    DEAL_REASON_MOBILE = 1
+    DEAL_REASON_WEB = 2
+    DEAL_REASON_EXPERT = 3
+    DEAL_REASON_SL = 4
+    DEAL_REASON_TP = 5
+    DEAL_REASON_SO = 6
+else:
+    DEAL_REASON_CLIENT = mt5.DEAL_REASON_CLIENT
+    DEAL_REASON_MOBILE = mt5.DEAL_REASON_MOBILE
+    DEAL_REASON_WEB = mt5.DEAL_REASON_WEB
+    DEAL_REASON_EXPERT = mt5.DEAL_REASON_EXPERT
+    DEAL_REASON_SL = mt5.DEAL_REASON_SL
+    DEAL_REASON_TP = mt5.DEAL_REASON_TP
+    DEAL_REASON_SO = mt5.DEAL_REASON_SO
+
+# Reasons that represent an expected, broker-driven closure (no human/bot action needed)
+EXPECTED_CLOSE_REASONS = {DEAL_REASON_SL, DEAL_REASON_TP, DEAL_REASON_SO}
+
+REASON_LABELS = {
+    DEAL_REASON_CLIENT: "manual_client",
+    DEAL_REASON_MOBILE: "manual_mobile",
+    DEAL_REASON_WEB: "manual_web",
+    DEAL_REASON_EXPERT: "expert_advisor",
+    DEAL_REASON_SL: "stop_loss",
+    DEAL_REASON_TP: "take_profit",
+    DEAL_REASON_SO: "stop_out",
+}
+
 logger = logging.getLogger("ExitManager")
 
 class ExitManager:
@@ -103,10 +135,7 @@ class ExitManager:
                 continue
 
             if ticket not in live_tickets:
-                logger.warning(f"Tracked ticket {ticket} disappeared unexpectedly from tracker.")
-                with self._lock:
-                    del self.tracked_tickets[ticket]
-                self._save_state()
+                self._handle_disappeared_ticket(ticket)
                 continue
 
             # Initialization if needed
@@ -118,6 +147,48 @@ class ExitManager:
 
             self._evaluate_ticket(ticket, live_tickets[ticket])
 
+    def _handle_disappeared_ticket(self, ticket: int) -> None:
+        """
+        Called when a tracked ticket is no longer present among live positions.
+        Classifies the closure as expected (broker-native SL/TP/stop-out) or
+        genuinely unexpected (manual/external/EA closure, desync), and logs
+        accordingly before removing it from active tracking.
+        """
+        label, reason_code = self._get_close_reason(ticket)
+
+        if reason_code in EXPECTED_CLOSE_REASONS:
+            logger.info(f"Ticket {ticket} closed by broker ({label}). Removing from active tracking.")
+        elif reason_code is None:
+            logger.warning(f"Ticket {ticket} disappeared from tracker; close reason could not be determined ({label}).")
+        else:
+            logger.warning(f"Ticket {ticket} disappeared via unexpected closure ({label}). Possible manual intervention, EA conflict, or desync.")
+
+        with self._lock:
+            if ticket in self.tracked_tickets:
+                del self.tracked_tickets[ticket]
+        self._save_state()
+
+    def _get_close_reason(self, ticket: int):
+        """
+        Looks up the most recent closing deal for a position ticket via MT5
+        deal history. Returns (label: str, reason_code: int | None).
+        reason_code is None when no deal history could be retrieved, in which
+        case the closure cannot be classified and should be treated cautiously.
+        """
+        try:
+            deals = mt5.history_deals_get(position=ticket)
+        except Exception as e:
+            logger.error(f"Failed to query deal history for ticket {ticket}: {e}")
+            return ("query_failed", None)
+
+        if not deals:
+            return ("no_deal_history", None)
+
+        last_deal = max(deals, key=lambda d: d.time)
+        reason_code = last_deal.reason
+        label = REASON_LABELS.get(reason_code, f"unknown_reason_{reason_code}")
+        return (label, reason_code)
+
     def _evaluate_ticket(self, ticket: int, live_pos: dict):
         """
         Evaluates TP/SL logic for a single ticket.
@@ -127,11 +198,11 @@ class ExitManager:
         direction = state["direction"]
         
         if state["stage"] == "multi":
-            self._handle_multi_stage(ticket, current_price, live_pos["lot_size"])
+            self._handle_multi_stage(ticket, current_price)
         else:
             self._handle_single_stage(ticket, current_price)
 
-    def _handle_multi_stage(self, ticket: int, current_price: float, live_lot: float):
+    def _handle_multi_stage(self, ticket: int, current_price: float):
         state = self.tracked_tickets[ticket]
         next_stage = state["current_stage_reached"] + 1
         
