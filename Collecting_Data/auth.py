@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 
-def load_credentials(path="..\credentials.json"):
+def load_credentials(path="credentials.json"):
     """
     Loads MT5 credentials from credentials.json or environment variables.
     Returns a dictionary with 'login', 'password', and 'server'.

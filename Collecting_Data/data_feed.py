@@ -81,7 +81,7 @@ class MT5DataFeed:
     """
 
     def __init__(self, login: int = None, password: str = None, server: str = None):
-        creds = load_credentials(path="..\credentials.json")
+        creds = load_credentials(path="credentials.json")
         self.login    = creds["login"]
         self.password =  creds["password"]
         self.server   =  creds["server"]
@@ -247,6 +247,26 @@ class MT5DataFeed:
         return False
 
     # ── Data retrieval ─────────────────────────────────────────────────────────
+
+    def get_ohlcv(self, symbol: str, timeframe_str: str, count: int = 1000) -> pd.DataFrame | None:
+        """
+        Wrapper for MMStrategy to retrieve OHLCV data using string timeframe names.
+        """
+        mapping = {
+            "M1": mt5.TIMEFRAME_M1,
+            "M5": mt5.TIMEFRAME_M5,
+            "M15": mt5.TIMEFRAME_M15,
+            "M30": mt5.TIMEFRAME_M30,
+            "H1": mt5.TIMEFRAME_H1,
+            "H4": mt5.TIMEFRAME_H4,
+            "D1": mt5.TIMEFRAME_D1,
+        }
+        tf = mapping.get(timeframe_str)
+        if tf is None:
+            logger.error(f"Invalid timeframe string: {timeframe_str}")
+            return None
+
+        return self.get_data(symbol, tf, live=True, count=count)
 
     def get_data(
         self,
