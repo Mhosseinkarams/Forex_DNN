@@ -187,7 +187,8 @@ class SendOrder:
                     sl_price=actual_sl,
                     direction=direction,
                     stage=stage,
-                    final_tp=tp_level
+                    final_tp=tp_level,
+                    signal_id=signal_id
                 )
                 logger.info(f"Registered ticket {ticket} with ExitManager")
             except Exception as e:
