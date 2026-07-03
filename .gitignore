@@ -32,3 +32,11 @@ models/
 Validation_Report/State/dm_state.json
 Validation_Report/State/mm_state.json
 Validation_Report/State/pt_state.json
+State/drawdown_state.json
+State/mm_strategy_state.json
+State/position_tracker_state.json
+Validation_Report/State/dm_state.json
+Validation_Report/State/dm_state.json
+Validation_Report/State/mm_state.json
+Validation_Report/State/pt_state.json
+Validation_Report/State/dm_state.json
