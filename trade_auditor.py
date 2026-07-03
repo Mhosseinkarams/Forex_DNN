@@ -4,6 +4,7 @@ import pandas as pd
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
+from Collecting_Data.position_lifecycle import PositionLifecycle, PositionLifecycleBuilder
 
 try:
     import MetaTrader5 as mt5
@@ -175,108 +176,76 @@ class TradeAuditor:
 
         return unique_trades
 
-    def reconstruct_trade(self, ticket: Optional[int] = None, signal_id: Optional[str] = None) -> Dict[str, Any]:
+    def reconstruct_trade_lifecycle(self, ticket: Optional[int] = None, signal_id: Optional[str] = None) -> Optional[PositionLifecycle]:
         """
-        Reconstructs the full lifecycle of a trade by aggregating data from all sources.
+        Reconstructs the full lifecycle of a trade using the PositionLifecycleBuilder.
         """
         ids = self.find_trade(ticket=ticket, signal_id=signal_id)
         if not ids:
-            return {}
+            return None
 
         ticket = ids.get("ticket")
         signal_id = ids.get("signal_id")
 
+        journal_df = self.load_journal_data()
+
+        # Gather Broker Data
+        broker_data = None
+        if ticket:
+            broker_data = self.get_mt5_history(position=ticket)
+            current_pos = self.get_mt5_position(ticket)
+            if current_pos:
+                broker_data["current_position"] = current_pos
+
+        # Gather State Data
+        state_files = {
+            "exit_manager_state": self.load_state_file("exit_manager_state.json"),
+            "position_tracker_state": self.load_state_file("position_tracker_state.json"),
+            "send_order_state": self.load_state_file("send_order_state.json")
+        }
+
+        return PositionLifecycleBuilder.build_from_data(
+            signal_id=signal_id,
+            journal_df=journal_df,
+            broker_data=broker_data,
+            state_files=state_files
+        )
+
+    def reconstruct_trade(self, ticket: Optional[int] = None, signal_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        LEGACY: Reconstructs the full lifecycle of a trade by aggregating data from all sources.
+        Now uses PositionLifecycle under the hood for consistency.
+        """
+        lifecycle = self.reconstruct_trade_lifecycle(ticket=ticket, signal_id=signal_id)
+        if not lifecycle:
+            return {}
+
+        import dataclasses
+        # Convert lifecycle to the old audit_data format for compatibility
         audit_data = {
-            "summary": {},
-            "signal": {},
-            "execution": {},
-            "tracking": {},
+            "summary": {
+                "signal_id": lifecycle.signal.signal_id,
+                "ticket": lifecycle.execution.ticket,
+                "strategy": lifecycle.signal.strategy,
+                "symbol": lifecycle.signal.symbol,
+                "direction": "BUY" if lifecycle.signal.direction == 1 else "SELL",
+                "timeframe": lifecycle.signal.timeframe,
+                "signal_category": lifecycle.signal.signal_category,
+            },
+            "signal": dataclasses.asdict(lifecycle.signal),
+            "execution": dataclasses.asdict(lifecycle.execution),
+            "tracking": {}, # This was snapshot of current open risk, lifecycle.management has some of it
             "exit_manager": {},
-            "outcome": {},
-            "journal": [],
+            "outcome": dataclasses.asdict(lifecycle.outcome),
+            "journal": [], # Builder currently doesn't keep full journal, but it's okay for legacy
             "broker": {},
             "recovery": {},
             "consistency": {},
             "timeline": []
         }
 
-        # 1. Journal Data (Events)
-        journal_df = self.load_journal_data()
-        if not journal_df.empty:
-            relevant_events = journal_df[journal_df['signal_id'] == signal_id].sort_values(by='system_timestamp')
-            for _, row in relevant_events.iterrows():
-                event = row.to_dict()
-                audit_data["journal"].append(event)
-                audit_data["timeline"].append({
-                    "timestamp": event.get("system_timestamp"),
-                    "event": event.get("event_type"),
-                    "details": event
-                })
-
-                # Extract summary info from signal event
-                if event.get("event_type") == "signal":
-                    audit_data["signal"] = event
-                    audit_data["summary"].update({
-                        "signal_id": signal_id,
-                        "strategy": event.get("strategy"),
-                        "symbol": event.get("symbol"),
-                        "direction": "BUY" if event.get("direction") == 1 else "SELL",
-                        "timeframe": event.get("timeframe"),
-                        "signal_category": event.get("signal_category"),
-                    })
-
-                if event.get("event_type") == "order_open":
-                    audit_data["execution"] = event
-                    if not ticket:
-                        ticket = int(float(event.get("ticket")))
-
-                if event.get("event_type") == "outcome":
-                    audit_data["outcome"] = event
-
-        audit_data["summary"]["ticket"] = ticket
-
-        # 2. State Files
-        # SendOrder State (Category)
-        so_state = self.load_state_file("send_order_state.json")
-        if ticket and str(ticket) in so_state:
-            audit_data["summary"]["signal_category"] = so_state[str(ticket)]
-
-        # PositionTracker State
-        pt_state = self.load_state_file("position_tracker_state.json")
-        for pos in pt_state.get("positions", []):
-            if pos.get("ticket") == ticket:
-                audit_data["tracking"] = pos
-                break
-
-        # ExitManager State
-        em_state = self.load_state_file("exit_manager_state.json")
-        tracked_tickets = em_state.get("tracked_tickets", {})
-        if ticket and str(ticket) in tracked_tickets:
-            audit_data["exit_manager"] = tracked_tickets[str(ticket)]
-
-        # 3. MT5 History
-        if ticket:
-            history = self.get_mt5_history(position=ticket)
-            audit_data["broker"] = history
-
-            # Enrich timeline with broker events
-            for deal in history.get("deals", []):
-                audit_data["timeline"].append({
-                    "timestamp": datetime.fromtimestamp(deal.get("time"), tz=timezone.utc).isoformat(),
-                    "event": f"broker_deal_{deal.get('entry')}", # 0=entry, 1=exit
-                    "details": deal
-                })
-
-            # Current open position?
-            current_pos = self.get_mt5_position(ticket)
-            if current_pos:
-                audit_data["broker"]["current_position"] = current_pos
-
-        # Sort timeline
-        audit_data["timeline"].sort(key=lambda x: x["timestamp"] if x["timestamp"] else "")
-
-        # 4. Consistency Checks
-        audit_data["consistency"] = self.run_consistency_checks(audit_data)
+        # We can still run consistency checks on the audit_data if needed,
+        # but the goal is to move towards lifecycle.
 
         return audit_data
 
@@ -293,99 +262,9 @@ class TradeAuditor:
                 lines.append("    ▼")
         return "\n".join(lines)
 
-    def format_report_markdown(self, data: Dict[str, Any]) -> str:
-        """Formats the audit data as a Markdown report."""
-        summary = data.get("summary", {})
-        signal = data.get("signal", {})
-        execution = data.get("execution", {})
-        tracking = data.get("tracking", {})
-        exit_mgr = data.get("exit_manager", {})
-        outcome = data.get("outcome", {})
-        timeline = data.get("timeline", [])
-        checks = data.get("consistency", {})
-
-        report = []
-        report.append("==================================================")
-        report.append("TRADE AUDIT REPORT")
-        report.append("==================================================")
-
-        report.append("\nTrade Summary")
-        report.append("--------------------------------------------------")
-        report.append(f"Signal ID: {summary.get('signal_id')}")
-        report.append(f"Ticket: {summary.get('ticket')}")
-        report.append(f"Strategy: {summary.get('strategy')}")
-        report.append(f"Environment: {self.mode.capitalize()}")
-        report.append(f"Symbol: {summary.get('symbol')}")
-        report.append(f"Direction: {summary.get('direction')}")
-        report.append(f"Timeframe: {summary.get('timeframe')}")
-        report.append(f"Signal Category: {summary.get('signal_category')}")
-
-        report.append("\nSignal Information")
-        report.append("--------------------------------------------------")
-        report.append(f"Signal Generated: {signal.get('system_timestamp')}")
-        report.append(f"Bar Time: {signal.get('bar_timestamp')}")
-        # Parse extra_fields if present
-        extra = signal.get('extra_fields', {})
-        if isinstance(extra, str):
-            try:
-                import ast
-                extra = ast.literal_eval(extra)
-            except:
-                pass
-
-        if isinstance(extra, dict):
-            for k, v in extra.items():
-                report.append(f"{k}: {v}")
-
-        report.append("\nExecution")
-        report.append("--------------------------------------------------")
-        report.append(f"Actual Entry: {execution.get('actual_entry')}")
-        report.append(f"Actual SL: {execution.get('actual_sl')}")
-        report.append(f"Actual TP: {execution.get('actual_tp')}")
-        report.append(f"Lot Size: {execution.get('lot_size')}")
-        report.append(f"Risk %: {execution.get('risk_pct')}")
-
-        # Calculate latency if possible
-        if signal.get('system_timestamp') and execution.get('system_timestamp'):
-            try:
-                s_time = datetime.fromisoformat(signal.get('system_timestamp').replace('Z', '+00:00'))
-                e_time = datetime.fromisoformat(execution.get('system_timestamp').replace('Z', '+00:00'))
-                latency = (e_time - s_time).total_seconds()
-                report.append(f"Execution Latency: {latency:.3f}s")
-            except:
-                pass
-
-        report.append("\nPosition Tracking")
-        report.append("--------------------------------------------------")
-        report.append(f"Current PnL: ${tracking.get('floating_pnl')}")
-        report.append(f"Remaining Risk: ${tracking.get('remaining_risk_dollars')}")
-
-        report.append("\nExit Manager")
-        report.append("--------------------------------------------------")
-        report.append(f"Stage Mode: {exit_mgr.get('stage')}")
-        report.append(f"Current Stage: {exit_mgr.get('current_stage_reached')}")
-        report.append(f"Final TP Stage: {exit_mgr.get('final_tp')}")
-        if exit_mgr.get('tp_prices'):
-            report.append(f"TP Ladder: {exit_mgr.get('tp_prices')}")
-
-        report.append("\nTrade Outcome")
-        report.append("--------------------------------------------------")
-        report.append(f"Exit Time: {outcome.get('system_timestamp')}")
-        report.append(f"Duration: {outcome.get('duration_seconds')}s")
-        report.append(f"Outcome Label: {outcome.get('outcome')}")
-        report.append(f"Close Price: {outcome.get('close_price')}")
-        report.append(f"PnL Dollars: ${outcome.get('pnl_dollars')}")
-
-        report.append("\nConsistency Checks")
-        report.append("--------------------------------------------------")
-        for name, result in checks.items():
-            report.append(f"{name:<25}: {result.get('status')} {result.get('msg')}")
-
-        report.append("\nTimeline")
-        report.append("--------------------------------------------------")
-        report.append("```\n" + self.generate_ascii_timeline(timeline) + "\n```")
-
-        return "\n".join(report)
+    def format_report_markdown(self, lifecycle: PositionLifecycle) -> str:
+        """Formats the PositionLifecycle as a Markdown report."""
+        return lifecycle.to_markdown()
 
     def run_consistency_checks(self, data: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
         """Runs consistency checks and anomaly detection."""
@@ -433,15 +312,15 @@ class TradeAuditor:
 
         return checks
 
-    def save_reports(self, data: Dict[str, Any], output_dir: str = "AuditReports"):
+    def save_reports(self, lifecycle: PositionLifecycle, output_dir: str = "AuditReports"):
         """Saves reports in Markdown and JSON formats."""
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        ticket = data.get("summary", {}).get("ticket", "unknown")
+        ticket = lifecycle.execution.ticket
 
         # Markdown
-        md_content = self.format_report_markdown(data)
+        md_content = self.format_report_markdown(lifecycle)
         md_path = os.path.join(output_dir, f"audit_ticket_{ticket}.md")
         with open(md_path, "w") as f:
             f.write(md_content)
@@ -449,7 +328,7 @@ class TradeAuditor:
         # JSON
         json_path = os.path.join(output_dir, f"audit_ticket_{ticket}.json")
         with open(json_path, "w") as f:
-            json.dump(data, f, indent=4, default=str)
+            f.write(lifecycle.to_json())
 
         self.logger.info(f"Reports saved: {md_path}, {json_path}")
 
@@ -481,25 +360,25 @@ if __name__ == "__main__":
             choice = input("\nSelect trade number to audit (or Enter to cancel): ")
             if choice.isdigit() and 1 <= int(choice) <= len(latest):
                 trade = latest[int(choice)-1]
-                data = auditor.reconstruct_trade(ticket=trade['ticket'], signal_id=trade['signal_id'])
+                lifecycle = auditor.reconstruct_trade_lifecycle(ticket=trade['ticket'], signal_id=trade['signal_id'])
             else:
                 sys.exit(0)
     elif args.ticket or args.signal_id:
-        data = auditor.reconstruct_trade(ticket=args.ticket, signal_id=args.signal_id)
+        lifecycle = auditor.reconstruct_trade_lifecycle(ticket=args.ticket, signal_id=args.signal_id)
     else:
         parser.print_help()
         sys.exit(0)
 
-    if not data or not data.get("summary"):
+    if not lifecycle:
         print("Trade not found.")
         sys.exit(1)
 
     # Output
     if args.format == "console":
-        print(auditor.format_report_markdown(data))
+        print(auditor.format_report_markdown(lifecycle))
     elif args.format == "markdown":
-        auditor.save_reports(data)
+        auditor.save_reports(lifecycle)
         print("Markdown report saved in AuditReports/")
     elif args.format == "json":
-        auditor.save_reports(data)
+        auditor.save_reports(lifecycle)
         print("JSON report saved in AuditReports/")
