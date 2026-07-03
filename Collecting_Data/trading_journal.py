@@ -29,8 +29,10 @@ class TradingJournal:
             if self.mode == "training":
                 os.makedirs(os.path.join(self.journal_root, "training", "signals"), exist_ok=True)
                 os.makedirs(os.path.join(self.journal_root, "training", "outcomes"), exist_ok=True)
+                os.makedirs(os.path.join(self.journal_root, "training", "positions"), exist_ok=True)
             else:
-                os.makedirs(os.path.join(self.journal_root, self.mode), exist_ok=True)
+                os.makedirs(os.path.join(self.journal_root, self.mode, "events"), exist_ok=True)
+                os.makedirs(os.path.join(self.journal_root, self.mode, "positions"), exist_ok=True)
         except Exception as e:
             logger.error(f"Failed to create journal directories: {e}")
 
@@ -42,13 +44,19 @@ class TradingJournal:
 
     def _get_filepath(self, strategy: str, symbol: str, timeframe: str, event_type: str) -> str:
         if event_type == "lifecycle":
-            return os.path.join(
-                self.journal_root, self.mode,
-                f"{strategy}_{symbol}_{timeframe}_lifecycles.jsonl"
-            )
+            if self.mode == "training":
+                return os.path.join(
+                    self.journal_root, "training", "positions",
+                    f"{strategy}_{symbol}_{timeframe}_positions.csv"
+                )
+            else:
+                return os.path.join(
+                    self.journal_root, self.mode, "positions",
+                    f"{strategy}_{symbol}_{timeframe}_positions.csv"
+                )
 
         if self.mode == "training":
-            if event_type == "outcome":
+            if event_type == "outcome" or event_type == "position_closed":
                 return os.path.join(
                     self.journal_root, "training", "outcomes", 
                     f"{strategy}_{symbol}_{timeframe}_outcomes.csv"
@@ -59,9 +67,10 @@ class TradingJournal:
                     f"{strategy}_{symbol}_{timeframe}_signals.csv"
                 )
         else:
+            # Layer 1: Event Journal
             return os.path.join(
-                self.journal_root, self.mode, 
-                f"{strategy}_{symbol}_{timeframe}_full.csv"
+                self.journal_root, self.mode, "events",
+                f"{strategy}_{symbol}_{timeframe}_events.csv"
             )
 
     def _write_row(self, filepath: str, row_data: dict):
@@ -72,14 +81,22 @@ class TradingJournal:
                 if not file_exists:
                     # NEW FILE case
                     df = pd.DataFrame([row_data])
+
+                    # Layer 1 events have these base cols. Layer 2 positions might not have all of them prefixed correctly.
+                    # PositionLifecycle to_csv_row uses signal_ prefix for most context fields.
                     base_cols = ["event_id", "signal_id", "event_type", "system_timestamp", "bar_timestamp", "strategy", "symbol", "timeframe", "signal_type", "direction"]
-                    other_cols = [c for c in df.columns if c not in base_cols]
-                    df = df[base_cols + other_cols]
+                    # If this is a Layer 2 summary, it might not have these exact names.
+                    present_base = [c for c in base_cols if c in df.columns]
+                    other_cols = [c for c in df.columns if c not in present_base]
+                    df = df[present_base + other_cols]
                     
                     tmp_path = f"{filepath}.{uuid.uuid4()}.tmp"
                     df.to_csv(tmp_path, index=False)
                     os.replace(tmp_path, filepath)
-                    logger.info(f"Logged {row_data.get('event_type')} for {row_data.get('signal_id')} in {filepath} (new file)")
+
+                    ev_type = row_data.get('event_type', 'summary')
+                    sig_id = row_data.get('signal_id', row_data.get('signal_signal_id', 'unknown'))
+                    logger.info(f"Logged {ev_type} for {sig_id} in {filepath} (new file)")
                     return
                 
                 # Exists, read header
@@ -113,7 +130,9 @@ class TradingJournal:
                 with lock:
                     df_row.to_csv(filepath, mode='a', header=False, index=False)
             
-            logger.info(f"Logged {row_data.get('event_type')} for {row_data.get('signal_id')} in {filepath}")
+            ev_type = row_data.get('event_type', 'summary')
+            sig_id = row_data.get('signal_id', row_data.get('signal_signal_id', 'unknown'))
+            logger.info(f"Logged {ev_type} for {sig_id} in {filepath}")
         except Exception as e:
             logger.error(f"Failed to write to journal {filepath}: {e}")
 
@@ -261,6 +280,51 @@ class TradingJournal:
         filepath = self._get_filepath(ctx["strategy"], ctx["symbol"], ctx["timeframe"], "partial_close")
         self._write_row(filepath, data)
 
+    def log_event(
+        self,
+        signal_id: str,
+        event_type: str,
+        extra_fields: dict = None,
+    ) -> None:
+        """Generic event logger for Layer 1 Event Journal."""
+        ctx = self._get_signal_context(signal_id)
+        if not ctx:
+            logger.error(f"Signal context not found for {signal_id}")
+            return
+
+        data = self._get_base_data(event_type, signal_id, ctx["bar_timestamp"], ctx["strategy"], ctx["symbol"], ctx["timeframe"], ctx["signal_type"], ctx["direction"])
+        if extra_fields:
+            data.update(extra_fields)
+        
+        filepath = self._get_filepath(ctx["strategy"], ctx["symbol"], ctx["timeframe"], event_type)
+        self._write_row(filepath, data)
+
+    def log_sl_modified(self, signal_id: str, ticket: int, new_sl: float, reason: str = "") -> None:
+        self.log_event(signal_id, "sl_modified", {"ticket": ticket, "new_sl": new_sl, "reason": reason})
+
+    def log_tp_modified(self, signal_id: str, ticket: int, new_tp: float, reason: str = "") -> None:
+        self.log_event(signal_id, "tp_modified", {"ticket": ticket, "new_tp": new_tp, "reason": reason})
+
+    def log_breakeven(self, signal_id: str, ticket: int, price: float) -> None:
+        self.log_event(signal_id, "breakeven", {"ticket": ticket, "price": price})
+
+    def log_trailing_start(self, signal_id: str, ticket: int, distance: float) -> None:
+        self.log_event(signal_id, "trailing_start", {"ticket": ticket, "distance": distance})
+
+    def log_position_closed(
+        self,
+        signal_id: str,
+        ticket: int,
+        exit_price: float,
+        reason: str,
+        extra_fields: dict = None,
+    ) -> None:
+        """Logs a position_closed event to the Event Journal. No PnL or Duration here."""
+        data = {"ticket": ticket, "exit_price": exit_price, "reason": reason}
+        if extra_fields:
+            data.update(extra_fields)
+        self.log_event(signal_id, "position_closed", data)
+
     def log_outcome(
         self,
         signal_id: str,
@@ -271,24 +335,15 @@ class TradingJournal:
         duration_seconds: int,
         extra_fields: dict = None,
     ) -> None:
-        ctx = self._get_signal_context(signal_id)
-        if not ctx:
-            logger.error(f"Signal context not found for {signal_id}")
-            return
-
-        data = self._get_base_data("outcome", signal_id, ctx["bar_timestamp"], ctx["strategy"], ctx["symbol"], ctx["timeframe"], ctx["signal_type"], ctx["direction"])
-        data.update({
-            "ticket": ticket,
-            "outcome": outcome,
-            "close_price": close_price,
-            "pnl_dollars": pnl_dollars,
-            "duration_seconds": duration_seconds,
-        })
-        if extra_fields:
-            data.update(extra_fields)
-        
-        filepath = self._get_filepath(ctx["strategy"], ctx["symbol"], ctx["timeframe"], "outcome")
-        self._write_row(filepath, data)
+        """Legacy support for log_outcome, now routes to position_closed event."""
+        logger.warning(f"log_outcome is deprecated. Use log_position_closed for Layer 1 events. routing {signal_id} to position_closed.")
+        self.log_position_closed(
+            signal_id=signal_id,
+            ticket=ticket,
+            exit_price=close_price,
+            reason=outcome,
+            extra_fields=extra_fields
+        )
 
     def add_fields(
         self,
@@ -308,22 +363,29 @@ class TradingJournal:
         self._write_row(filepath, data)
 
     def log_lifecycle(self, lifecycle: PositionLifecycle) -> None:
-        """Logs the complete PositionLifecycle object to a JSONL file."""
+        """Logs the complete PositionLifecycle object to a CSV summary (Layer 2)."""
         filepath = self._get_filepath(
             lifecycle.signal.strategy,
             lifecycle.signal.symbol,
             lifecycle.signal.timeframe,
             "lifecycle"
         )
-        lock = self._get_lock(filepath)
+
+        row_data = lifecycle.to_csv_row()
+        # Add a record type for consistency if needed, but to_csv_row is already flattened
+        self._write_row(filepath, row_data)
+
+        # Also keep JSONL for full fidelity as it was before, but in positions/
+        jsonl_path = filepath.replace(".csv", ".jsonl")
+        lock = self._get_lock(jsonl_path)
         try:
             row_json = json.dumps(lifecycle.to_dict(), default=str)
             with lock:
-                with open(filepath, 'a') as f:
+                with open(jsonl_path, 'a') as f:
                     f.write(row_json + "\n")
-            logger.info(f"Logged lifecycle for {lifecycle.signal.signal_id} in {filepath}")
+            logger.info(f"Logged lifecycle JSON for {lifecycle.signal.signal_id} in {jsonl_path}")
         except Exception as e:
-            logger.error(f"Failed to log lifecycle to {filepath}: {e}")
+            logger.error(f"Failed to log lifecycle JSON to {jsonl_path}: {e}")
 
 if __name__ == "__main__":
     import shutil

@@ -30,12 +30,12 @@ graph TD
 ```
 
 ## Object Lifecycle
-1.  **Signal:** A trade signal is generated and logged.
+1.  **Signal:** A trade signal is generated and logged in the **Event Journal**.
 2.  **Execution:** An order is opened on the broker terminal.
-3.  **Management:** The trade is managed (partial closes, SL/TP moves).
+3.  **Management:** The trade is managed (partial closes, SL/TP moves) with events recorded in the Event Journal.
 4.  **Outcome:** The trade is closed.
-5.  **Construction:** The `PositionLifecycleBuilder` aggregates data from the journal, broker, and state files to create the `PositionLifecycle` object.
-6.  **Persistence:** The object is logged as the final canonical record.
+5.  **Construction:** ONLY AFTER CLOSURE, the `PositionLifecycleBuilder` aggregates data from the **Event Journal** and **Broker History** to create the `PositionLifecycle` object.
+6.  **Persistence:** The immutable object is logged to the **Completed Position Summary**.
 
 ## Field Definitions
 
@@ -92,10 +92,10 @@ graph TD
 - `profit_pips`: Profit in pips.
 - `profit_percent`: Profit as % of account.
 - `r_multiple`: Return relative to initial risk.
-- `result`: Outcome label (e.g., "tp2", "sl", "manual").
-- `strategy_reason`: Why the strategy decided to exit.
-- `broker_reason`: Close reason from the broker (e.g., "stop_loss").
-- `deal_count`: Total number of deals (entry + partials + exit).
+- `result`: Final result status (**WIN**, **LOSS**, **BREAKEVEN**).
+- `strategy_reason`: High-level exit reason (e.g., "tp2", "trailing_stop").
+- `broker_reason`: Raw broker reason code.
+- `deal_count`: Total number of deals associated with the position.
 - `partial_close_count`: Number of partial closes executed.
 - `duration`: Total trade duration in seconds.
 - `status`: Final state ("completed" or "open").
@@ -110,6 +110,7 @@ The `PositionLifecycle` object supports multiple formats:
 ## Relationship with Other Objects
 - **Signal:** The starting point. `PositionLifecycle` contains the full `SignalInfo`.
 - **Deal/Order:** Low-level broker events. Reconstructed into `ExecutionInfo` and `ManagementInfo`.
-- **Position:** The live entity. `PositionLifecycle` is the post-mortem summary.
-- **TradingJournal:** The primary storage. `PositionLifecycle` is built from journal events.
-- **TradeAuditor:** The diagnostic tool. Now consumes `PositionLifecycle` for reporting.
+- **Position:** The live entity. `PositionLifecycle` represents the post-mortem summary of a completed position.
+- **Event Journal:** Real-time log. `PositionLifecycle` is built from events found here.
+- **Completed Position Summary:** Layer 2 storage for `PositionLifecycle` records.
+- **TradeAuditor:** The diagnostic tool. Prioritizes loading `PositionLifecycle` from summaries.

@@ -36,6 +36,10 @@ class TradeAuditor:
             return pd.DataFrame()
 
         for root, dirs, files in os.walk(mode_path):
+            # Skip positions directory in new architecture to avoid mixing summaries with events
+            if "positions" in dirs:
+                dirs.remove("positions")
+
             for file in files:
                 if file.endswith(".csv"):
                     filepath = os.path.join(root, file)
@@ -187,6 +191,12 @@ class TradeAuditor:
         ticket = ids.get("ticket")
         signal_id = ids.get("signal_id")
 
+        # TRY TO LOAD COMPLETED SUMMARY FIRST (Layer 2)
+        summary_lifecycle = self.load_completed_lifecycle(signal_id)
+        if summary_lifecycle:
+            return summary_lifecycle
+
+        # FALLBACK: RECONSTRUCT FROM EVENTS (Layer 1)
         journal_df = self.load_journal_data()
 
         # Gather Broker Data
@@ -311,6 +321,35 @@ class TradeAuditor:
         checks["anomalies"] = {"status": "PASS" if not anomalies else "FAIL", "msg": "; ".join(anomalies)}
 
         return checks
+
+    def load_completed_lifecycle(self, signal_id: str) -> Optional[PositionLifecycle]:
+        """Attempts to load a completed PositionLifecycle from the summary CSV or JSONL."""
+        mode_path = os.path.join(self.journal_root, self.mode)
+        pos_path = os.path.join(mode_path, "positions")
+
+        if not os.path.exists(pos_path):
+            return None
+
+        for root, dirs, files in os.walk(pos_path):
+            for file in files:
+                if file.endswith(".jsonl"):
+                    filepath = os.path.join(root, file)
+                    try:
+                        with open(filepath, 'r') as f:
+                            for line in f:
+                                data = json.loads(line)
+                                if data.get('signal', {}).get('signal_id') == signal_id:
+                                    # Convert back to object
+                                    from Collecting_Data.position_lifecycle import SignalInfo, ExecutionInfo, ManagementInfo, OutcomeInfo
+
+                                    sig = SignalInfo(**data['signal'])
+                                    exc = ExecutionInfo(**data['execution'])
+                                    mgt = ManagementInfo(**data['management'])
+                                    out = OutcomeInfo(**data['outcome'])
+                                    return PositionLifecycle(signal=sig, execution=exc, management=mgt, outcome=out)
+                    except Exception as e:
+                        self.logger.error(f"Failed to read lifecycle from {filepath}: {e}")
+        return None
 
     def save_reports(self, lifecycle: PositionLifecycle, output_dir: str = "AuditReports"):
         """Saves reports in Markdown and JSON formats."""
