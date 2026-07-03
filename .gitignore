@@ -42,3 +42,7 @@ Validation_Report/State/pt_state.json
 Validation_Report/State/dm_state.json
 State/exit_manager_state.json
 State/send_order_state.json
+Journals/live/positions/mm_XAUUSD_o_M15_positions.jsonl
+Journals/live/positions/mm_GBPUSD_o_M5_positions.jsonl
+Journals/live/positions/mm_EURUSD_o_M5_positions.jsonl
+Journals/live/positions/mm_EURUSD_o_M15_positions.jsonl
