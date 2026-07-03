@@ -67,8 +67,8 @@ class OutcomeInfo:
     profit_pips: float
     profit_percent: float
     r_multiple: float
-    result: str
-    strategy_reason: str
+    result: str             # WIN, LOSS, BREAKEVEN
+    strategy_reason: str    # e.g., TP1, TrailingStop
     broker_reason: str
     deal_count: int
     partial_close_count: int
@@ -232,25 +232,38 @@ class PositionLifecycleBuilder:
         )
 
         # 4. Extract Outcome Info
-        outcome_event = relevant_events[relevant_events['event_type'] == 'outcome']
+        # In new architecture, we look for position_closed event
+        closed_event = relevant_events[relevant_events['event_type'] == 'position_closed']
+
+        # Backward compatibility: also check for legacy 'outcome' event type
+        if closed_event.empty:
+            closed_event = relevant_events[relevant_events['event_type'] == 'outcome']
+
         outcome_info = None
 
-        if not outcome_event.empty:
-            out_row = outcome_event.iloc[0]
+        if not closed_event.empty:
+            out_row = closed_event.iloc[0]
 
+            # In new architecture, PnL is NOT in the position_closed event.
+            # We will rely on broker history if available, or stay 0 for now.
             pnl = float(out_row.get('pnl_dollars', 0))
+
+            # Determine a preliminary result label
+            res_label = "BREAKEVEN"
+            if pnl > 0: res_label = "WIN"
+            elif pnl < 0: res_label = "LOSS"
 
             outcome_info = OutcomeInfo(
                 exit_timestamp=out_row.get('system_timestamp', 'Unknown'),
-                average_exit_price=float(out_row.get('close_price', 0)),
-                close_price=float(out_row.get('close_price', 0)),
+                average_exit_price=float(out_row.get('exit_price', out_row.get('close_price', 0))),
+                close_price=float(out_row.get('exit_price', out_row.get('close_price', 0))),
                 realized_profit=pnl,
                 profit_points=0.0,
                 profit_pips=0.0,
                 profit_percent=0.0,
                 r_multiple=0.0,
-                result=out_row.get('outcome', 'Unknown'),
-                strategy_reason=out_row.get('outcome', 'Unknown'),
+                result=res_label,
+                strategy_reason=out_row.get('reason', out_row.get('outcome', 'Unknown')),
                 broker_reason='',
                 deal_count=0,
                 partial_close_count=len(partial_closes),
@@ -288,12 +301,21 @@ class PositionLifecycleBuilder:
                     last_exit = max(exit_deals, key=lambda d: d.get('time') if isinstance(d, dict) else d.time)
                     lex = last_exit if isinstance(last_exit, dict) else last_exit._asdict()
 
+                    # Determine result label
+                    res_label = "BREAKEVEN"
+                    if total_profit > 0.01: # Use a small threshold for floating point
+                        res_label = "WIN"
+                    elif total_profit < -0.01:
+                        res_label = "LOSS"
+
                     outcome_info = dataclasses.replace(
                         outcome_info,
                         realized_profit=total_profit,
                         exit_timestamp=datetime.fromtimestamp(lex.get('time'), tz=timezone.utc).isoformat(),
                         broker_reason=str(lex.get('reason')),
-                        deal_count=len(deals)
+                        deal_count=len(deals),
+                        result=res_label,
+                        status='completed'
                     )
 
         # 6. Enrich with State Files

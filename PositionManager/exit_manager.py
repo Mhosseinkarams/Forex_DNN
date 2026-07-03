@@ -165,30 +165,22 @@ class ExitManager:
         else:
             logger.warning(f"Ticket {ticket} disappeared via unexpected closure ({label}). Possible manual intervention, EA conflict, or desync.")
 
-        # Journal Hook
+        # Journal Hook (Layer 1 Event)
         state = self.tracked_tickets.get(ticket)
         if state and self.trading_journal and state.get("signal_id"):
             try:
-                pnl = 0.0
-                deals = mt5.history_deals_get(position=ticket)
-                if deals:
-                    pnl = sum(d.profit for d in deals)
-                
-                duration = 0
-                if state.get("open_time"):
-                    ot = datetime.fromisoformat(state["open_time"])
-                    duration = int((datetime.now(timezone.utc) - ot).total_seconds())
-
-                self.trading_journal.log_outcome(
+                self.trading_journal.log_position_closed(
                     signal_id=state["signal_id"],
                     ticket=ticket,
-                    outcome=label,
-                    close_price=0.0, # Will be 0 if we can't find it easily from disappeared
-                    pnl_dollars=pnl,
-                    duration_seconds=duration
+                    exit_price=0.0, # Placeholder, will be reconstructed from deals
+                    reason=label
                 )
+
+                # Layer 2: Completed Position Summary
+                self._reconstruct_and_log_lifecycle(ticket, state)
+
             except Exception as e:
-                logger.error(f"Failed to log outcome for disappeared ticket {ticket}: {e}")
+                logger.error(f"Failed to process closure for disappeared ticket {ticket}: {e}")
 
         with self._lock:
             if ticket in self.tracked_tickets:
@@ -264,6 +256,14 @@ class ExitManager:
                         new_sl=state["entry_price"] if next_stage == 1 else state["tp_prices"][next_stage - 1]
                     )
 
+                    new_sl = state["entry_price"] if next_stage == 1 else state["tp_prices"][next_stage - 1]
+                    self.trading_journal.log_sl_modified(
+                        signal_id=state["signal_id"],
+                        ticket=ticket,
+                        new_sl=new_sl,
+                        reason=f"TP{next_stage} reached"
+                    )
+
                 # Move SL
                 new_sl = state["entry_price"] if next_stage == 1 else state["tp_prices"][next_stage - 1]
                 mod_res = self.position_manager.modify_position(ticket, sl_price=new_sl)
@@ -300,6 +300,10 @@ class ExitManager:
                 if res["success"]:
                     state["sl_moved_to_breakeven"] = True
                     logger.info(f"Breakeven moved for ticket {ticket} (Single-stage mode, TP1 hit)")
+
+                    if self.trading_journal and state.get("signal_id"):
+                        self.trading_journal.log_breakeven(state["signal_id"], ticket, state["entry_price"])
+
                     self._save_state()
                 else:
                     logger.error(f"Failed to move SL to breakeven for ticket {ticket}")
@@ -318,30 +322,23 @@ class ExitManager:
         state = self.tracked_tickets.get(ticket)
         if state and self.trading_journal and state.get("signal_id"):
             try:
-                pnl = 0.0
-                deals = mt5.history_deals_get(position=ticket)
-                if deals:
-                    pnl = sum(d.profit for d in deals)
-                
-                duration = 0
-                if state.get("open_time"):
-                    ot = datetime.fromisoformat(state["open_time"])
-                    duration = int((datetime.now(timezone.utc) - ot).total_seconds())
-                
                 # Get outcome label
                 next_stage = state.get("current_stage_reached", 0) + 1
                 outcome_label = f"tp{next_stage}"
 
-                self.trading_journal.log_outcome(
+                # Layer 1 Event
+                self.trading_journal.log_position_closed(
                     signal_id=state["signal_id"],
                     ticket=ticket,
-                    outcome=outcome_label,
-                    close_price=0.0, # Handled by journal context for routing
-                    pnl_dollars=pnl,
-                    duration_seconds=duration
+                    exit_price=0.0, # Will be filled from broker deals
+                    reason=outcome_label
                 )
+
+                # Layer 2: Completed Position Summary
+                self._reconstruct_and_log_lifecycle(ticket, state)
+
             except Exception as e:
-                logger.error(f"Failed to log outcome for ticket {ticket}: {e}")
+                logger.error(f"Failed to finalize ticket {ticket}: {e}")
 
         with self._lock:
             if ticket in self.tracked_tickets:
@@ -351,6 +348,44 @@ class ExitManager:
                 # Actually, better to remove from active tracking to keep JSON lean.
                 del self.tracked_tickets[ticket]
         self._save_state()
+
+    def _reconstruct_and_log_lifecycle(self, ticket: int, state: dict):
+        """Builds and logs the final PositionLifecycle for a completed trade."""
+        if not self.trading_journal:
+            return
+
+        from Collecting_Data.position_lifecycle import PositionLifecycleBuilder
+
+        # 1. Fetch broker deals
+        deals = []
+        try:
+            # Important: MT5 history_deals_get(position=ticket) works well once position is closed
+            deals_tuple = mt5.history_deals_get(position=ticket)
+            if deals_tuple:
+                deals = [d for d in deals_tuple]
+        except Exception as e:
+            logger.error(f"Failed to fetch deals for lifecycle of ticket {ticket}: {e}")
+
+        # 2. Build Lifecycle
+        # For real-time finalization, we read the just-written journal.
+        from trade_auditor import TradeAuditor
+        auditor = TradeAuditor(journal_root=self.trading_journal.journal_root, mode=self.trading_journal.mode)
+        journal_df = auditor.load_journal_data()
+
+        broker_data = {"deals": deals}
+
+        lifecycle = PositionLifecycleBuilder.build_from_data(
+            signal_id=state["signal_id"],
+            journal_df=journal_df,
+            broker_data=broker_data,
+            state_files={"exit_manager_state": {"tracked_tickets": {str(ticket): state}}}
+        )
+
+        if lifecycle:
+            self.trading_journal.log_lifecycle(lifecycle)
+            logger.info(f"Final PositionLifecycle logged for ticket {ticket}")
+        else:
+            logger.warning(f"Failed to build PositionLifecycle for ticket {ticket}")
 
     def register_position(
         self,
