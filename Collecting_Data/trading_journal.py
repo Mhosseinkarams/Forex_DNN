@@ -1,9 +1,11 @@
 import os
+import json
 import uuid
 import logging
 import threading
 import pandas as pd
 from datetime import datetime, timezone
+from Collecting_Data.position_lifecycle import PositionLifecycle
 
 logger = logging.getLogger("TradingJournal")
 
@@ -39,6 +41,12 @@ class TradingJournal:
             return self._locks[filepath]
 
     def _get_filepath(self, strategy: str, symbol: str, timeframe: str, event_type: str) -> str:
+        if event_type == "lifecycle":
+            return os.path.join(
+                self.journal_root, self.mode,
+                f"{strategy}_{symbol}_{timeframe}_lifecycles.jsonl"
+            )
+
         if self.mode == "training":
             if event_type == "outcome":
                 return os.path.join(
@@ -298,6 +306,24 @@ class TradingJournal:
         
         filepath = self._get_filepath(ctx["strategy"], ctx["symbol"], ctx["timeframe"], "enrichment")
         self._write_row(filepath, data)
+
+    def log_lifecycle(self, lifecycle: PositionLifecycle) -> None:
+        """Logs the complete PositionLifecycle object to a JSONL file."""
+        filepath = self._get_filepath(
+            lifecycle.signal.strategy,
+            lifecycle.signal.symbol,
+            lifecycle.signal.timeframe,
+            "lifecycle"
+        )
+        lock = self._get_lock(filepath)
+        try:
+            row_json = json.dumps(lifecycle.to_dict(), default=str)
+            with lock:
+                with open(filepath, 'a') as f:
+                    f.write(row_json + "\n")
+            logger.info(f"Logged lifecycle for {lifecycle.signal.signal_id} in {filepath}")
+        except Exception as e:
+            logger.error(f"Failed to log lifecycle to {filepath}: {e}")
 
 if __name__ == "__main__":
     import shutil
