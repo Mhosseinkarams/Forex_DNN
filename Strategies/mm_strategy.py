@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
+from simulation.simulation_environment import env
 
 # Optional MT5 import for environments where it's not installed (e.g. Linux CI)
 try:
@@ -74,6 +75,7 @@ class MMStrategy:
                 logger.error(f"Failed to load state: {e}")
 
     def _save_state(self):
+        if env.mode == "backtest": return # Don't persist state in backtest
         try:
             temp_file = self.state_file + ".tmp"
             with open(temp_file, "w") as f:
@@ -296,7 +298,7 @@ class MMStrategy:
         sl_price = self._calculate_sl(symbol, direction, df)
         
         # Live ask/bid for entry_price
-        tick = mt5.symbol_info_tick(symbol)
+        tick = env.symbol_info_tick(symbol)
         if tick is None:
             logger.error(f"Failed to fetch tick for {symbol}")
             return
@@ -376,15 +378,16 @@ class MMStrategy:
             sl_price = lookback_df["High"].max()
             
         # Entry price for SL calculation (live)
-        tick = mt5.symbol_info_tick(symbol)
+        tick = env.symbol_info_tick(symbol)
         if tick is None: return float(sl_price)
         entry_price = tick.ask if direction == 1 else tick.bid
         
         # Max SL distance cap
-        info = mt5.symbol_info(symbol)
+        info = env.symbol_info(symbol)
         if info is None: return float(sl_price)
         
-        pip_size = info.point * 10
+        point = info.point if hasattr(info, 'point') else info.get('point', 0.00001)
+        pip_size = point * 10
         max_sl_dist = self.max_sl_pips * pip_size
         
         current_dist = abs(entry_price - sl_price)
@@ -393,9 +396,10 @@ class MMStrategy:
             logger.warning(f"SL capped for {symbol} at {self.max_sl_pips} pips")
             
         # Minimum SL distance
-        stops_level_price = info.trade_stops_level * info.point
+        stops_level = info.trade_stops_level if hasattr(info, 'trade_stops_level') else info.get('trade_stops_level', 0)
+        stops_level_price = stops_level * point
         if abs(entry_price - sl_price) < stops_level_price:
-            sl_price = entry_price - direction * (stops_level_price + info.point)
+            sl_price = entry_price - direction * (stops_level_price + point)
             
         return float(sl_price)
 

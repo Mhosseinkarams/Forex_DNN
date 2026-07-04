@@ -6,6 +6,7 @@ import threading
 import pandas as pd
 from datetime import datetime, timezone
 from Collecting_Data.position_lifecycle import PositionLifecycle
+from simulation.simulation_environment import env
 
 logger = logging.getLogger("TradingJournal")
 
@@ -141,7 +142,7 @@ class TradingJournal:
             "event_id": str(uuid.uuid4()),
             "signal_id": signal_id,
             "event_type": event_type,
-            "system_timestamp": datetime.now(timezone.utc).isoformat(),
+            "system_timestamp": env.get_now().isoformat(),
             "bar_timestamp": bar_timestamp,
             "strategy": strategy,
             "symbol": symbol,

@@ -5,6 +5,7 @@ import threading
 import os
 from datetime import datetime, timezone
 import MetaTrader5 as mt5
+from simulation.simulation_environment import env
 
 logger = logging.getLogger("PositionTracker")
 
@@ -85,21 +86,22 @@ class PositionTracker:
             self._stop_event.wait(self.poll_interval_seconds)
 
     def _poll_cycle(self):
-        # 1. Query MT5 for all open positions
-        mt5_positions = mt5.positions_get()
+        # 1. Query environment for all open positions
+        mt5_positions = env.positions_get()
         if mt5_positions is None:
-            err = mt5.last_error()
-            logger.error(f"MT5 query failure during poll: {err}")
+            if env.mode == "live":
+                err = mt5.last_error()
+                logger.error(f"MT5 query failure during poll: {err}")
             return
 
         # 2. Filter by magic_numbers list
-        tracked_mt5_positions = [p for p in mt5_positions if p.magic in self.magic_numbers]
+        tracked_mt5_positions = [p for p in mt5_positions if (p.magic if hasattr(p, 'magic') else p['magic'] if isinstance(p, dict) else getattr(p, 'magic', 0)) in self.magic_numbers]
         
         new_positions = []
         new_total_risk = 0.0
         new_total_reward = 0.0
         
-        current_tickets = {p.ticket for p in tracked_mt5_positions}
+        current_tickets = {(p.ticket if hasattr(p, 'ticket') else p['ticket'] if isinstance(p, dict) else getattr(p, 'ticket', 0)) for p in tracked_mt5_positions}
         
         with self._lock:
             old_tickets = {p["ticket"] for p in self.positions}
@@ -115,16 +117,17 @@ class PositionTracker:
 
         # 3. For each matching position, calculate metrics
         for p in tracked_mt5_positions:
-            info = mt5.symbol_info(p.symbol)
+            symbol = p.symbol if hasattr(p, 'symbol') else p['symbol'] if isinstance(p, dict) else getattr(p, 'symbol', '')
+            info = env.symbol_info(symbol)
             if info is None:
-                logger.error(f"Failed to get symbol info for {p.symbol}")
+                logger.error(f"Failed to get symbol info for {symbol}")
                 continue
             
-            contract_size = info.trade_contract_size
-            entry_price = p.price_open
-            sl_price = p.sl
-            tp_price = p.tp
-            lot_size = p.volume
+            contract_size = info.trade_contract_size if hasattr(info, 'trade_contract_size') else info.get('trade_contract_size', 100000)
+            entry_price = p.price_open if hasattr(p, 'price_open') else p['price_open'] if isinstance(p, dict) else getattr(p, 'price_open', 0)
+            sl_price = p.sl if hasattr(p, 'sl') else p['sl'] if isinstance(p, dict) else getattr(p, 'sl', 0)
+            tp_price = p.tp if hasattr(p, 'tp') else p['tp'] if isinstance(p, dict) else getattr(p, 'tp', 0)
+            lot_size = p.volume if hasattr(p, 'volume') else p['volume'] if isinstance(p, dict) else getattr(p, 'volume', 0)
             
             # Remaining risk = abs(entry_price - sl_price) × lot_size × contract_size
             risk = abs(entry_price - sl_price) * lot_size * contract_size if sl_price != 0 else 0.0
@@ -132,20 +135,30 @@ class PositionTracker:
             # Reward = abs(tp_price - entry_price) × lot_size × contract_size
             reward = abs(tp_price - entry_price) * lot_size * contract_size if tp_price != 0 else 0.0
             
+            # In our SimPosition, direction is 1 (Buy) or -1 (Sell). MT5 ORDER_TYPE_BUY=0, ORDER_TYPE_SELL=1.
+            if hasattr(p, 'type'):
+                direction = 1 if p.type == mt5.ORDER_TYPE_BUY else -1
+            else:
+                direction = p.get('direction', 1) if isinstance(p, dict) else getattr(p, 'direction', 1)
+
+            p_time = p.time if hasattr(p, 'time') else p.get('time', 0) if isinstance(p, dict) else getattr(p, 'time', 0)
+            p_price_current = p.price_current if hasattr(p, 'price_current') else p.get('price_current', entry_price) if isinstance(p, dict) else getattr(p, 'price_current', entry_price)
+            p_profit = p.profit if hasattr(p, 'profit') else p.get('floating_pnl', 0.0) if isinstance(p, dict) else getattr(p, 'floating_pnl', 0.0)
+
             snapshot = {
-                "ticket": p.ticket,
-                "symbol": p.symbol,
-                "magic": p.magic,
-                "direction": 1 if p.type == mt5.ORDER_TYPE_BUY else -1,
-                "lot_size": p.volume,
-                "entry_price": p.price_open,
-                "sl_price": p.sl,
-                "tp_price": p.tp,
-                "current_price": p.price_current,
-                "floating_pnl": p.profit,
+                "ticket": p.ticket if hasattr(p, 'ticket') else p['ticket'] if isinstance(p, dict) else getattr(p, 'ticket', 0),
+                "symbol": symbol,
+                "magic": p.magic if hasattr(p, 'magic') else p['magic'] if isinstance(p, dict) else getattr(p, 'magic', 0),
+                "direction": direction,
+                "lot_size": lot_size,
+                "entry_price": entry_price,
+                "sl_price": sl_price,
+                "tp_price": tp_price,
+                "current_price": p_price_current,
+                "floating_pnl": p_profit,
                 "remaining_risk_dollars": risk,
                 "reward_dollars": reward,
-                "open_time": datetime.fromtimestamp(p.time, tz=timezone.utc).isoformat(),
+                "open_time": datetime.fromtimestamp(p_time, tz=timezone.utc).isoformat(),
             }
             new_positions.append(snapshot)
             new_total_risk += risk

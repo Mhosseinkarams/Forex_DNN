@@ -5,6 +5,7 @@ import threading
 import math
 from datetime import datetime, timezone
 import MetaTrader5 as mt5
+from simulation.simulation_environment import env
 
 # Constants for when MetaTrader5 is not installed (e.g. during local testing),
 # matching the fallback convention already used in position_manager.py
@@ -85,7 +86,7 @@ class ExitManager:
         try:
             with self._lock:
                 data = {
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "last_updated": env.get_now().isoformat(),
                     "tracked_tickets": self.tracked_tickets
                 }
             temp_file = self.state_file + ".tmp"
@@ -189,13 +190,13 @@ class ExitManager:
 
     def _get_close_reason(self, ticket: int):
         """
-        Looks up the most recent closing deal for a position ticket via MT5
+        Looks up the most recent closing deal for a position ticket via environment
         deal history. Returns (label: str, reason_code: int | None).
         reason_code is None when no deal history could be retrieved, in which
         case the closure cannot be classified and should be treated cautiously.
         """
         try:
-            deals = mt5.history_deals_get(position=ticket)
+            deals = env.history_deals_get(position=ticket)
         except Exception as e:
             logger.error(f"Failed to query deal history for ticket {ticket}: {e}")
             return ("query_failed", None)
@@ -203,8 +204,8 @@ class ExitManager:
         if not deals:
             return ("no_deal_history", None)
 
-        last_deal = max(deals, key=lambda d: d.time)
-        reason_code = last_deal.reason
+        last_deal = max(deals, key=lambda d: (d.time if hasattr(d, 'time') else d['time'] if isinstance(d, dict) else 0))
+        reason_code = last_deal.reason if hasattr(last_deal, 'reason') else last_deal.get('reason', 3)
         label = REASON_LABELS.get(reason_code, f"unknown_reason_{reason_code}")
         return (label, reason_code)
 
@@ -359,8 +360,8 @@ class ExitManager:
         # 1. Fetch broker deals
         deals = []
         try:
-            # Important: MT5 history_deals_get(position=ticket) works well once position is closed
-            deals_tuple = mt5.history_deals_get(position=ticket)
+            # Important: env.history_deals_get(position=ticket) works well once position is closed
+            deals_tuple = env.history_deals_get(position=ticket)
             if deals_tuple:
                 deals = [d for d in deals_tuple]
         except Exception as e:
@@ -440,12 +441,12 @@ class ExitManager:
         """
         state = self.tracked_tickets[ticket]
         
-        info = mt5.symbol_info(symbol)
+        info = env.symbol_info(symbol)
         if info is None:
             logger.error(f"Failed to get symbol info for {symbol} to initialize ticket {ticket}")
             return False
 
-        volume_step = info.volume_step
+        volume_step = info.volume_step if hasattr(info, 'volume_step') else info.get('volume_step', 0.01)
         
         state["symbol"] = symbol
         state["original_lot_size"] = original_lot

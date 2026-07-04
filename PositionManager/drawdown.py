@@ -4,6 +4,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 import MetaTrader5 as mt5
+from simulation.simulation_environment import env
 
 logger = logging.getLogger("DrawdownManager")
 
@@ -60,12 +61,13 @@ class DrawdownManager:
 
     def _save_state(self):
         """Saves current state to JSON file atomically."""
+        if env.mode == "backtest": return
         try:
             with self._lock:
                 data = {
                     "start_of_day_balance": self.start_of_day_balance,
                     "snapshot_date": self.snapshot_date,
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "last_updated": env.get_now().isoformat(),
                 }
             temp_file = self.state_file + ".tmp"
             with open(temp_file, "w") as f:
@@ -76,31 +78,22 @@ class DrawdownManager:
 
     def _get_server_date(self) -> str | None:
         """
-        Retrieves MT5 server date as 'YYYY-MM-DD'.
-        Tries any selected symbol to get a tick, falling back to recent bars.
-
-        Fallback symbol list uses LiteFinance's '_o' suffix convention
-        (see data_feed.py), so this resolves even with zero open positions.
+        Retrieves server date as 'YYYY-MM-DD'.
         """
-        symbols_to_try = []
+        if env.mode == "backtest":
+            return env.get_now().strftime('%Y-%m-%d')
 
-        # 1. Check open positions symbols (most reliable, broker-correct by construction)
+        symbols_to_try = []
         positions = self.position_tracker.get_open_positions()
         if positions:
             symbols_to_try.extend(list({p['symbol'] for p in positions}))
-
-        # 2. LiteFinance fallback symbols (broker requires '_o' suffix)
         symbols_to_try.extend(["EURUSD_o", "GBPUSD_o", "XAUUSD_o"])
 
         for symbol in symbols_to_try:
-            if not mt5.symbol_select(symbol, True):
-                continue
-
-            tick = mt5.symbol_info_tick(symbol)
+            tick = env.symbol_info_tick(symbol)
             if tick is not None:
                 return datetime.fromtimestamp(tick.time, tz=timezone.utc).strftime('%Y-%m-%d')
 
-            # Fallback to last bar if tick unavailable
             rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1)
             if rates is not None and len(rates) > 0:
                 return datetime.fromtimestamp(rates[0]['time'], tz=timezone.utc).strftime('%Y-%m-%d')
@@ -111,20 +104,21 @@ class DrawdownManager:
         """Detects day rollover and snapshots balance if needed."""
         server_date = self._get_server_date()
         if server_date is None:
-            logger.warning("Could not retrieve MT5 server date for boundary check.")
+            logger.warning("Could not retrieve server date for boundary check.")
             return
 
         with self._lock:
             needs_snapshot = (server_date != self.snapshot_date)
 
         if needs_snapshot:
-            acc = mt5.account_info()
+            acc = env.get_account_info()
             if acc is not None:
                 with self._lock:
-                    self.start_of_day_balance = acc.balance
+                    self.start_of_day_balance = acc.balance if hasattr(acc, 'balance') else acc.get('balance', self.start_of_day_balance)
                     self.snapshot_date = server_date
                 self._save_state()
-                logger.info(f"Day boundary detected. New snapshot: date={server_date}, balance={acc.balance}")
+                acc_bal = acc.balance if hasattr(acc, 'balance') else acc.get('balance', 0)
+                logger.info(f"Day boundary detected. New snapshot: date={server_date}, balance={acc_bal}")
             else:
                 logger.warning("Failed to retrieve account info for balance snapshot.")
 
@@ -135,12 +129,12 @@ class DrawdownManager:
         """
         self._check_day_boundary()
 
-        acc = mt5.account_info()
+        acc = env.get_account_info()
         if acc is None:
             logger.error("Failed to retrieve account info during drawdown check.")
             return
 
-        current_balance = acc.balance
+        current_balance = acc["balance"]
         open_risk_dollars = self.position_tracker.get_open_risk()
 
         with self._lock:

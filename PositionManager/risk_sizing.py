@@ -1,6 +1,7 @@
 import logging
 import math
 import MetaTrader5 as mt5
+from simulation.simulation_environment import env
 
 logger = logging.getLogger("PositionSizer")
 
@@ -27,19 +28,19 @@ class PositionSizer:
             logger.error(f"Invalid SL distance: entry={entry_price}, sl={sl_price}")
             return self._result(False, 0.0, 0.0, 0.0, False, "invalid_sl_distance")
 
-        info = mt5.symbol_info(symbol)
+        info = env.symbol_info(symbol)
         if info is None:
             logger.error(f"Symbol info unavailable for {symbol}")
             return self._result(False, 0.0, 0.0, 0.0, False, "symbol_info_unavailable")
 
         risk_dollars = account_balance * risk_pct
-        contract_size = info.trade_contract_size
+        contract_size = info.trade_contract_size if hasattr(info, 'trade_contract_size') else info.get('trade_contract_size', 100000)
 
         raw_lot = risk_dollars / (sl_distance * contract_size)
 
-        volume_step = info.volume_step
-        volume_min = info.volume_min
-        volume_max = info.volume_max
+        volume_step = info.volume_step if hasattr(info, 'volume_step') else info.get('volume_step', 0.01)
+        volume_min = info.volume_min if hasattr(info, 'volume_min') else info.get('volume_min', 0.01)
+        volume_max = info.volume_max if hasattr(info, 'volume_max') else info.get('volume_max', 100.0)
 
         lot_size = math.floor(round(raw_lot / volume_step, 10)) * volume_step
 

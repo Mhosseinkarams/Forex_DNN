@@ -282,24 +282,27 @@ class PositionLifecycleBuilder:
         if broker_data:
             deals = broker_data.get('deals', [])
             if deals:
-                deal_ids = [d.get('ticket') if isinstance(d, dict) else d.ticket for d in deals]
+                def get_v(obj, key, default=None):
+                    if isinstance(obj, dict): return obj.get(key, default)
+                    return getattr(obj, key, default)
+
+                deal_ids = [get_v(d, 'ticket') for d in deals]
+
                 # Re-calculate execution info from deals
-                entry_deal = next((d for d in deals if (d.get('entry') if isinstance(d, dict) else d.entry) == 0), None)
+                entry_deal = next((d for d in deals if get_v(d, 'entry') == 0), None)
                 if entry_deal:
-                    ed = entry_deal if isinstance(entry_deal, dict) else entry_deal._asdict()
                     execution_info = dataclasses.replace(
                         execution_info,
-                        actual_entry=ed.get('price'),
+                        actual_entry=get_v(entry_deal, 'price'),
                         broker_deal_ids=deal_ids,
-                        magic_number=ed.get('magic')
+                        magic_number=get_v(entry_deal, 'magic')
                     )
 
                 # Re-calculate outcome info from deals
-                exit_deals = [d for d in deals if (d.get('entry') if isinstance(d, dict) else d.entry) == 1]
+                exit_deals = [d for d in deals if get_v(d, 'entry') == 1]
                 if exit_deals:
-                    total_profit = sum((d.get('profit') if isinstance(d, dict) else d.profit) or 0.0 for d in deals)
-                    last_exit = max(exit_deals, key=lambda d: d.get('time') if isinstance(d, dict) else d.time)
-                    lex = last_exit if isinstance(last_exit, dict) else last_exit._asdict()
+                    total_profit = sum(get_v(d, 'profit', 0.0) or 0.0 for d in deals)
+                    last_exit = max(exit_deals, key=lambda d: get_v(d, 'time', 0))
 
                     # Determine result label
                     res_label = "BREAKEVEN"
@@ -311,8 +314,8 @@ class PositionLifecycleBuilder:
                     outcome_info = dataclasses.replace(
                         outcome_info,
                         realized_profit=total_profit,
-                        exit_timestamp=datetime.fromtimestamp(lex.get('time'), tz=timezone.utc).isoformat(),
-                        broker_reason=str(lex.get('reason')),
+                        exit_timestamp=datetime.fromtimestamp(get_v(last_exit, 'time'), tz=timezone.utc).isoformat(),
+                        broker_reason=str(get_v(last_exit, 'reason')),
                         deal_count=len(deals),
                         result=res_label,
                         status='completed'
