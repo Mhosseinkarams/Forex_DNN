@@ -3,6 +3,7 @@ import json
 import uuid
 import logging
 import threading
+from typing import Optional
 import pandas as pd
 from datetime import datetime, timezone
 from Collecting_Data.position_lifecycle import PositionLifecycle
@@ -173,20 +174,22 @@ class TradingJournal:
         direction: int,
         entry_price: float,
         sl_price: float,
-        tp_level: int,
-        stage: str,
+        exit_profile: str,
         strategy: str,
         signal_category: str,
         bar_timestamp: str,
         extra_fields: dict = None,
+        tp_level: Optional[int] = None,
+        stage: Optional[str] = None,
     ) -> str:
         signal_id = str(uuid.uuid4())
         data = self._get_base_data("signal", signal_id, bar_timestamp, strategy, symbol, timeframe, signal_type, direction)
         data.update({
             "entry_price": entry_price,
             "sl_price": sl_price,
-            "tp_level": tp_level,
-            "stage": stage,
+            "exit_profile": exit_profile,
+            "tp_level": tp_level if tp_level is not None else "",
+            "stage": stage if stage is not None else "",
             "signal_category": signal_category,
             "risk_pct_default": "", 
         })
@@ -399,7 +402,7 @@ if __name__ == "__main__":
     # 1. Basic signal log
     sid = journal.log_signal(
         signal_type="standard", symbol="EURUSD", timeframe="M5", direction=1,
-        entry_price=1.1000, sl_price=1.0950, tp_level=2, stage="multi",
+        entry_price=1.1000, sl_price=1.0950, exit_profile="standard",
         strategy="mm", signal_category="standard", bar_timestamp="2023-10-27T10:00:00Z"
     )
     print(f"Signal ID: {sid}")
@@ -413,7 +416,7 @@ if __name__ == "__main__":
     # 4. extra_fields
     sid2 = journal.log_signal(
         signal_type="reversal", symbol="GBPUSD", timeframe="M5", direction=-1,
-        entry_price=1.2500, sl_price=1.2550, tp_level=1, stage="single",
+        entry_price=1.2500, sl_price=1.2550, exit_profile="single",
         strategy="unity", signal_category="reversal", bar_timestamp="2023-10-27T11:00:00Z",
         extra_fields={"news_sentiment": 0.8, "session": "london"}
     )
@@ -424,7 +427,7 @@ if __name__ == "__main__":
     # 6. New column addition
     sid3 = journal.log_signal(
         signal_type="standard", symbol="EURUSD", timeframe="M5", direction=1,
-        entry_price=1.1010, sl_price=1.0960, tp_level=1, stage="single",
+        entry_price=1.1010, sl_price=1.0960, exit_profile="single",
         strategy="mm", signal_category="standard", bar_timestamp="2023-10-27T10:05:00Z"
     )
     journal.log_order_open(sid3, 12346, 1.1011, 1.0960, 1.1060, 0.1, 1.0, extra_fields={"new_col": "val"})
@@ -433,7 +436,7 @@ if __name__ == "__main__":
     t_journal = TradingJournal(test_root, mode="training")
     t_sid = t_journal.log_signal(
         signal_type="standard", symbol="EURUSD", timeframe="M5", direction=1,
-        entry_price=1.1000, sl_price=1.0950, tp_level=2, stage="multi",
+        entry_price=1.1000, sl_price=1.0950, exit_profile="standard",
         strategy="mm", signal_category="standard", bar_timestamp="2023-10-27T10:00:00Z"
     )
     t_journal.log_outcome(t_sid, 12347, "sl", 1.0945, -50.0, 1800)
@@ -442,7 +445,7 @@ if __name__ == "__main__":
     def worker(i):
         journal.log_signal(
             signal_type="standard", symbol="THREAD", timeframe="M5", direction=1,
-            entry_price=1.1000, sl_price=1.0950, tp_level=1, stage="single",
+            entry_price=1.1000, sl_price=1.0950, exit_profile="single",
             strategy="test", signal_category="standard", bar_timestamp=f"2023-10-27T12:00:{i:02d}Z"
         )
         
