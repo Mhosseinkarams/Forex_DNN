@@ -84,6 +84,21 @@ class SimulationRunner:
         )
 
     def run(self):
+        """
+        Executes the simulation from start to end of the loaded data.
+
+        Process:
+            - Advances the virtual clock bar-by-bar.
+            - Updates the virtual broker's market price.
+            - Polls the tracker, exit manager, and strategy.
+
+        Common Mistakes:
+            - Not providing CSV data for all timeframes used by the strategy.
+            - Using a very large dataset without enough RAM.
+
+        Notes:
+            Creates a 'Backtest_Journals' folder (or custom root) for results.
+        """
         logger.info(f"Starting simulation for {self.symbol}...")
         
         while not self.data_feed.is_finished():
@@ -102,6 +117,12 @@ class SimulationRunner:
         self.generate_report()
 
     def generate_report(self):
+        """
+        Reconstructs all trades and calculates performance statistics.
+
+        Side Effects:
+            Saves 'backtest_report.txt' to the journal root.
+        """
         from trade_auditor import TradeAuditor
         auditor = TradeAuditor(journal_root=self.journal_root, mode="backtest")
         lifecycles = auditor.reconstruct_all()

@@ -15,6 +15,18 @@ class StatisticsEngine:
         return pd.DataFrame(rows)
 
     def calculate_metrics(self) -> Dict[str, Any]:
+        """
+        Calculates all performance metrics from the provided trade history.
+
+        Returns:
+            dict: Comprehensive summary including Win Rate, Profit Factor, etc.
+
+        Common Mistakes:
+            - Calculating metrics with too few trades (e.g., < 10), leading to statistically insignificant results.
+
+        Notes:
+            Expects a list of completed PositionLifecycle objects.
+        """
         if self.df.empty:
             return {}
 

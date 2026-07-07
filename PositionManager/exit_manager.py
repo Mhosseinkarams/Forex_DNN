@@ -399,8 +399,26 @@ class ExitManager:
         signal_id: str = None,
     ) -> None:
         """
-        Registers an open position for exit management.
-        Calculates TP price ladder and initializes internal tracking state.
+        Registers a new position for automated management.
+
+        Arguments:
+            ticket (int): Position ticket ID.
+            entry_price (float): The actual filled entry price.
+            sl_price (float): Initial stop loss price.
+            direction (int): 1 for Buy, -1 for Sell.
+            exit_profile (str): "standard" or "single".
+            signal_id (str, optional): The UUID of the original signal.
+
+        Common Mistakes:
+            - Registering a ticket that was not opened by the framework.
+            - Forgetting to register a position immediately after opening.
+
+        Notes:
+            - Automatically calculates the TP ladder based on the exit profile.
+            - Persists the new registration to `exit_manager_state.json`.
+
+        Example:
+            >>> em.register_position(12345, 1.1000, 1.0950, 1, "standard", "sig-uuid")
         """
         with self._lock:
             if ticket in self.tracked_tickets:

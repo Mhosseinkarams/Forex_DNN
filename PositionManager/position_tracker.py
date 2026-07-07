@@ -168,6 +168,18 @@ class PositionTracker:
             return list(self.positions)
 
     def get_open_risk(self) -> float:
+        """
+        Calculates the total dollar amount at risk across all open positions.
+
+        Returns:
+            float: Total potential loss in account currency.
+
+        Common Mistakes:
+            - Assuming this includes trades not managed by the framework (filtered by magic numbers).
+
+        Notes:
+            Risk is calculated as `abs(Entry - SL) * Volume * ContractSize`.
+        """
         with self._lock:
             return self.total_risk
 

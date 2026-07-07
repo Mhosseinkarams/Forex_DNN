@@ -74,10 +74,16 @@ _RENAME = {
 
 class MT5DataFeed:
     """
-    Single class for all MT5 data needs.
-    Handles connection lifecycle, health monitoring, and data retrieval.
-    live=True  → live feed with health checks
-    live=False → historical/backtest fetch, no health monitoring
+    Unified MetaTrader 5 data retrieval module.
+
+    Handles connection lifecycle, health monitoring, and multi-mode data retrieval
+    (live vs. historical).
+
+    Attributes:
+        login (int): MT5 account number.
+        password (str): MT5 account password.
+        server (str): MT5 server name.
+        health (FeedHealth): Current status of the data feed.
     """
 
     def __init__(self, login: int = None, password: str = None, server: str = None):
@@ -92,7 +98,24 @@ class MT5DataFeed:
     # ── Connection management ──────────────────────────────────────────────────
 
     def connect(self) -> bool:
-        """Initialize MT5 connection. Returns True on success."""
+        """
+        Initializes the MetaTrader 5 terminal connection.
+
+        Returns:
+            bool: True if connection was successful, False otherwise.
+
+        Side Effects:
+            - Initializes the MT5 terminal.
+            - Sets internal _connected state.
+            - Updates _health to HEALTHY.
+
+        Common Mistakes:
+            - Running on non-Windows OS without Wine/Docker setup.
+            - MT5 terminal not installed or not logged into a broker.
+
+        Notes:
+            Uses credentials from credentials.json at the project root by default.
+        """
         if not mt5.initialize(login=self.login, password=self.password, server=self.server):
             logger.error(f"MT5 init failed: {mt5.last_error()}")
             self._health = FeedHealth.DISCONNECTED
@@ -250,7 +273,27 @@ class MT5DataFeed:
 
     def get_ohlcv(self, symbol: str, timeframe_str: str, count: int = 1000) -> pd.DataFrame | None:
         """
-        Wrapper for MMStrategy to retrieve OHLCV data using string timeframe names.
+        High-level wrapper for strategy OHLCV retrieval using string timeframes.
+
+        Arguments:
+            symbol (str): The trading symbol (e.g., "EURUSD_o").
+            timeframe_str (str): One of "M1", "M5", "M15", "M30", "H1", "H4", "D1".
+            count (int): Number of candles to retrieve.
+
+        Returns:
+            pd.DataFrame | None: Standard schema DataFrame or None if feed is unhealthy.
+
+        Common Mistakes:
+            - Using a symbol name that doesn't match the broker suffix (e.g., EURUSD vs EURUSD_o).
+            - Requesting a timeframe string that is not in the mapping (e.g., "H2").
+
+        Notes:
+            Performs a health check before retrieval. If DEGRADED, returns None.
+
+        Example:
+            >>> feed = MT5DataFeed()
+            >>> feed.connect()
+            >>> df = feed.get_ohlcv("EURUSD_o", "M5", count=100)
         """
         mapping = {
             "M1": mt5.TIMEFRAME_M1,

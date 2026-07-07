@@ -24,13 +24,25 @@ class IndicatorEngine:
 
     def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Receives a DataFrame in standard schema.
-        Returns a new DataFrame (never modifies input) with all
-        Layer 1 and Layer 2 columns appended.
-        If dropna=False (default): NaN rows are preserved.
-            Log a warning if any EMA or ATR column contains NaN.
-        If dropna=True: drop rows where any EMA or ATR column
-            contains NaN. Use for backtesting only.
+        Processes a standard OHLCV DataFrame and appends indicator columns.
+
+        Arguments:
+            df (pd.DataFrame): Raw data with columns Open, High, Low, Close, TickVolume.
+
+        Returns:
+            pd.DataFrame: A new DataFrame containing original columns plus calculated features.
+
+        Common Mistakes:
+            - Passing a DataFrame with lowercase column names (must be capitalized).
+            - Providing too few bars for warmup (especially for EMA 600/800).
+
+        Notes:
+            - Performs a copy of the input DataFrame; does not modify in-place.
+            - Use `dropna=True` in constructor for backtesting/training to remove warmup NaNs.
+
+        Example:
+            >>> engine = IndicatorEngine(ema_periods=[50, 600])
+            >>> df_features = engine.calculate(raw_df)
         """
         # 1. Never modify the input DataFrame. Work on a copy.
         original_cols = list(df.columns)

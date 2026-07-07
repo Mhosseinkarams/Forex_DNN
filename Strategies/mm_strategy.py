@@ -84,7 +84,16 @@ class MMStrategy:
             logger.error(f"Failed to save state: {e}")
 
     def start(self) -> None:
-        """Start background polling loop."""
+        """
+        Starts the background polling loop.
+
+        Side Effects:
+            - Launches a new daemon thread.
+            - Resets internal signal history.
+
+        Common Mistakes:
+            - Starting multiple times without calling stop().
+        """
         if self._thread is not None and self._thread.is_alive():
             logger.warning("MMStrategy is already running.")
             return

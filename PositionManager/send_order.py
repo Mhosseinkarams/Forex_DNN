@@ -68,6 +68,35 @@ class SendOrder:
         signal_id: str,          # from TradingJournal.log_signal(), already logged upstream
         comment: str = "",
     ) -> dict:
+        """
+        Processes a trade signal and executes if all framework rules pass.
+
+        Arguments:
+            symbol (str): Trading symbol.
+            direction (int): 1 for Buy, -1 for Sell.
+            entry_price (float): Requested entry (0.0 for Market).
+            sl_price (float): Calculated Stop Loss.
+            exit_profile (str): "standard" or "single".
+            strategy (str): Strategy name.
+            signal_category (str): "standard", "high_risk", or "reversal".
+            signal_id (str): UUID from TradingJournal.
+            comment (str, optional): Order comment.
+
+        Returns:
+            dict: success status and reason for rejection if applicable.
+
+        Side Effects:
+            - Opens a trade in MT5.
+            - Registers the trade with ExitManager.
+            - Logs events to the TradingJournal.
+
+        Common Mistakes:
+            - Calling with a `signal_id` that hasn't been logged to the journal yet.
+            - Attempting to trade a symbol that violates Rules 1-3.
+
+        Notes:
+            Risk percentages are capped by signal category: Standard (1%), HR (0.5%), Reversal (0.3%).
+        """
         # 1. Validation
         if entry_price is not None and entry_price != 0.0:
             logger.warning(f"Pending orders not yet implemented. Requested entry: {entry_price}")

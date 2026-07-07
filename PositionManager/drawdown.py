@@ -131,7 +131,14 @@ class DrawdownManager:
     def check(self):
         """
         Recomputes all drawdown metrics and updates trading permission.
-        Should be called frequently in the main trading loop.
+
+        Side Effects:
+            - Updates internal max_risk_pct and trading_allowed status.
+            - Detects day boundaries and snapshots balance.
+            - Persists state to drawdown_state.json.
+
+        Notes:
+            Should be called at the start of every strategy polling cycle.
         """
         self._check_day_boundary()
 
@@ -175,6 +182,19 @@ class DrawdownManager:
     # --- Output Methods ---
 
     def trading_allowed(self) -> bool:
+        """
+        Checks if the system is currently allowed to open new trades.
+
+        Returns:
+            bool: True if within limits, False if blocked.
+
+        Common Mistakes:
+            - Forgetting to call `check()` frequently in the main loop.
+            - Expecting it to account for manual trades with different magic numbers.
+
+        Notes:
+            A False return means either the Daily or Total drawdown limit has been reached.
+        """
         with self._lock:
             return self._trading_allowed
 

@@ -56,7 +56,30 @@ class PositionManager:
         comment: str = "",
     ) -> dict:
         """
-        Executes a buy or sell order.
+        Sends an order to MetaTrader 5 to open a new position.
+
+        Arguments:
+            symbol (str): The trading symbol.
+            direction (int): 1 for Buy, -1 for Sell.
+            lot_size (float): Volume to trade.
+            sl_price (float): Stop Loss price.
+            tp_price (float): Take Profit price.
+            strategy (str): "unity" or "mm" (determines magic number).
+            comment (str, optional): Order comment.
+
+        Returns:
+            dict: execution results (success, ticket, entry_price, etc.).
+
+        Side Effects:
+            Executes a real trade on the linked MT5 account.
+
+        Common Mistakes:
+            - Calling during market close hours.
+            - Providing SL/TP that are too close to current price (Freeze level).
+            - Insufficient margin in the account.
+
+        Notes:
+            Uses deviation and filling_mode set during class initialization.
         """
         # 1. Validate inputs
         if direction not in [1, -1]:
@@ -140,7 +163,18 @@ class PositionManager:
         volume: float = None,    # None = full close, float = partial close
     ) -> dict:
         """
-        Closes an open position.
+        Closes an open position or a partial volume of it.
+
+        Arguments:
+            ticket (int): The unique position ticket ID.
+            volume (float, optional): Volume to close. If None, closes entirely.
+
+        Returns:
+            dict: execution results.
+
+        Common Mistakes:
+            - Attempting to close more volume than is currently open.
+            - Closing a ticket that has already been closed by the broker (SL/TP).
         """
         # 1. Query MT5 for position by ticket
         position = mt5.positions_get(ticket=ticket)

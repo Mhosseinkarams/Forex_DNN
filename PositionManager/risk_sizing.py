@@ -18,6 +18,30 @@ class PositionSizer:
         risk_pct: float,
         account_balance: float,
     ) -> dict:
+        """
+        Calculates the appropriate lot size for a trade.
+
+        Arguments:
+            symbol (str): Trading symbol name.
+            entry_price (float): Expected entry price.
+            sl_price (float): Stop loss price.
+            risk_pct (float): Risk as a decimal (e.g., 0.01).
+            account_balance (float): Current account balance.
+
+        Returns:
+            dict: contains success, lot_size, risk_dollars, and actual_risk_pct.
+
+        Common Mistakes:
+            - Providing entry and SL prices that are the same (Zero distance).
+            - Expecting it to work for symbols not available in the MT5 terminal.
+
+        Notes:
+            - Rounds the lot size down to the nearest `volume_step`.
+            - Caps the lot size at the broker's `volume_max`.
+
+        Example:
+            >>> sizer.calculate_lot_size("EURUSD_o", 1.1, 1.09, 0.01, 10000)
+        """
         if risk_pct <= 0 or account_balance <= 0:
             logger.error(f"Invalid input: risk_pct={risk_pct}, account_balance={account_balance}")
             return self._result(False, 0.0, 0.0, 0.0, False, "invalid_input")

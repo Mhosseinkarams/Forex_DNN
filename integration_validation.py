@@ -202,15 +202,17 @@ class IntegrationValidator:
 
             # 2.5 Close Position and verify Summary
             self.logger.info("Verifying closure and summary generation...")
-            mock_mt5.history_deals_get.return_value = [
-                MagicMock(ticket=123456, entry=0, price=1.1011, magic=self.MAGIC_MM, time=time.time(), profit=0, reason=3),
-                MagicMock(ticket=123457, entry=1, price=1.1050, magic=self.MAGIC_MM, time=time.time()+3600, profit=50.0, reason=5)
-            ]
+            t_now = time.time()
+            deal1 = MagicMock(ticket=123456, entry=0, price=1.1011, magic=self.MAGIC_MM, profit=0, reason=3)
+            deal1.time = int(t_now)
+            deal1.time_msc = int(t_now * 1000)
+
+            deal2 = MagicMock(ticket=123457, entry=1, price=1.1050, magic=self.MAGIC_MM, profit=50.0, reason=5)
+            deal2.time = int(t_now + 3600)
+            deal2.time_msc = int((t_now + 3600) * 1000)
+
+            mock_mt5.history_deals_get.return_value = [deal1, deal2]
             mock_mt5.positions_get.return_value = [] # Position disappeared
-            mock_mt5.history_deals_get.return_value = [
-                MagicMock(ticket=123456, entry=0, price=1.1011, magic=self.MAGIC_MM, time=time.time(), profit=0, reason=3),
-                MagicMock(ticket=123457, entry=1, price=1.1050, magic=self.MAGIC_MM, time=time.time()+3600, profit=50.0, reason=5)
-            ]
 
             self.pt._poll_cycle() # Update tracker state to reflect empty positions
             self.em._poll_cycle() # Should detect disappearance
