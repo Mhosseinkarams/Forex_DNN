@@ -168,13 +168,13 @@ class IntegrationValidator:
             # Need a real signal_id in journal for log_order_open to work
             sig_id = self.tj.log_signal(
                 signal_type="standard", symbol="EURUSD_o", timeframe="M5", direction=1,
-                entry_price=1.1010, sl_price=1.0950, tp_level=2, stage="multi",
+                entry_price=1.1010, sl_price=1.0950, exit_profile="standard",
                 strategy="mm", signal_category="standard", bar_timestamp="2024-01-01T00:00:00Z"
             )
 
             # Execute
             with patch.object(self.ps, 'calculate_lot_size', return_value={"success": True, "lot_size": 0.1, "risk_pct_actual": 0.01, "error": None}):
-                res = self.so.execute("EURUSD_o", 1, 0.0, 1.0950, 2, "multi", "mm", "standard", sig_id)
+                res = self.so.execute("EURUSD_o", 1, 0.0, 1.0950, "standard", "mm", "standard", sig_id)
 
             if res["success"]:
                 self.log_result("Order Execution", "PASS", f"Ticket: {res['ticket']}")

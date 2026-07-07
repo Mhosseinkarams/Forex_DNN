@@ -10,11 +10,16 @@ try:
 except ImportError:
     mt5 = None
 
+# Exit Profiles
+EXIT_PROFILE_STANDARD = "standard"   # TP1 -> BE -> TP2
+EXIT_PROFILE_SINGLE = "single"       # TP1 -> Full Close
+
 @dataclass(frozen=True)
 class SignalInfo:
     signal_id: str
     strategy: str
     signal_category: str
+    exit_profile: str
     symbol: str
     timeframe: str
     direction: int
@@ -166,6 +171,7 @@ class PositionLifecycleBuilder:
             signal_id=signal_id,
             strategy=sig_row.get('strategy', 'Unknown'),
             signal_category=sig_row.get('signal_category', 'Unknown'),
+            exit_profile=sig_row.get('exit_profile', 'Unknown'),
             symbol=sig_row.get('symbol', 'Unknown'),
             timeframe=sig_row.get('timeframe', 'Unknown'),
             direction=int(sig_row.get('direction', 0)),

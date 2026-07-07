@@ -15,6 +15,7 @@ except ImportError:
 
 # Modules
 from Collecting_Data.indicators import IndicatorEngine
+from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE
 
 logger = logging.getLogger("MMStrategy")
 
@@ -280,16 +281,13 @@ class MMStrategy:
         
         # Default trade parameters
         if signal_type == "standard":
-            tp_level = 2
-            stage = "multi"
+            exit_profile = EXIT_PROFILE_STANDARD
             risk_pct_default = 0.01
         elif signal_type == "high_risk":
-            tp_level = 1
-            stage = "single"
+            exit_profile = EXIT_PROFILE_SINGLE
             risk_pct_default = 0.005
         else: # reversal
-            tp_level = 1
-            stage = "single"
+            exit_profile = EXIT_PROFILE_SINGLE
             risk_pct_default = 0.003
 
         # SL Calculation
@@ -339,8 +337,7 @@ class MMStrategy:
             direction=direction,
             entry_price=entry_price,
             sl_price=sl_price,
-            tp_level=tp_level,
-            stage=stage,
+            exit_profile=exit_profile,
             strategy="mm",
             signal_category=signal_type,
             bar_timestamp=bar_timestamp,
@@ -357,8 +354,7 @@ class MMStrategy:
                 direction=direction,
                 entry_price=0.0, # Market order
                 sl_price=sl_price,
-                tp_level=tp_level,
-                stage=stage,
+                exit_profile=exit_profile,
                 strategy="mm",
                 signal_category=signal_type,
                 signal_id=signal_id
@@ -508,8 +504,7 @@ if __name__ == "__main__":
             self.assertEqual(self.trading_journal.log_signal.call_args[1]["signal_type"], "standard")
             self.assertEqual(self.trading_journal.log_signal.call_args[1]["direction"], 1)
             self.send_order.execute.assert_called_once()
-            self.assertEqual(self.send_order.execute.call_args[1]["tp_level"], 2)
-            self.assertEqual(self.send_order.execute.call_args[1]["stage"], "multi")
+            self.assertEqual(self.send_order.execute.call_args[1]["exit_profile"], EXIT_PROFILE_STANDARD)
 
         def test_high_risk_buy_signal(self):
             # Test Case 3: High-Risk BUY
@@ -520,8 +515,7 @@ if __name__ == "__main__":
                 self.strategy._check_and_submit_signal("EURUSD_o", "M5", self.strategy.engine_m5.calculate(df_raw), 50, 600)
                 
             self.assertEqual(self.trading_journal.log_signal.call_args[1]["signal_type"], "high_risk")
-            self.assertEqual(self.send_order.execute.call_args[1]["tp_level"], 1)
-            self.assertEqual(self.send_order.execute.call_args[1]["stage"], "single")
+            self.assertEqual(self.send_order.execute.call_args[1]["exit_profile"], EXIT_PROFILE_SINGLE)
 
         def test_reversal_sell_signal(self):
             # Test Case 4: Reversal SELL
