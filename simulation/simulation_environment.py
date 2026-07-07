@@ -8,6 +8,12 @@ except ImportError:
     mt5_live = None
 
 class SimulationEnvironment:
+    """
+    Purpose:
+        A singleton proxy that abstracts the MetaTrader 5 API. It allows the
+        same core framework code to run in 'live' (direct MT5 calls) or
+        'backtest' (redirects to SimulationBroker) modes.
+    """
     def __init__(self):
         self.mode = 'live' # 'live' or 'backtest'
         self.broker = None
@@ -56,6 +62,15 @@ class SimulationEnvironment:
         self.TRADE_RETCODE_NO_MONEY = 10019
 
     def set_backtest_mode(self, broker, clock, account):
+        """
+        Purpose:
+            Switches the environment to backtest mode.
+
+        Arguments:
+            broker: Instance of SimulationBroker.
+            clock: Instance of SimulationClock.
+            account: Instance of SimulationAccount.
+        """
         self.mode = 'backtest'
         self.broker = broker
         self.clock = clock
@@ -65,6 +80,14 @@ class SimulationEnvironment:
         self.mode = 'live'
 
     def get_now(self):
+        """
+        Purpose:
+            Returns the current time. In backtest mode, returns virtual
+            clock time. In live mode, returns system time.
+
+        Returns:
+            datetime: Current UTC timestamp.
+        """
         if self.mode == 'backtest':
             return self.clock.current_time()
         return datetime.now(timezone.utc)

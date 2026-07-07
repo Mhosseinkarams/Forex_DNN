@@ -182,6 +182,31 @@ class TradingJournal:
         tp_level: Optional[int] = None,
         stage: Optional[str] = None,
     ) -> str:
+        """
+        Purpose:
+            Logs a new strategy signal event to the Layer 1 Event Journal.
+            This is the first event in a trade's lifecycle and generates the master signal_id.
+
+        Arguments:
+            signal_type (str): Category of the signal (e.g., "standard", "reversal").
+            symbol (str): Symbol name (e.g., "EURUSD_o").
+            timeframe (str): Bar timeframe (e.g., "M5").
+            direction (int): 1 for BUY, -1 for SELL.
+            entry_price (float): The market price at the time of signal detection.
+            sl_price (float): Calculated stop-loss price.
+            exit_profile (str): The management model to be applied (e.g., "standard").
+            strategy (str): Name of the source strategy (e.g., "mm").
+            signal_category (str): Sub-category used for conflict checks.
+            bar_timestamp (str): Datetime of the bar that triggered the signal.
+            extra_fields (dict): Optional metadata for ML features (e.g., indicator values).
+
+        Returns:
+            str: A unique signal_id (UUID) used to link all future events.
+
+        Notes:
+            Caches the signal context internally to allow subsequent event logs (orders, closures)
+             to inherit metadata like symbol and timeframe without re-passing them.
+        """
         signal_id = str(uuid.uuid4())
         data = self._get_base_data("signal", signal_id, bar_timestamp, strategy, symbol, timeframe, signal_type, direction)
         data.update({
@@ -322,7 +347,22 @@ class TradingJournal:
         reason: str,
         extra_fields: dict = None,
     ) -> None:
-        """Logs a position_closed event to the Event Journal. No PnL or Duration here."""
+        """
+        Purpose:
+            Logs the final closure of a position to the Layer 1 Event Journal.
+
+        Arguments:
+            signal_id (str): The UUID of the original signal.
+            ticket (int): MT5 position ticket number.
+            exit_price (float): The price at which the position was closed.
+            reason (str): Reason for closure (e.g., "tp2", "stop_loss", "manual").
+            extra_fields (dict): Optional additional closure metadata.
+
+        Notes:
+            Per the two-layer architecture, Layer 1 events are append-only and do not
+            contain calculated metrics like realized PnL or duration. These are reserved
+            for the Layer 2 Position Summary.
+        """
         data = {"ticket": ticket, "exit_price": exit_price, "reason": reason}
         if extra_fields:
             data.update(extra_fields)
@@ -366,7 +406,22 @@ class TradingJournal:
         self._write_row(filepath, data)
 
     def log_lifecycle(self, lifecycle: PositionLifecycle) -> None:
-        """Logs the complete PositionLifecycle object to a CSV summary (Layer 2)."""
+        """
+        Purpose:
+            Logs a completed PositionLifecycle summary to the Layer 2 Position Journal.
+            This is the final "Ground Truth" record for a completed trade.
+
+        Arguments:
+            lifecycle (PositionLifecycle): The fully reconstructed lifecycle object.
+
+        Side Effects:
+            - Appends a flattened row to the strategy/symbol-specific CSV in `positions/`.
+            - Appends the full nested JSON structure to a `.jsonl` file for high-fidelity storage.
+
+        Notes:
+            Uses thread-safe locks and handles dynamic CSV header updates if new
+            indicator fields are present in the lifecycle object.
+        """
         filepath = self._get_filepath(
             lifecycle.signal.strategy,
             lifecycle.signal.symbol,

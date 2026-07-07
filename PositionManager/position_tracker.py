@@ -58,7 +58,15 @@ class PositionTracker:
             logger.error(f"Failed to save state: {e}")
 
     def start(self) -> None:
-        """Start background polling loop in a daemon thread."""
+        """
+        Purpose:
+            Starts the background polling loop in a separate daemon thread.
+            The tracker continuously syncs with the broker to maintain the
+            "Source of Truth" for open positions.
+
+        Side Effects:
+            Spawns a new threading.Thread if one is not already running.
+        """
         if self._thread is not None and self._thread.is_alive():
             logger.warning("Tracker is already running.")
             return
@@ -69,7 +77,10 @@ class PositionTracker:
         logger.info("PositionTracker started.")
 
     def stop(self) -> None:
-        """Stop the polling loop cleanly."""
+        """
+        Purpose:
+            Gracefully stops the background polling thread.
+        """
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=10)
@@ -164,10 +175,26 @@ class PositionTracker:
         logger.info(f"Poll cycle summary: {len(new_positions)} positions tracked, total open risk ${new_total_risk:.2f}")
 
     def get_open_positions(self) -> list[dict]:
+        """
+        Purpose:
+            Returns a thread-safe snapshot of all currently active and
+            tracked positions.
+
+        Returns:
+            list[dict]: A list of position details (symbol, volume, entry, etc.).
+        """
         with self._lock:
             return list(self.positions)
 
     def get_open_risk(self) -> float:
+        """
+        Purpose:
+            Returns the total dollar value of risk across all tracked positions.
+            Risk is defined as the distance from entry to the current stop-loss.
+
+        Returns:
+            float: Total open risk in account currency.
+        """
         with self._lock:
             return self.total_risk
 

@@ -92,7 +92,23 @@ class MT5DataFeed:
     # ── Connection management ──────────────────────────────────────────────────
 
     def connect(self) -> bool:
-        """Initialize MT5 connection. Returns True on success."""
+        """
+        Purpose:
+            Initializes the MetaTrader 5 connection using the stored credentials.
+            Ensures the terminal is ready for data retrieval and trading.
+
+        Returns:
+            bool: True if connection is established successfully, False otherwise.
+
+        Side Effects:
+            Sets internal _health to HEALTHY on success, DISCONNECTED on failure.
+            Sets _connected to True on success.
+
+        Example:
+            >>> feed = MT5DataFeed()
+            >>> if feed.connect():
+            ...     print("Ready to trade")
+        """
         if not mt5.initialize(login=self.login, password=self.password, server=self.server):
             logger.error(f"MT5 init failed: {mt5.last_error()}")
             self._health = FeedHealth.DISCONNECTED
@@ -105,7 +121,14 @@ class MT5DataFeed:
         return True
 
     def disconnect(self):
-        """Shutdown MT5 connection cleanly."""
+        """
+        Purpose:
+            Shuts down the MetaTrader 5 terminal connection cleanly.
+            Should be called during application shutdown to release resources.
+
+        Side Effects:
+            Sets _connected to False and _health to DISCONNECTED.
+        """
         mt5.shutdown()
         self._connected = False
         self._health = FeedHealth.DISCONNECTED
@@ -113,8 +136,16 @@ class MT5DataFeed:
 
     def reconnect(self) -> bool:
         """
-        Attempt reconnection with exponential backoff.
-        Returns True if reconnection succeeds within max tries.
+        Purpose:
+            Attempts to re-establish the MT5 connection using exponential backoff.
+            Used to recover from transient network or terminal issues.
+
+        Returns:
+            bool: True if reconnection succeeds within the maximum number of attempts.
+
+        Notes:
+            - Max attempts: 5.
+            - Backoff: Starts at 5s, doubles each attempt, capped at 60s.
         """
         self.disconnect()
         wait = RECONNECT_BACKOFF_S
@@ -136,7 +167,17 @@ class MT5DataFeed:
     # ── Utility methods ────────────────────────────────────────────────────────
 
     def get_available_symbols(self) -> list[str]:
-        """Returns list of all symbols available on this broker account."""
+        """
+        Purpose:
+            Retrieves the list of all symbols available on the current broker account.
+            Useful for verifying symbol naming conventions (e.g., '_o' suffix).
+
+        Returns:
+            list[str]: Sorted list of symbol names.
+
+        Exceptions:
+            Logs an error and returns an empty list if MT5 query fails.
+        """
         symbols = mt5.symbols_get()
         if symbols is None:
             logger.error(f"Failed to get symbols: {mt5.last_error()}")
@@ -147,7 +188,18 @@ class MT5DataFeed:
         return symbol_names
 
     def get_symbol_info(self, symbol: str) -> dict | None:
-        """Returns dict with keys: digits, point, volume_min, volume_step, volume_max, trade_contract_size"""
+        """
+        Purpose:
+            Retrieves detailed specifications for a specific symbol.
+            Used for calculating lot sizes and placing correct orders.
+
+        Arguments:
+            symbol (str): Target symbol name.
+
+        Returns:
+            dict | None: Dictionary with keys (digits, point, volume_min, volume_step,
+                        volume_max, trade_contract_size) or None if symbol not found.
+        """
         info = mt5.symbol_info(symbol)
         if info is None:
             logger.error(f"Symbol {symbol} not found.")
@@ -163,7 +215,17 @@ class MT5DataFeed:
         }
 
     def get_history_depth(self, symbol: str, timeframe: int) -> datetime | None:
-        """Fast check for earliest available data for a symbol/timeframe."""
+        """
+        Purpose:
+            Quickly identifies the earliest available historical bar for a symbol.
+
+        Arguments:
+            symbol (str): Target symbol.
+            timeframe (int): MT5 timeframe constant.
+
+        Returns:
+            datetime | None: UTC datetime of the oldest bar or None on failure.
+        """
         # Use a large enough count to find the broker's typical history depth
         rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, 99999)
         if rates is None or len(rates) == 0:
@@ -183,9 +245,21 @@ class MT5DataFeed:
 
     def check_health(self, symbol: str, num_samples: int = 5) -> FeedHealth:
         """
-        Measures API execution time and data freshness.
-        Updates and returns current health state.
-        Only meaningful in live mode.
+        Purpose:
+            Measures MetaTrader 5 API execution time and market data freshness.
+            Ensures that the trading strategy is not acting on stale or delayed data.
+
+        Arguments:
+            symbol (str): The symbol to check (e.g., "EURUSD_o").
+            num_samples (int): Number of tick requests to average. Defaults to 5.
+
+        Returns:
+            FeedHealth: HEALTHY, DEGRADED, or DISCONNECTED.
+
+        Notes:
+            - LATENCY_WARN_MS (50ms): Threshold for warning logs.
+            - LATENCY_PAUSE_MS (200ms): Threshold for marking feed DEGRADED.
+            - DATA_STALE_S (10s): Threshold for tick age before marking DEGRADED.
         """
         if not self._connected:
             self._health = FeedHealth.DISCONNECTED
@@ -228,9 +302,19 @@ class MT5DataFeed:
 
     def wait_for_healthy(self, symbol: str, timeout_s: int = 120) -> bool:
         """
-        Block until feed is HEALTHY or timeout is reached.
-        Used in live trading loop to pause during DEGRADED state.
-        Returns True if recovered, False if timed out.
+        Purpose:
+            Blocks execution until the data feed returns to a HEALTHY state or a timeout occurs.
+            Crucial for ensuring the strategy doesn't execute during market gaps or high latency.
+
+        Arguments:
+            symbol (str): Symbol to monitor for health.
+            timeout_s (int): Maximum time to wait in seconds. Defaults to 120.
+
+        Returns:
+            bool: True if the feed is healthy within the timeout, False otherwise.
+
+        Side Effects:
+            Will attempt automatic reconnection if the state is DISCONNECTED.
         """
         deadline = time.time() + timeout_s
         while time.time() < deadline:
@@ -250,7 +334,20 @@ class MT5DataFeed:
 
     def get_ohlcv(self, symbol: str, timeframe_str: str, count: int = 1000) -> pd.DataFrame | None:
         """
-        Wrapper for MMStrategy to retrieve OHLCV data using string timeframe names.
+        Purpose:
+            High-level wrapper to retrieve the latest OHLCV candles using string timeframes.
+
+        Arguments:
+            symbol (str): The symbol to fetch (e.g., "EURUSD_o").
+            timeframe_str (str): Target timeframe ("M1", "M5", "M15", "H1", etc.).
+            count (int): Number of candles to retrieve. Defaults to 1000.
+
+        Returns:
+            pd.DataFrame | None: DataFrame with standard schema or None on failure.
+
+        Example:
+            >>> df = feed.get_ohlcv("EURUSD_o", "M5", count=500)
+            >>> print(df.iloc[-1]['Close'])
         """
         mapping = {
             "M1": mt5.TIMEFRAME_M1,
@@ -279,22 +376,28 @@ class MT5DataFeed:
         probe_max: bool = False,
     ) -> pd.DataFrame | None:
         """
-        Unified data retrieval.
+        Purpose:
+            The primary, unified data retrieval method for the framework.
+            Handles both live polling and historical range fetching.
 
-        live=True:
-            Retrieves the latest `count` candles.
-            Runs health check first — returns None if DEGRADED/DISCONNECTED.
-            The caller's trading loop should handle None by pausing.
+        Arguments:
+            symbol (str): Target symbol.
+            timeframe (int): MT5 timeframe constant (e.g., mt5.TIMEFRAME_M5).
+            live (bool): If True, performs health checks and fetches latest data.
+            count (int): Number of bars to fetch (for relative requests).
+            date_from (datetime): Start of range (for historical requests).
+            date_to (datetime): End of range (for historical requests).
+            probe_max (bool): If True, binary searches for max retrievable bars.
 
-        live=False:
-            Backtest/historical mode. Three sub-modes:
-            - probe_max=True: finds and retrieves the maximum available bars
-              (uses binary search — slow, use once per session)
-            - date_from/date_to provided: retrieves bars in that date range
-            - neither: retrieves `count` bars from current position
+        Returns:
+            pd.DataFrame | None: Standard schema DataFrame or None if unhealthy/failed.
 
-        Returns DataFrame with columns: Datetime, Open, High, Low, Close, TickVolume, Spread
-        Returns None on failure or unhealthy state in live mode.
+        Schema:
+            Datetime (UTC), Open, High, Low, Close, TickVolume, Spread.
+
+        Notes:
+            In live mode, if the feed is DEGRADED or DISCONNECTED, this returns None.
+            The strategy loop is expected to handle this by waiting.
         """
         if not self._connected:
             logger.error("Not connected. Call connect() first.")
@@ -430,20 +533,22 @@ class MT5DataFeed:
     @staticmethod
     def resample(df: pd.DataFrame, timeframe_minutes: int) -> pd.DataFrame:
         """
-        Resample M1 base data to any higher timeframe.
+        Purpose:
+            Aggregates low-timeframe data (typically M1) into higher timeframes.
+            Useful for multi-timeframe analysis without multiple broker requests.
 
-        Args:
-            df: DataFrame in standard schema with Datetime column
-            timeframe_minutes: target timeframe in minutes (5, 15, 60, 240, 1440)
+        Arguments:
+            df (pd.DataFrame): Source DataFrame in standard schema.
+            timeframe_minutes (int): Target timeframe in minutes (5, 15, 60, etc.).
 
         Returns:
-            Resampled DataFrame in same schema.
+            pd.DataFrame: Resampled DataFrame in standard schema.
 
         Example:
-            m5  = MT5DataFeed.resample(m1_df, 5)
-            h1  = MT5DataFeed.resample(m1_df, 60)
-            h4  = MT5DataFeed.resample(m1_df, 240)
-            d1  = MT5DataFeed.resample(m1_df, 1440)
+            >>> m5_df = MT5DataFeed.resample(m1_df, 5)
+
+        Notes:
+            Drops incomplete candles automatically (rows with any NaN in OHLC).
         """
         df = df.copy()
         df["Datetime"] = pd.to_datetime(df["Datetime"])

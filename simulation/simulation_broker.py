@@ -65,6 +65,12 @@ class SimDeal:
     position_id: int = 0
 
 class SimulationBroker:
+    """
+    Purpose:
+        A virtual broker that mocks the MetaTrader 5 trade execution API.
+        Maintains virtual positions and deals, and enforces SL/TP rules
+        based on simulated market prices.
+    """
     def __init__(self, account, clock):
         self.account = account
         self.clock = clock
@@ -89,6 +95,16 @@ class SimulationBroker:
         self.symbol_info_dict[symbol] = info
 
     def update_market_price(self, symbol: str, bid: float, ask: float):
+        """
+        Purpose:
+            Updates the current virtual market price for a symbol.
+            Triggers check for SL/TP hits and updates account equity.
+
+        Arguments:
+            symbol (str): Target symbol.
+            bid (float): Current bid price.
+            ask (float): Current ask price.
+        """
         self.current_prices[symbol] = {"bid": bid, "ask": ask}
         
         tickets_to_close = []
@@ -121,6 +137,17 @@ class SimulationBroker:
         self.account.update(sum(p.profit for p in self.positions.values()), margin_used)
 
     def order_send(self, request: dict):
+        """
+        Purpose:
+            Virtual implementation of mt5.order_send(). Handles open,
+            close, and modify requests.
+
+        Arguments:
+            request (dict): An MqlTradeRequest-style dictionary.
+
+        Returns:
+            Result: An object with a 'retcode', 'order', and 'price'.
+        """
         action = request.get("action")
         if action == TRADE_ACTION_DEAL:
             if "position" in request: # Close order

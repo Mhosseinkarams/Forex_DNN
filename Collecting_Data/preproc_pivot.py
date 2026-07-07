@@ -27,6 +27,18 @@ class PivotPreprocessor:
             self.engine = None
 
     def get_pivots(self, df, window=24):
+        """
+        Purpose:
+            Identifies historical local peaks and troughs in the price data.
+
+        Arguments:
+            df (pd.DataFrame): Input OHLCV data.
+            window (int): The number of bars to check on each side of a point to
+                         confirm it as a pivot.
+
+        Returns:
+            pd.DataFrame: DataFrame with 'Peak' and 'Trough' columns added.
+        """
         close = df['Close'].values
         peaks = np.zeros(len(df))
         troughs = np.zeros(len(df))
@@ -43,6 +55,18 @@ class PivotPreprocessor:
         return df
 
     def label_pivots(self, df, horizon=24):
+        """
+        Purpose:
+            Labels each bar based on whether a peak or trough occurs within
+             a future horizon. Used for training predictive models.
+
+        Arguments:
+            df (pd.DataFrame): DataFrame with 'Peak' and 'Trough' columns.
+            horizon (int): Look-ahead period in bars.
+
+        Returns:
+            pd.DataFrame: DataFrame with 'Pivot_Label' column.
+        """
         peaks = df['Peak'].values
         troughs = df['Trough'].values
         labels = np.zeros(len(df))
@@ -60,6 +84,19 @@ class PivotPreprocessor:
         return df
 
     def preprocess(self, filename="GBPUSD_1h.csv", window=24, horizon=24):
+        """
+        Purpose:
+            Executes the full pivot preprocessing pipeline: loading data,
+            calculating indicators, identifying pivots, and labeling them.
+
+        Arguments:
+            filename (str): Name of the source CSV file in the Data directory.
+            window (int): Window for pivot detection.
+            horizon (int): Look-ahead for labeling.
+
+        Returns:
+            pd.DataFrame: Preprocessed and labeled DataFrame.
+        """
         input_file = self.data_dir / filename
         if not input_file.exists():
             print(f"Error: {input_file} not found.")

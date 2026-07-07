@@ -68,6 +68,36 @@ class SendOrder:
         signal_id: str,          # from TradingJournal.log_signal(), already logged upstream
         comment: str = "",
     ) -> dict:
+        """
+        Purpose:
+            The central orchestrator for trade entry. Validates signals against
+            drawdown limits, checks for symbol-level conflicts, calculates
+            risk-adjusted lot sizes, and executes orders via PositionManager.
+
+        Arguments:
+            symbol (str): Target symbol name.
+            direction (int): 1 for BUY, -1 for SELL.
+            entry_price (float): Intended entry price (use 0.0 for market).
+            sl_price (float): Stop-loss price.
+            exit_profile (str): The management profile to apply (e.g., "standard").
+            strategy (str): Strategy identifier for magic number selection.
+            signal_category (str): Sub-category (standard/high_risk/reversal).
+            signal_id (str): UUID from the TradingJournal.
+            comment (str): Optional order comment.
+
+        Returns:
+            dict: Detailed result with 'success' (bool) and failure reasons
+                  (e.g., 'conflict_blocked', 'drawdown_blocked').
+
+        Side Effects:
+            - Updates send_order_state.json with new ticket metadata.
+            - Registers successful trades with the ExitManager.
+            - Logs entry details to the TradingJournal.
+
+        Notes:
+            Implements conflict rules 1-3 to prevent duplicate or contradictory
+            exposure on the same symbol.
+        """
         # 1. Validation
         if entry_price is not None and entry_price != 0.0:
             logger.warning(f"Pending orders not yet implemented. Requested entry: {entry_price}")

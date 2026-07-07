@@ -1,4 +1,9 @@
 class SimulationAccount:
+    """
+    Purpose:
+        Simulates a trading account's financial state, including balance,
+        equity, margin, and drawdown tracking.
+    """
     def __init__(self, initial_balance: float = 10000.0, leverage: int = 100):
         self.initial_balance = initial_balance
         self.balance = initial_balance
@@ -15,6 +20,15 @@ class SimulationAccount:
         self.max_drawdown_pct = 0.0
 
     def update(self, open_positions_profit: float, margin_used: float):
+        """
+        Purpose:
+            Updates the current equity, free margin, and peak drawdown
+            based on floating PnL and active margin.
+
+        Arguments:
+            open_positions_profit (float): Total unrealized PnL.
+            margin_used (float): Total margin required for open positions.
+        """
         self.open_profit = open_positions_profit
         self.equity = self.balance + self.open_profit
         self.margin_used = margin_used
@@ -32,6 +46,13 @@ class SimulationAccount:
             self.max_drawdown_pct = dd_pct
 
     def apply_deal(self, profit: float):
+        """
+        Purpose:
+            Updates the realized balance after a trade is closed.
+
+        Arguments:
+            profit (float): Realized PnL from the closed position.
+        """
         self.balance += profit
         self.closed_profit += profit
         if self.balance > self.max_balance:

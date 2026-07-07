@@ -48,14 +48,32 @@ class MT5DataLoader:
             self.engine = None
 
     def initialize(self):
-        """Initializes connection to MT5 terminal with provided credentials."""
+        """
+        Purpose:
+            Initializes the connection to the MetaTrader 5 terminal using
+            instance-specific credentials.
+
+        Returns:
+            bool: True if initialization was successful, False otherwise.
+        """
         if not mt5.initialize(login=self.mt5_id, password=self.password, server=self.server):
             print("Failed to initialize MT5, error code:", mt5.last_error())
             return False
         return True
 
     def get_max_bars(self, symbol, timeframe):
-        """Determines maximum accessible historical candles using binary search."""
+        """
+        Purpose:
+            Uses a binary search algorithm to determine the maximum number of
+            historical candles available from the broker for a specific symbol/timeframe.
+
+        Arguments:
+            symbol (str): Target symbol name.
+            timeframe (int): MT5 timeframe constant.
+
+        Returns:
+            tuple: (max_bars: int, last_rates: np.ndarray)
+        """
         low = 0
         high = 10000000
         max_bars = 0
@@ -81,7 +99,18 @@ class MT5DataLoader:
         return max_bars, last_rates
 
     def measure_latency(self, symbol, num_samples=10):
-        """Measures average data latency and API execution time."""
+        """
+        Purpose:
+            Measures the network latency and API execution time by sampling
+            multiple tick requests.
+
+        Arguments:
+            symbol (str): Symbol to sample.
+            num_samples (int): Number of requests to average.
+
+        Returns:
+            tuple: (avg_latency_ms: float, avg_exec_time_ms: float)
+        """
         data_latencies = []
         execution_times = []
 
@@ -106,7 +135,19 @@ class MT5DataLoader:
         return None, None
 
     def get_historical_data(self, symbol="GBPUSD_i", timeframe=mt5.TIMEFRAME_M5, count=10000):
-        """Fetches historical rates and current market state from MT5."""
+        """
+        Purpose:
+            Fetches historical OHLCV data, enriches it with current Ask/Bid
+            prices, and calculates technical indicators using the IndicatorEngine.
+
+        Arguments:
+            symbol (str): Target symbol name.
+            timeframe (int): MT5 timeframe constant.
+            count (int): Number of candles to retrieve.
+
+        Returns:
+            pd.DataFrame: Enriched DataFrame with technical indicators.
+        """
         if not mt5.symbol_select(symbol, True):
             print(f"Failed to select symbol '{symbol}'. Error:", mt5.last_error())
             return None

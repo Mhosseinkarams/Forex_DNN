@@ -26,6 +26,19 @@ class MultiInOutPreprocessor:
             self.engine = None
 
     def preprocess(self, filename="GBPUSD_1h.csv", num_input_candles=100, num_output_candles=5):
+        """
+        Purpose:
+            Transforms OHLCV data into 3D NumPy arrays suitable for LSTM
+            sequence training. Generates multi-step forward-looking labels.
+
+        Arguments:
+            filename (str): Name of the source CSV file in the Data directory.
+            num_input_candles (int): Sequence length (lookback) for the model.
+            num_output_candles (int): Forecasting horizon (lookahead).
+
+        Returns:
+            tuple: (X: np.ndarray, y: np.ndarray) where X is (samples, lookback, features).
+        """
         input_file = self.data_dir / filename
         if not input_file.exists():
             print(f"Error: {input_file} not found.")

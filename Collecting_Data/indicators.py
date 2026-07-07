@@ -24,13 +24,30 @@ class IndicatorEngine:
 
     def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Receives a DataFrame in standard schema.
-        Returns a new DataFrame (never modifies input) with all
-        Layer 1 and Layer 2 columns appended.
-        If dropna=False (default): NaN rows are preserved.
-            Log a warning if any EMA or ATR column contains NaN.
-        If dropna=True: drop rows where any EMA or ATR column
-            contains NaN. Use for backtesting only.
+        Purpose:
+            Transforms raw OHLCV data into a feature-rich DataFrame by calculating technical
+            indicators and market metadata. This is the central engine for feature generation.
+
+        Arguments:
+            df (pd.DataFrame): Input DataFrame in standard schema (Datetime, Open, High, Low, Close, TickVolume, Spread).
+
+        Returns:
+            pd.DataFrame: A new DataFrame with original columns plus technical indicators
+                          (Layer 1: EMA, ATR) and metadata (Layer 2: slopes, ratios, distances).
+
+        Exceptions:
+            Logs a warning if the input data is shorter than the required warmup period
+            (max EMA window + slope window).
+
+        Notes:
+            - This method is stateless and does NOT modify the input DataFrame.
+            - If self.dropna is True, rows with NaN indicators will be removed (use for backtesting/training).
+            - Layer 2 includes ATR-normalized distances, which are scale-invariant features useful for ML.
+
+        Example:
+            >>> engine = IndicatorEngine(ema_periods=[50, 600])
+            >>> df_features = engine.calculate(raw_df)
+            >>> print(df_features['ema_600_slope'].iloc[-1])
         """
         # 1. Never modify the input DataFrame. Work on a copy.
         original_cols = list(df.columns)

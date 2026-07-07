@@ -4,6 +4,11 @@ from simulation.simulation_environment import env
 logger = logging.getLogger("SimulationOrderEngine")
 
 class SimulationOrderEngine:
+    """
+    Purpose:
+        A simplified orchestrator for trade entry during backtesting.
+        Mirrors the logic of SendOrder but optimized for the simulation loop.
+    """
     def __init__(
         self,
         position_manager,
@@ -32,6 +37,24 @@ class SimulationOrderEngine:
         signal_id: str,
         comment: str = ""
     ) -> dict:
+        """
+        Purpose:
+            Executes a trade setup within the simulated environment.
+            Includes drawdown checks, lot sizing, and registration.
+
+        Arguments:
+            symbol (str): Target symbol.
+            direction (int): 1 for BUY, -1 for SELL.
+            entry_price (float): Intended price (usually 0.0 for market).
+            sl_price (float): Target stop-loss.
+            exit_profile (str): Management model (standard/single).
+            strategy (str): Strategy name.
+            signal_category (str): standard/high_risk/reversal.
+            signal_id (str): UUID from TradingJournal.
+
+        Returns:
+            dict: Standardized result dictionary.
+        """
         tick = env.symbol_info_tick(symbol)
         if tick is None:
             return {"success": False, "reason": "no_tick", "error_detail": f"No tick for {symbol}"}
