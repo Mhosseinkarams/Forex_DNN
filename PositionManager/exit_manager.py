@@ -4,7 +4,8 @@ import logging
 import threading
 import math
 from datetime import datetime, timezone
-import MetaTrader5 as mt5
+from simulation.simulation_environment import env as mt5
+from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE
 
 # Constants for when MetaTrader5 is not installed (e.g. during local testing),
 # matching the fallback convention already used in position_manager.py
@@ -85,7 +86,7 @@ class ExitManager:
         try:
             with self._lock:
                 data = {
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "last_updated": mt5.get_now().isoformat(),
                     "tracked_tickets": self.tracked_tickets
                 }
             temp_file = self.state_file + ".tmp"
@@ -203,7 +204,8 @@ class ExitManager:
         if not deals:
             return ("no_deal_history", None)
 
-        last_deal = max(deals, key=lambda d: d.time)
+        # Use time_msc for better precision if available (MT5 and SimulationBroker both provide it)
+        last_deal = max(deals, key=lambda d: getattr(d, 'time_msc', d.time))
         reason_code = last_deal.reason
         label = REASON_LABELS.get(reason_code, f"unknown_reason_{reason_code}")
         return (label, reason_code)
@@ -393,8 +395,7 @@ class ExitManager:
         entry_price: float,
         sl_price: float,
         direction: int,       # 1 = buy, -1 = sell
-        stage: str,           # "single" or "multi"
-        final_tp: int,        # 1, 2, 3, or 4
+        exit_profile: str,
         signal_id: str = None,
     ) -> None:
         """
@@ -404,6 +405,19 @@ class ExitManager:
         with self._lock:
             if ticket in self.tracked_tickets:
                 return
+
+            # Map profile to internal logic parameters
+            if exit_profile == EXIT_PROFILE_STANDARD:
+                stage = "multi"
+                final_tp = 2
+            elif exit_profile == EXIT_PROFILE_SINGLE:
+                stage = "single"
+                final_tp = 1
+            else:
+                # Fallback/Unknown profile
+                logger.warning(f"Unknown exit profile '{exit_profile}' for ticket {ticket}. Defaulting to single.")
+                stage = "single"
+                final_tp = 1
 
             # TP price ladder calculation
             R = abs(entry_price - sl_price)
@@ -415,10 +429,11 @@ class ExitManager:
 
             self.tracked_tickets[ticket] = {
                 "signal_id": signal_id,
-                "open_time": datetime.now(timezone.utc).isoformat(),
+                "open_time": mt5.get_now().isoformat(),
                 "entry_price": float(entry_price),
                 "sl_price_original": float(sl_price),
                 "direction": int(direction),
+                "exit_profile": exit_profile,
                 "stage": stage,
                 "final_tp": int(final_tp),
                 "tp_prices": tp_prices,
@@ -432,7 +447,7 @@ class ExitManager:
             }
         
         self._save_state()
-        logger.info(f"Registered ticket {ticket} for {stage} exit (final_tp={final_tp})")
+        logger.info(f"Registered ticket {ticket} with profile '{exit_profile}' ({stage} stage, final_tp={final_tp})")
 
     def _initialize_ticket_shares(self, ticket: int, symbol: str, original_lot: float) -> bool:
         """

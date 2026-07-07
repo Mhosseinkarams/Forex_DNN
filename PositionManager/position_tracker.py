@@ -4,7 +4,8 @@ import logging
 import threading
 import os
 from datetime import datetime, timezone
-import MetaTrader5 as mt5
+
+from simulation.simulation_environment import env as mt5
 
 logger = logging.getLogger("PositionTracker")
 
@@ -45,7 +46,7 @@ class PositionTracker:
     def _save_state(self):
         try:
             data = {
-                "last_updated": datetime.now(timezone.utc).isoformat(),
+                "last_updated": mt5.get_now().isoformat(),
                 "positions": self.positions
             }
             # Use a temporary file and rename for atomic write
@@ -145,7 +146,7 @@ class PositionTracker:
                 "floating_pnl": p.profit,
                 "remaining_risk_dollars": risk,
                 "reward_dollars": reward,
-                "open_time": datetime.fromtimestamp(p.time, tz=timezone.utc).isoformat(),
+                "open_time": datetime.fromtimestamp(getattr(p, 'time', 0), tz=timezone.utc).isoformat(),
             }
             new_positions.append(snapshot)
             new_total_risk += risk

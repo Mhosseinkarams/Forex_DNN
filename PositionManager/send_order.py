@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import sys
+from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE
 
 # Optional MT5 import for environments where it's not installed (e.g. Linux CI)
 try:
@@ -61,8 +62,7 @@ class SendOrder:
         direction: int,          # 1=buy, -1=sell
         entry_price: float,      # 0.0 or None = market order; specific price = pending (future)
         sl_price: float,
-        tp_level: int,           # 1, 2, 3, or 4 — maps to 1R, 2R, 3R, 4R
-        stage: str,              # "single" or "multi"
+        exit_profile: str,
         strategy: str,           # "unity" or "mm"
         signal_category: str,    # "standard", "high_risk", or "reversal"
         signal_id: str,          # from TradingJournal.log_signal(), already logged upstream
@@ -75,6 +75,7 @@ class SendOrder:
 
         # 2. Fetch Live Price for Market Order
         try:
+            from simulation.simulation_environment import env as mt5_env
             tick = mt5.symbol_info_tick(symbol)
             if tick is None:
                 err = mt5.last_error()
@@ -114,6 +115,10 @@ class SendOrder:
 
         symbol_positions = [p for p in open_positions if p["symbol"] == symbol]
         
+        # Map exit_profile to tp_level for initial order
+        # EXIT_PROFILE_STANDARD -> TP2, EXIT_PROFILE_SINGLE -> TP1
+        tp_level = 2 if exit_profile == EXIT_PROFILE_STANDARD else 1
+
         # Calculate R and TP price based on market_price
         R = abs(market_price - sl_price)
         tp_price = market_price + (1 if direction == 1 else -1) * tp_level * R
@@ -180,14 +185,12 @@ class SendOrder:
 
             # Register with ExitManager
             try:
-                # Note: register_position signature follows the 6-arg interface provided in the prompt
                 self.em.register_position(
                     ticket=ticket,
                     entry_price=actual_entry,
                     sl_price=actual_sl,
                     direction=direction,
-                    stage=stage,
-                    final_tp=tp_level,
+                    exit_profile=exit_profile,
                     signal_id=signal_id
                 )
                 logger.info(f"Registered ticket {ticket} with ExitManager")
@@ -284,8 +287,8 @@ if __name__ == "__main__":
 
     print("\n--- Starting SendOrder Tests ---")
 
-    # 1. Market order success (buy, standard, multi, tp_level=2)
-    print("Test 1: Market order success (buy, standard, multi, tp_level=2)")
+    # 1. Market order success (buy, standard exit profile)
+    print("Test 1: Market order success (buy, standard exit profile)")
     pm, pt, dm, ps, em, tj = setup_mocks()
     dm.trading_allowed.return_value = True
     dm.max_risk_pct.return_value = 0.03
@@ -301,7 +304,7 @@ if __name__ == "__main__":
     mt5.account_info.return_value = mock.MagicMock(balance=10000.0)
     
     so = SendOrder(pm, pt, dm, ps, em, tj, "test_send_order_state.json")
-    res = so.execute("EURUSD_o", 1, 0.0, 1.0950, 2, "multi", "unity", "standard", "sig_123")
+    res = so.execute("EURUSD_o", 1, 0.0, 1.0950, EXIT_PROFILE_STANDARD, "unity", "standard", "sig_123")
     
     assert res["success"] == True
     assert res["ticket"] == 1001
@@ -318,7 +321,7 @@ if __name__ == "__main__":
     
     mt5.symbol_info_tick.return_value = mock.MagicMock(ask=1.1000, bid=1.0990)
     so = SendOrder(pm, pt, dm, ps, em, tj, "test_send_order_state.json")
-    res = so.execute("EURUSD_o", 1, 0.0, 1.0950, 2, "multi", "unity", "standard", "sig_123")
+    res = so.execute("EURUSD_o", 1, 0.0, 1.0950, EXIT_PROFILE_STANDARD, "unity", "standard", "sig_123")
     
     assert res["success"] == False
     assert res["reason"] == "drawdown_blocked"
@@ -336,7 +339,7 @@ if __name__ == "__main__":
     so = SendOrder(pm, pt, dm, ps, em, tj, "test_send_order_state.json")
     so.ticket_categories[1001] = "standard"
     
-    res = so.execute("EURUSD_o", 1, 0.0, 1.0950, 2, "multi", "unity", "standard", "sig_123")
+    res = so.execute("EURUSD_o", 1, 0.0, 1.0950, EXIT_PROFILE_STANDARD, "unity", "standard", "sig_123")
     assert res["success"] == False
     assert res["reason"] == "conflict_blocked"
     print("Test 3 Passed.")
@@ -353,7 +356,7 @@ if __name__ == "__main__":
     so.ticket_categories[1001] = "standard"
     
     # New buy with SL lower than 1.0950 -> blocked
-    res = so.execute("EURUSD_o", 1, 0.0, 1.0940, 2, "multi", "unity", "high_risk", "sig_124")
+    res = so.execute("EURUSD_o", 1, 0.0, 1.0940, EXIT_PROFILE_STANDARD, "unity", "high_risk", "sig_124")
     assert res["success"] == False
     assert res["reason"] == "conflict_blocked"
     print("Test 4 Passed.")
@@ -374,7 +377,7 @@ if __name__ == "__main__":
     so.ticket_categories[1001] = "standard"
     
     # New buy with SL higher than 1.0950 -> allowed
-    res = so.execute("EURUSD_o", 1, 0.0, 1.0960, 2, "multi", "unity", "high_risk", "sig_124")
+    res = so.execute("EURUSD_o", 1, 0.0, 1.0960, EXIT_PROFILE_STANDARD, "unity", "high_risk", "sig_124")
     assert res["success"] == True
     print("Test 5 Passed.")
 
@@ -391,8 +394,8 @@ if __name__ == "__main__":
     
     # New sell at 1.0990, SL at 1.1050. TP at 2R: 1.0990 - 2*(1.1050-1.0990) = 1.0990 - 0.0120 = 1.0870.
     # Wait, if TP is 1.0940 (below existing SL 1.0950) it should block.
-    # R = 1.1050 - 1.0990 = 0.0060. tp_level=1 -> TP = 1.0990 - 0.0060 = 1.0930. 1.0930 < 1.0950 -> blocked.
-    res = so.execute("EURUSD_o", -1, 0.0, 1.1050, 1, "multi", "unity", "high_risk", "sig_125")
+    # R = 1.1050 - 1.0990 = 0.0060. exit_profile="single" -> tp_level=1 -> TP = 1.0990 - 0.0060 = 1.0930. 1.0930 < 1.0950 -> blocked.
+    res = so.execute("EURUSD_o", -1, 0.0, 1.1050, EXIT_PROFILE_SINGLE, "unity", "high_risk", "sig_125")
     assert res["success"] == False
     assert res["reason"] == "conflict_blocked"
     print("Test 6 Passed.")
@@ -413,7 +416,7 @@ if __name__ == "__main__":
     so.ticket_categories[1001] = "reversal"
     
     # Should be allowed because existing is reversal
-    res = so.execute("EURUSD_o", -1, 0.0, 1.1050, 1, "multi", "unity", "standard", "sig_126")
+    res = so.execute("EURUSD_o", -1, 0.0, 1.1050, EXIT_PROFILE_STANDARD, "unity", "standard", "sig_126")
     assert res["success"] == True
     print("Test 7 Passed.")
 
@@ -429,7 +432,7 @@ if __name__ == "__main__":
     mt5.account_info.return_value = mock.MagicMock(balance=10000.0)
     
     so = SendOrder(pm, pt, dm, ps, em, tj, "test_send_order_state.json")
-    res = so.execute("EURUSD_o", 1, 0.0, 1.0950, 2, "multi", "unity", "standard", "sig_127")
+    res = so.execute("EURUSD_o", 1, 0.0, 1.0950, EXIT_PROFILE_STANDARD, "unity", "standard", "sig_127")
     assert res["success"] == False
     assert res["reason"] == "sizing_failed"
     print("Test 8 Passed.")
@@ -447,7 +450,7 @@ if __name__ == "__main__":
     mt5.account_info.return_value = mock.MagicMock(balance=10000.0)
     
     so = SendOrder(pm, pt, dm, ps, em, tj, "test_send_order_state.json")
-    res = so.execute("EURUSD_o", 1, 0.0, 1.0950, 2, "multi", "unity", "standard", "sig_128")
+    res = so.execute("EURUSD_o", 1, 0.0, 1.0950, EXIT_PROFILE_STANDARD, "unity", "standard", "sig_128")
     assert res["success"] == False
     assert res["reason"] == "open_failed"
     tj.log_order_failure.assert_called_once()
@@ -467,7 +470,7 @@ if __name__ == "__main__":
     mt5.account_info.return_value = mock.MagicMock(balance=10000.0)
     
     so1 = SendOrder(pm, pt, dm, ps, em, tj, "test_send_order_state.json")
-    so1.execute("EURUSD_o", 1, 0.0, 1.0950, 2, "multi", "unity", "standard", "sig_999")
+    so1.execute("EURUSD_o", 1, 0.0, 1.0950, EXIT_PROFILE_STANDARD, "unity", "standard", "sig_999")
     assert 5005 in so1.ticket_categories
     
     # New instance, same file
