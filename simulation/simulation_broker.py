@@ -293,10 +293,18 @@ class SimulationBroker:
             del self.positions[ticket]
         else:
             pos.volume -= close_vol
-            if pos.type == ORDER_TYPE_BUY:
-                pos.profit = (pos.price_current - pos.price_open) * pos.volume * contract_size
+            # Update remaining position profit
+            if tick_value and tick_size:
+                ticks = (pos.price_current - pos.price_open) / tick_size
+                if pos.type == ORDER_TYPE_SELL:
+                    ticks = -ticks
+                pos.profit = ticks * pos.volume * tick_value
             else:
-                pos.profit = (pos.price_open - pos.price_current) * pos.volume * contract_size
+                c_size = info.get("trade_contract_size", 100000)
+                if pos.type == ORDER_TYPE_BUY:
+                    pos.profit = (pos.price_current - pos.price_open) * pos.volume * c_size
+                else:
+                    pos.profit = (pos.price_open - pos.price_current) * pos.volume * c_size
 
         return True
 
