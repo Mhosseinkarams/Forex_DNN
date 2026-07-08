@@ -5,8 +5,26 @@ from dotenv import load_dotenv
 
 def load_credentials(path="credentials.json"):
     """
-    Loads MT5 credentials from credentials.json or environment variables.
-    Returns a dictionary with 'login', 'password', and 'server'.
+    Purpose:
+        Loads MetaTrader 5 credentials from a JSON file or environment variables.
+        Provides a centralized way for all modules to authenticate with the broker.
+
+    Arguments:
+        path (str): Path to the JSON file containing credentials. Defaults to "credentials.json".
+
+    Returns:
+        dict: A dictionary containing 'login' (int), 'password' (str), and 'server' (str).
+
+    Exceptions:
+        Logs a warning if the JSON file is missing or malformed, falling back to environment variables.
+
+    Example:
+        >>> creds = load_credentials("credentials.json")
+        >>> print(creds['login'])
+        12345678
+
+    Notes:
+        Prioritizes: credentials.json > .env file > environment variables.
     """
     # Default values from environment
     load_dotenv()

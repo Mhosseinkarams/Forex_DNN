@@ -25,6 +25,11 @@ from PositionManager.send_order import SendOrder
 from Strategies.mm_strategy import MMStrategy
 
 class IntegrationValidator:
+    """
+    Purpose:
+        A mock-based end-to-end validation suite that verifies the internal
+        logic of the framework without requiring a live MT5 terminal.
+    """
     def __init__(self):
         self.results = {}
         if os.path.exists("Validation_Logs"): shutil.rmtree("Validation_Logs")
@@ -40,6 +45,11 @@ class IntegrationValidator:
         self.logger.info(f"{item}: {status} - {detail}")
 
     def run_validation(self):
+        """
+        Purpose:
+            Runs a series of tests covering startup, data flow, signal detection,
+            order execution, and recovery using mocked broker responses.
+        """
         self.logger.info("Starting Framework Integration Validation...")
 
         try:
@@ -202,15 +212,14 @@ class IntegrationValidator:
 
             # 2.5 Close Position and verify Summary
             self.logger.info("Verifying closure and summary generation...")
-            mock_mt5.history_deals_get.return_value = [
-                MagicMock(ticket=123456, entry=0, price=1.1011, magic=self.MAGIC_MM, time=time.time(), profit=0, reason=3),
-                MagicMock(ticket=123457, entry=1, price=1.1050, magic=self.MAGIC_MM, time=time.time()+3600, profit=50.0, reason=5)
-            ]
+            t_now = time.time()
+            deal1 = MagicMock(ticket=123456, entry=0, price=1.1011, magic=self.MAGIC_MM, time=t_now, profit=0, reason=3)
+            del deal1.time_msc # Force use of .time
+            deal2 = MagicMock(ticket=123457, entry=1, price=1.1050, magic=self.MAGIC_MM, time=t_now+3600, profit=50.0, reason=5)
+            del deal2.time_msc # Force use of .time
+
+            mock_mt5.history_deals_get.return_value = [deal1, deal2]
             mock_mt5.positions_get.return_value = [] # Position disappeared
-            mock_mt5.history_deals_get.return_value = [
-                MagicMock(ticket=123456, entry=0, price=1.1011, magic=self.MAGIC_MM, time=time.time(), profit=0, reason=3),
-                MagicMock(ticket=123457, entry=1, price=1.1050, magic=self.MAGIC_MM, time=time.time()+3600, profit=50.0, reason=5)
-            ]
 
             self.pt._poll_cycle() # Update tracker state to reflect empty positions
             self.em._poll_cycle() # Should detect disappearance

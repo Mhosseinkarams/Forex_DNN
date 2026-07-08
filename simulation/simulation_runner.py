@@ -22,6 +22,11 @@ from simulation.backtest_report import BacktestReport
 logger = logging.getLogger("SimulationRunner")
 
 class SimulationRunner:
+    """
+    Purpose:
+        The main orchestrator for the backtesting process. It assembles all
+        simulation components and drives the iterative loop through time.
+    """
     def __init__(
         self,
         symbol: str,
@@ -84,6 +89,12 @@ class SimulationRunner:
         )
 
     def run(self):
+        """
+        Purpose:
+            Starts the simulation loop. Iterates through every bar in the
+            HistoricalDataFeed, updates the virtual environment, and triggers
+            strategy polling and management cycles.
+        """
         logger.info(f"Starting simulation for {self.symbol}...")
         
         while not self.data_feed.is_finished():
@@ -102,6 +113,11 @@ class SimulationRunner:
         self.generate_report()
 
     def generate_report(self):
+        """
+        Purpose:
+            Finalizes the backtest by reconstructing all trades from journals
+            and calculating aggregate performance metrics.
+        """
         from trade_auditor import TradeAuditor
         auditor = TradeAuditor(journal_root=self.journal_root, mode="backtest")
         lifecycles = auditor.reconstruct_all()

@@ -97,7 +97,14 @@ class ExitManager:
             logger.error(f"Failed to save ExitManager state: {e}")
 
     def start(self) -> None:
-        """Start background polling loop in a daemon thread."""
+        """
+        Purpose:
+            Starts the background management loop in a separate daemon thread.
+            The loop continuously evaluates active positions for TP/SL hits.
+
+        Side Effects:
+            Spawns a new threading.Thread if one is not already running.
+        """
         if self._thread is not None and self._thread.is_alive():
             logger.warning("ExitManager is already running.")
             return
@@ -108,7 +115,15 @@ class ExitManager:
         logger.info("ExitManager started.")
 
     def stop(self) -> None:
-        """Stop the polling loop cleanly."""
+        """
+        Purpose:
+            Gracefully stops the background management loop.
+            Ensures that the thread terminates before the function returns.
+
+        Notes:
+            Uses a threading.Event to signal the stop and waits up to 10 seconds
+            for the thread to join.
+        """
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=10)
@@ -399,8 +414,25 @@ class ExitManager:
         signal_id: str = None,
     ) -> None:
         """
-        Registers an open position for exit management.
-        Calculates TP price ladder and initializes internal tracking state.
+        Purpose:
+            Onboards a newly opened position into the management system.
+            Calculates the Take-Profit price ladder and initializes tracking metadata.
+
+        Arguments:
+            ticket (int): MT5 position ticket ID.
+            entry_price (float): The price at which the position was filled.
+            sl_price (float): The initial stop-loss price.
+            direction (int): 1 for BUY, -1 for SELL.
+            exit_profile (str): The name of the management profile (e.g., "standard", "single").
+            signal_id (str): The UUID of the original strategy signal.
+
+        Side Effects:
+            - Adds the ticket to self.tracked_tickets.
+            - Persists the new state to the exit_manager_state.json file.
+
+        Notes:
+            If the ticket is already registered, this method returns silently to
+            prevent state corruption.
         """
         with self._lock:
             if ticket in self.tracked_tickets:

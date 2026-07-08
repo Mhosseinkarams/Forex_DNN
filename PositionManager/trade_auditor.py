@@ -28,7 +28,14 @@ class TradeAuditor:
         self.logger = logging.getLogger("TradeAuditor")
 
     def load_journal_data(self) -> pd.DataFrame:
-        """Loads all journal CSVs for the current mode into a single DataFrame."""
+        """
+        Purpose:
+            Aggregates all chronological event CSVs from the current mode's
+            event directory into a single Pandas DataFrame.
+
+        Returns:
+            pd.DataFrame: A unified DataFrame of all events, sorted by timestamp.
+        """
         all_dfs = []
         mode_path = os.path.join(self.journal_root, self.mode)
         if not os.path.exists(mode_path):
@@ -182,7 +189,21 @@ class TradeAuditor:
 
     def reconstruct_trade_lifecycle(self, ticket: Optional[int] = None, signal_id: Optional[str] = None) -> Optional[PositionLifecycle]:
         """
-        Reconstructs the full lifecycle of a trade using the PositionLifecycleBuilder.
+        Purpose:
+            The primary entry point for forensic analysis. Rebuilds a trade's
+            entire history from discovery to closure.
+
+        Arguments:
+            ticket (int): Optional MT5 ticket ID.
+            signal_id (str): Optional framework signal UUID.
+
+        Returns:
+            Optional[PositionLifecycle]: The fully populated lifecycle object
+                                        or None if trade not found.
+
+        Notes:
+            Attempts to load from a completed summary (Layer 2) first,
+            falling back to event reconstruction (Layer 1) if not yet closed.
         """
         ids = self.find_trade(ticket=ticket, signal_id=signal_id)
         if not ids:
@@ -366,7 +387,15 @@ class TradeAuditor:
         return None
 
     def save_reports(self, lifecycle: PositionLifecycle, output_dir: str = "AuditReports"):
-        """Saves reports in Markdown and JSON formats."""
+        """
+        Purpose:
+            Persists the audited lifecycle to disk in both human-readable
+            (Markdown) and machine-readable (JSON) formats.
+
+        Arguments:
+            lifecycle (PositionLifecycle): The object to save.
+            output_dir (str): Destination directory.
+        """
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 

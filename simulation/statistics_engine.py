@@ -4,6 +4,11 @@ from typing import List, Dict, Any
 from Collecting_Data.position_lifecycle import PositionLifecycle
 
 class StatisticsEngine:
+    """
+    Purpose:
+        The quantitative analysis engine for the framework. Translates
+        individual trade lifecycles into aggregate statistical performance.
+    """
     def __init__(self, lifecycles: List[PositionLifecycle]):
         self.lifecycles = lifecycles
         self.df = self._to_dataframe()
@@ -15,6 +20,14 @@ class StatisticsEngine:
         return pd.DataFrame(rows)
 
     def calculate_metrics(self) -> Dict[str, Any]:
+        """
+        Purpose:
+            Computes a comprehensive set of performance metrics including
+            Win Rate, Profit Factor, Expectancy, and Streak Analysis.
+
+        Returns:
+            Dict[str, Any]: Dictionary of calculated metrics.
+        """
         if self.df.empty:
             return {}
 

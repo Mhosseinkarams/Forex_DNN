@@ -60,6 +60,11 @@ JOURNAL_DIRECTORY = os.path.join(VALIDATION_DIRECTORY, "Journals")
 # ==============================================================================
 
 class LiveValidator:
+    """
+    Purpose:
+        A production-readiness diagnostic tool that executes a series of
+        sequential tests against a live MetaTrader 5 terminal.
+    """
     def __init__(self):
         self.results = {}
         self.metrics = {
@@ -100,6 +105,13 @@ class LiveValidator:
             print(f"\n--- Running in {ACCOUNT_MODE.upper()} Mode ---\n")
 
     def run(self):
+        """
+        Purpose:
+            Executes the full suite of 13 validation tests.
+
+        Returns:
+            bool: True if all critical tests pass.
+        """
         self.print_warning()
         self.logger.info("Starting Live Framework Validation...")
         self.start_ts = time.time()
