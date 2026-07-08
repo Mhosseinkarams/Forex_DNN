@@ -65,8 +65,10 @@ class SimulationOrderEngine:
             return {"success": False, "reason": "drawdown_blocked"}
 
         risk_pct = self.dm.max_risk_pct()
-        DEFAULT_RISK = {"standard": 0.01, "high_risk": 0.005, "reversal": 0.003}
-        risk_pct = min(risk_pct, DEFAULT_RISK.get(signal_category, 0.01))
+        from Collecting_Data.position_lifecycle import EXIT_PROFILES
+        profile_cfg = EXIT_PROFILES.get(exit_profile)
+        default_risk = profile_cfg.get("default_risk", 0.01) if profile_cfg else 0.01
+        risk_pct = min(risk_pct, default_risk)
 
         acc = env.account_info()
         balance = acc.balance
@@ -78,8 +80,7 @@ class SimulationOrderEngine:
         lot_size = sizing_res["lot_size"]
         actual_risk_pct = sizing_res["risk_pct_actual"]
 
-        from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD
-        tp_level = 2 if exit_profile == EXIT_PROFILE_STANDARD else 1
+        tp_level = profile_cfg["broker_tp_level"] if profile_cfg else 1
         R = abs(market_price - sl_price)
         tp_price = market_price + (1 if direction == 1 else -1) * tp_level * R
 

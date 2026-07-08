@@ -15,7 +15,7 @@ except ImportError:
 
 # Modules
 from Collecting_Data.indicators import IndicatorEngine
-from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE
+from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE, EXIT_PROFILE_HIGH_RISK, EXIT_PROFILE_REVERSAL
 
 logger = logging.getLogger("MMStrategy")
 
@@ -307,10 +307,10 @@ class MMStrategy:
             exit_profile = EXIT_PROFILE_STANDARD
             risk_pct_default = 0.01
         elif signal_type == "high_risk":
-            exit_profile = EXIT_PROFILE_SINGLE
+            exit_profile = EXIT_PROFILE_HIGH_RISK
             risk_pct_default = 0.005
         else: # reversal
-            exit_profile = EXIT_PROFILE_SINGLE
+            exit_profile = EXIT_PROFILE_REVERSAL
             risk_pct_default = 0.003
 
         # SL Calculation
@@ -399,18 +399,10 @@ class MMStrategy:
         if tick is None: return float(sl_price)
         entry_price = tick.ask if direction == 1 else tick.bid
         
-        # Max SL distance cap
+        # Max SL distance cap removed as requested
         info = mt5.symbol_info(symbol)
         if info is None: return float(sl_price)
         
-        pip_size = info.point * 10
-        max_sl_dist = self.max_sl_pips * pip_size
-        
-        current_dist = abs(entry_price - sl_price)
-        if current_dist > max_sl_dist:
-            sl_price = entry_price - direction * max_sl_dist
-            logger.warning(f"SL capped for {symbol} at {self.max_sl_pips} pips")
-            
         # Minimum SL distance
         stops_level_price = info.trade_stops_level * info.point
         if abs(entry_price - sl_price) < stops_level_price:
