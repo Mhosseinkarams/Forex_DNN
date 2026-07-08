@@ -1,0 +1,25 @@
+{
+    "last_updated": "2024-01-01T00:00:00+00:00",
+    "tracked_tickets": {
+        "1000000": {
+            "signal_id": "57314a14-2a6b-4338-bf91-f4f8f1a76a2b",
+            "open_time": "2024-01-01T00:30:00+00:00",
+            "entry_price": 1.1006,
+            "sl_price_original": 1.1,
+            "direction": 1,
+            "exit_profile": "single",
+            "stage": "single",
+            "final_tp": 1,
+            "tp_prices": {
+                "1": 1.1012
+            },
+            "original_lot_size": 1.66,
+            "symbol": "TEST_o",
+            "share": 0.0,
+            "leftover": 0.0,
+            "current_stage_reached": 0,
+            "sl_moved_to_breakeven": false,
+            "closed": false
+        }
+    }
+}

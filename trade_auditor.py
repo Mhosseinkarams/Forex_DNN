@@ -202,10 +202,15 @@ class TradeAuditor:
         # Gather Broker Data
         broker_data = None
         if ticket:
-            broker_data = self.get_mt5_history(position=ticket)
-            current_pos = self.get_mt5_position(ticket)
-            if current_pos:
-                broker_data["current_position"] = current_pos
+            if self.mode == "backtest" and mt5:
+                # mt5 is SimulationEnvironment
+                deals = mt5.history_deals_get(position=ticket)
+                broker_data = {"deals": deals, "orders": []}
+            else:
+                broker_data = self.get_mt5_history(position=ticket)
+                current_pos = self.get_mt5_position(ticket)
+                if current_pos:
+                    broker_data["current_position"] = current_pos
 
         # Gather State Data
         state_files = {
@@ -321,6 +326,20 @@ class TradeAuditor:
         checks["anomalies"] = {"status": "PASS" if not anomalies else "FAIL", "msg": "; ".join(anomalies)}
 
         return checks
+
+    def reconstruct_all(self) -> List[PositionLifecycle]:
+        """Reconstructs all trades found in the journal."""
+        journal_df = self.load_journal_data()
+        if journal_df.empty:
+            return []
+
+        unique_signals = journal_df['signal_id'].unique()
+        lifecycles = []
+        for sid in unique_signals:
+            lc = self.reconstruct_trade_lifecycle(signal_id=sid)
+            if lc:
+                lifecycles.append(lc)
+        return lifecycles
 
     def load_completed_lifecycle(self, signal_id: str) -> Optional[PositionLifecycle]:
         """Attempts to load a completed PositionLifecycle from the summary CSV or JSONL."""

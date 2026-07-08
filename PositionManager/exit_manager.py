@@ -4,7 +4,7 @@ import logging
 import threading
 import math
 from datetime import datetime, timezone
-import MetaTrader5 as mt5
+from simulation.simulation_environment import env as mt5
 from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE
 
 # Constants for when MetaTrader5 is not installed (e.g. during local testing),
@@ -86,7 +86,7 @@ class ExitManager:
         try:
             with self._lock:
                 data = {
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "last_updated": mt5.get_now().isoformat(),
                     "tracked_tickets": self.tracked_tickets
                 }
             temp_file = self.state_file + ".tmp"
@@ -204,7 +204,8 @@ class ExitManager:
         if not deals:
             return ("no_deal_history", None)
 
-        last_deal = max(deals, key=lambda d: d.time)
+        # Use time_msc for better precision if available (MT5 and SimulationBroker both provide it)
+        last_deal = max(deals, key=lambda d: getattr(d, 'time_msc', d.time))
         reason_code = last_deal.reason
         label = REASON_LABELS.get(reason_code, f"unknown_reason_{reason_code}")
         return (label, reason_code)
@@ -428,7 +429,7 @@ class ExitManager:
 
             self.tracked_tickets[ticket] = {
                 "signal_id": signal_id,
-                "open_time": datetime.now(timezone.utc).isoformat(),
+                "open_time": mt5.get_now().isoformat(),
                 "entry_price": float(entry_price),
                 "sl_price_original": float(sl_price),
                 "direction": int(direction),

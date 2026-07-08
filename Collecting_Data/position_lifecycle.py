@@ -317,8 +317,9 @@ class PositionLifecycleBuilder:
                     outcome_info = dataclasses.replace(
                         outcome_info,
                         realized_profit=total_profit,
-                        exit_timestamp=datetime.fromtimestamp(lex.get('time'), tz=timezone.utc).isoformat(),
+                        exit_timestamp=datetime.fromtimestamp(lex.get('time', 0), tz=timezone.utc).isoformat(),
                         broker_reason=str(lex.get('reason')),
+                        strategy_reason=lex.get('comment', outcome_info.strategy_reason),
                         deal_count=len(deals),
                         result=res_label,
                         status='completed'

@@ -3,7 +3,7 @@ import json
 import logging
 import threading
 from datetime import datetime, timezone
-import MetaTrader5 as mt5
+from simulation.simulation_environment import env as mt5
 
 logger = logging.getLogger("DrawdownManager")
 
@@ -65,7 +65,7 @@ class DrawdownManager:
                 data = {
                     "start_of_day_balance": self.start_of_day_balance,
                     "snapshot_date": self.snapshot_date,
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "last_updated": mt5.get_now().isoformat(),
                 }
             temp_file = self.state_file + ".tmp"
             with open(temp_file, "w") as f:
