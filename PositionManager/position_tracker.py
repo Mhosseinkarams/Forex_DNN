@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timezone
 
 from simulation.simulation_environment import env as mt5
+from Collecting_Data.utils import safe_file_replace
 
 logger = logging.getLogger("PositionTracker")
 
@@ -53,7 +54,7 @@ class PositionTracker:
             temp_file = self.state_file + ".tmp"
             with open(temp_file, "w") as f:
                 json.dump(data, f, indent=4, default=str)
-            os.replace(temp_file, self.state_file)
+            safe_file_replace(temp_file, self.state_file)
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
 

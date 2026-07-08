@@ -16,6 +16,7 @@ except ImportError:
 # Modules
 from Collecting_Data.indicators import IndicatorEngine
 from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE, EXIT_PROFILE_HIGH_RISK, EXIT_PROFILE_REVERSAL
+from Collecting_Data.utils import safe_file_replace
 
 logger = logging.getLogger("MMStrategy")
 
@@ -79,7 +80,7 @@ class MMStrategy:
             temp_file = self.state_file + ".tmp"
             with open(temp_file, "w") as f:
                 json.dump(self.last_bar_time, f, indent=4)
-            os.replace(temp_file, self.state_file)
+            safe_file_replace(temp_file, self.state_file)
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
 
@@ -318,8 +319,8 @@ class MMStrategy:
         
         # Live ask/bid for entry_price
         tick = mt5.symbol_info_tick(symbol)
-        if tick is None:
-            logger.error(f"Failed to fetch tick for {symbol}")
+        if tick is None or tick.ask <= 0 or tick.bid <= 0:
+            logger.error(f"Failed to fetch valid tick for {symbol}: {tick}")
             return
         entry_price = float(tick.ask if direction == 1 else tick.bid)
         

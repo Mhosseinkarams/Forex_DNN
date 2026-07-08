@@ -70,7 +70,11 @@ class PositionSizer:
 
         capped_at_max = False
         if lot_size < volume_min:
-            logger.error(f"Lot size {lot_size} below minimum {volume_min} for {symbol}")
+            logger.error(
+                f"Lot size {lot_size} below minimum {volume_min} for {symbol}. "
+                f"Inputs: balance={account_balance}, risk_pct={risk_pct}, sl_dist={sl_distance}, "
+                f"contract={contract_size}, raw_lot={raw_lot:.6f}"
+            )
             return self._result(False, 0.0, 0.0, 0.0, False, "lot_size_below_minimum")
 
         if lot_size > volume_max:
