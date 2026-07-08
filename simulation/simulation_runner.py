@@ -64,11 +64,24 @@ class SimulationRunner:
         # Initial price update
         self.data_feed.seek_to_time(start_time)
         for s in self.symbols:
-            bar = self.data_feed.get_current_bar(s, timeframes[0])
-            if bar is not None:
-                self.broker.update_market_price(s, bar['Close'], bar['Close'])
+            # Try all timeframes to get an initial price
+            for tf in self.timeframes:
+                bar = self.data_feed.get_current_bar(s, tf)
+                if bar is not None:
+                    self.broker.update_market_price(s, bar['Close'], bar['Close'])
+                    break
 
         state_dir = os.path.join(journal_root, "State")
+
+        # Clean stale state for a fresh backtest run
+        if os.path.exists(state_dir):
+            import shutil
+            try:
+                shutil.rmtree(state_dir)
+                logger.info(f"Cleared stale state directory: {state_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to clear state directory: {e}")
+
         os.makedirs(state_dir, exist_ok=True)
 
         self.tj = TradingJournal(journal_root=journal_root, mode="backtest")
@@ -102,9 +115,12 @@ class SimulationRunner:
 
             # Update market prices for all symbols at this timestamp
             for s in self.symbols:
-                bar = self.data_feed.get_current_bar(s, self.timeframes[0])
-                if bar is not None:
-                     self.broker.update_market_price(s, bar['Close'], bar['Close'])
+                # Try all available timeframes to ensure we have the most recent price
+                for tf in self.timeframes:
+                    bar = self.data_feed.get_current_bar(s, tf)
+                    if bar is not None:
+                        self.broker.update_market_price(s, bar['Close'], bar['Close'])
+                        break
 
             # Poll components
             self.pt._poll_cycle()

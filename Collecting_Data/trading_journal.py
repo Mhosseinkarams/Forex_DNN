@@ -162,9 +162,49 @@ class TradingJournal:
                 "bar_timestamp": data["bar_timestamp"]
             }
 
-    def _get_signal_context(self, signal_id):
+    def _get_signal_context(self, signal_id: str) -> Optional[dict]:
         with self._cache_lock:
-            return self._signal_cache.get(signal_id)
+            if signal_id in self._signal_cache:
+                return self._signal_cache[signal_id]
+
+        # Fallback: Try to recover from disk
+        return self._recover_context_from_journal(signal_id)
+
+    def _recover_context_from_journal(self, signal_id: str) -> Optional[dict]:
+        """Scans the events directory to reconstruct signal context if missing from memory."""
+        mode_path = os.path.join(self.journal_root, self.mode)
+        events_path = os.path.join(mode_path, "events")
+
+        if not os.path.exists(events_path):
+            return None
+
+        # Look for the signal event in all strategy/symbol/timeframe event files
+        for file in os.listdir(events_path):
+            if file.endswith("_events.csv"):
+                filepath = os.path.join(events_path, file)
+                try:
+                    # We only need to check if the file contains the signal_id
+                    # Reading the whole file into pandas might be slow, but it's reliable.
+                    df = pd.read_csv(filepath)
+                    match = df[(df['signal_id'] == signal_id) & (df['event_type'] == 'signal')]
+                    if not match.empty:
+                        row = match.iloc[0]
+                        ctx = {
+                            "strategy": row["strategy"],
+                            "symbol": row["symbol"],
+                            "timeframe": row["timeframe"],
+                            "signal_type": row["signal_type"],
+                            "direction": row["direction"],
+                            "bar_timestamp": row["bar_timestamp"]
+                        }
+                        # Cache it for future use
+                        with self._cache_lock:
+                            self._signal_cache[signal_id] = ctx
+                        return ctx
+                except Exception as e:
+                    logger.error(f"Failed to read {filepath} during context recovery: {e}")
+
+        return None
 
     def log_signal(
         self,
