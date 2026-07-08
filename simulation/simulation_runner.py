@@ -133,6 +133,7 @@ class SimulationRunner:
 
     def _get_default_symbol_info(self, symbol: str) -> dict:
         """Returns standard broker properties for common symbols to improve simulation accuracy."""
+        # Default values (e.g. for EURUSD, GBPUSD)
         info = {
             "digits": 5,
             "point": 0.00001,
@@ -140,24 +141,34 @@ class SimulationRunner:
             "volume_step": 0.01,
             "volume_max": 100.0,
             "trade_contract_size": 100000,
-            "trade_stops_level": 0
+            "trade_stops_level": 0,
+            "trade_tick_value": 1.0,  # $ per 1.0 lot per 1.0 point
+            "trade_tick_size": 0.00001
         }
 
         s_up = symbol.upper()
         if "JPY" in s_up:
             info["digits"] = 3
             info["point"] = 0.001
+            info["trade_tick_size"] = 0.001
+            info["trade_tick_value"] = 0.65 # Approximate GBPJPY tick value in USD
         elif "XAU" in s_up or "GOLD" in s_up:
             info["digits"] = 2
             info["point"] = 0.01
+            info["trade_tick_size"] = 0.01
+            info["trade_tick_value"] = 1.0 # $10 per 1.0 lot per 0.10 price move ($1 per 0.01)
             info["trade_contract_size"] = 100
         elif "YM" in s_up or "DJI" in s_up:
             info["digits"] = 2
             info["point"] = 1.0
+            info["trade_tick_size"] = 1.0
+            info["trade_tick_value"] = 5.0 # $5 per point
             info["trade_contract_size"] = 1
         elif "DAX" in s_up or "DE30" in s_up or "FDAX" in s_up:
             info["digits"] = 2
             info["point"] = 1.0
+            info["trade_tick_size"] = 1.0
+            info["trade_tick_value"] = 27.0 # ~$27 per point (EUR/USD converted)
             info["trade_contract_size"] = 1
 
         return info

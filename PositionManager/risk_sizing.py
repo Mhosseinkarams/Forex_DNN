@@ -54,9 +54,18 @@ class PositionSizer:
             return self._result(False, 0.0, 0.0, 0.0, False, "symbol_info_unavailable")
 
         risk_dollars = account_balance * risk_pct
-        contract_size = info.trade_contract_size
 
-        raw_lot = risk_dollars / (sl_distance * contract_size)
+        # Use trade_tick_value if available (Module 6 improvement)
+        tick_value = getattr(info, 'trade_tick_value', None)
+        tick_size = getattr(info, 'trade_tick_size', None)
+
+        if tick_value and tick_size:
+            # New formula: risk / (ticks_to_sl * value_per_tick)
+            raw_lot = risk_dollars / ((sl_distance / tick_size) * tick_value)
+        else:
+            # Fallback to contract size based calculation
+            contract_size = info.trade_contract_size
+            raw_lot = risk_dollars / (sl_distance * contract_size)
 
         volume_step = info.volume_step
         volume_min = info.volume_min
@@ -70,10 +79,10 @@ class PositionSizer:
 
         capped_at_max = False
         if lot_size < volume_min:
-            logger.error(
+            logger.warning(
                 f"Lot size {lot_size} below minimum {volume_min} for {symbol}. "
                 f"Inputs: balance={account_balance}, risk_pct={risk_pct}, sl_dist={sl_distance}, "
-                f"contract={contract_size}, raw_lot={raw_lot:.6f}"
+                f"raw_lot={raw_lot:.6f}"
             )
             return self._result(False, 0.0, 0.0, 0.0, False, "lot_size_below_minimum")
 
@@ -82,7 +91,11 @@ class PositionSizer:
             lot_size = volume_max
             capped_at_max = True
 
-        actual_risk_dollars = lot_size * sl_distance * contract_size
+        if tick_value and tick_size:
+            actual_risk_dollars = lot_size * (sl_distance / tick_size) * tick_value
+        else:
+            actual_risk_dollars = lot_size * sl_distance * info.trade_contract_size
+
         actual_risk_pct = actual_risk_dollars / account_balance
 
         logger.info(f"SUCCESS: {symbol} lot_size={lot_size} risk=${actual_risk_dollars:.2f} ({actual_risk_pct*100:.2f}%)")
