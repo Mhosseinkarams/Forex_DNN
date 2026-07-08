@@ -25,14 +25,18 @@ logger = logging.getLogger("SimulationRunner")
 class SimulationRunner:
     def __init__(
         self,
-        symbol: str,
+        symbols: list[str] | str,
         timeframes: list[str],
         data_files: dict,
         initial_balance: float = 10000.0,
         leverage: int = 100,
         journal_root: str = "Backtest_Journals"
     ):
-        self.symbol = symbol
+        if isinstance(symbols, str):
+            self.symbols = [symbols]
+        else:
+            self.symbols = symbols
+
         self.timeframes = timeframes
         self.data_files = data_files
         self.initial_balance = initial_balance
@@ -42,25 +46,27 @@ class SimulationRunner:
         for (s, tf), path in data_files.items():
             self.data_feed.load_csv(s, tf, path)
 
-        start_time = self.data_feed.get_current_bar(symbol, timeframes[0])['Datetime']
+        # Initialize clock to the earliest bar available in any dataset
+        timeline = self.data_feed.get_global_timeline()
+        if not timeline:
+            raise ValueError("No data loaded in HistoricalDataFeed")
+
+        start_time = timeline[0]
         self.clock = SimulationClock(start_time)
         self.account = SimulationAccount(initial_balance, leverage)
         self.broker = SimulationBroker(self.account, self.clock)
 
-        self.broker.set_symbol_info(symbol, {
-            "digits": 5,
-            "point": 0.00001,
-            "volume_min": 0.01,
-            "volume_step": 0.01,
-            "volume_max": 100.0,
-            "trade_contract_size": 100000,
-            "trade_stops_level": 0
-        })
+        for s in self.symbols:
+            self.broker.set_symbol_info(s, self._get_default_symbol_info(s))
 
         env.set_backtest_mode(self.broker, self.clock, self.account)
 
-        bar = self.data_feed.get_current_bar(symbol, timeframes[0])
-        self.broker.update_market_price(symbol, bar['Close'], bar['Close'])
+        # Initial price update
+        self.data_feed.seek_to_time(start_time)
+        for s in self.symbols:
+            bar = self.data_feed.get_current_bar(s, timeframes[0])
+            if bar is not None:
+                self.broker.update_market_price(s, bar['Close'], bar['Close'])
 
         state_dir = os.path.join(journal_root, "State")
         os.makedirs(state_dir, exist_ok=True)
@@ -80,28 +86,65 @@ class SimulationRunner:
             send_order=self.so,
             trading_journal=self.tj,
             drawdown_manager=self.dm,
-            symbols=[symbol],
+            symbols=self.symbols,
             poll_interval_seconds=0,
             state_file=os.path.join(state_dir, "mm_strategy_state.json")
         )
 
     def run(self):
-        logger.info(f"Starting simulation for {self.symbol}...")
+        logger.info(f"Starting multi-symbol simulation for {self.symbols}...")
 
-        while not self.data_feed.is_finished():
-            bar = self.data_feed.get_current_bar(self.symbol, self.timeframes[0])
-            self.clock.set_time(bar['Datetime'])
-            self.broker.update_market_price(self.symbol, bar['Close'], bar['Close'])
+        timeline = self.data_feed.get_global_timeline()
 
+        for current_time in timeline:
+            self.clock.set_time(current_time)
+            self.data_feed.seek_to_time(current_time)
+
+            # Update market prices for all symbols at this timestamp
+            for s in self.symbols:
+                bar = self.data_feed.get_current_bar(s, self.timeframes[0])
+                if bar is not None:
+                     self.broker.update_market_price(s, bar['Close'], bar['Close'])
+
+            # Poll components
             self.pt._poll_cycle()
             self.em._poll_cycle()
             self.dm.check()
             self.strategy._poll_cycle()
 
-            self.data_feed.advance()
-
         logger.info("Simulation finished.")
         self.generate_report()
+
+    def _get_default_symbol_info(self, symbol: str) -> dict:
+        """Returns standard broker properties for common symbols to improve simulation accuracy."""
+        info = {
+            "digits": 5,
+            "point": 0.00001,
+            "volume_min": 0.01,
+            "volume_step": 0.01,
+            "volume_max": 100.0,
+            "trade_contract_size": 100000,
+            "trade_stops_level": 0
+        }
+
+        s_up = symbol.upper()
+        if "JPY" in s_up:
+            info["digits"] = 3
+            info["point"] = 0.001
+        elif "XAU" in s_up or "GOLD" in s_up:
+            info["digits"] = 2
+            info["point"] = 0.01
+            info["trade_contract_size"] = 100
+        elif "YM" in s_up or "DJI" in s_up:
+            info["digits"] = 2
+            info["point"] = 1.0
+            info["trade_contract_size"] = 1
+        elif "DAX" in s_up or "DE30" in s_up or "FDAX" in s_up:
+            info["digits"] = 2
+            info["point"] = 1.0
+            info["trade_contract_size"] = 1
+
+        return info
 
     def generate_report(self):
         from trade_auditor import TradeAuditor
@@ -113,7 +156,8 @@ class SimulationRunner:
         stats = StatisticsEngine(lifecycles)
         metrics = stats.calculate_metrics()
 
-        report = BacktestReport.generate_summary("MMStrategy", self.symbol, self.timeframes[0], metrics)
+        symbol_label = ", ".join(self.symbols) if len(self.symbols) < 4 else f"{len(self.symbols)} symbols"
+        report = BacktestReport.generate_summary("MMStrategy", symbol_label, self.timeframes[0], metrics)
         print(report)
 
         with open(os.path.join(self.journal_root, "backtest_report.txt"), "w") as f:
