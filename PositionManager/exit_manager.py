@@ -5,7 +5,7 @@ import threading
 import math
 from datetime import datetime, timezone
 from simulation.simulation_environment import env as mt5
-from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE
+from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE, EXIT_PROFILES
 
 # Constants for when MetaTrader5 is not installed (e.g. during local testing),
 # matching the fallback convention already used in position_manager.py
@@ -438,13 +438,11 @@ class ExitManager:
             if ticket in self.tracked_tickets:
                 return
 
-            # Map profile to internal logic parameters
-            if exit_profile == EXIT_PROFILE_STANDARD:
-                stage = "multi"
-                final_tp = 2
-            elif exit_profile == EXIT_PROFILE_SINGLE:
-                stage = "single"
-                final_tp = 1
+            # Map profile to internal logic parameters from centralized config
+            profile_cfg = EXIT_PROFILES.get(exit_profile)
+            if profile_cfg:
+                stage = profile_cfg["stage"]
+                final_tp = profile_cfg["final_tp"]
             else:
                 # Fallback/Unknown profile
                 logger.warning(f"Unknown exit profile '{exit_profile}' for ticket {ticket}. Defaulting to single.")

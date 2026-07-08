@@ -15,7 +15,7 @@ except ImportError:
 
 # Modules
 from Collecting_Data.indicators import IndicatorEngine
-from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE
+from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE, EXIT_PROFILE_HIGH_RISK, EXIT_PROFILE_REVERSAL
 
 logger = logging.getLogger("MMStrategy")
 
@@ -56,8 +56,8 @@ class MMStrategy:
         self.engine_m15 = IndicatorEngine(ema_periods=[50, 800], slope_period=32)
 
         self.last_bar_time = {} # symbol -> timeframe -> timestamp
-        self.signal_history = {} # symbol -> timeframe -> list of dicts
-        self._bar_counters = {} # symbol -> timeframe -> int
+        self.signal_history = {s: {"M5": [], "M15": []} for s in symbols}
+        self._bar_counters = {s: {"M5": 0, "M15": 0} for s in symbols}
 
         self._stop_event = threading.Event()
         self._thread = None
@@ -307,10 +307,10 @@ class MMStrategy:
             exit_profile = EXIT_PROFILE_STANDARD
             risk_pct_default = 0.01
         elif signal_type == "high_risk":
-            exit_profile = EXIT_PROFILE_SINGLE
+            exit_profile = EXIT_PROFILE_HIGH_RISK
             risk_pct_default = 0.005
         else: # reversal
-            exit_profile = EXIT_PROFILE_SINGLE
+            exit_profile = EXIT_PROFILE_REVERSAL
             risk_pct_default = 0.003
 
         # SL Calculation
@@ -410,7 +410,7 @@ class MMStrategy:
         if current_dist > max_sl_dist:
             sl_price = entry_price - direction * max_sl_dist
             logger.warning(f"SL capped for {symbol} at {self.max_sl_pips} pips")
-            
+
         # Minimum SL distance
         stops_level_price = info.trade_stops_level * info.point
         if abs(entry_price - sl_price) < stops_level_price:

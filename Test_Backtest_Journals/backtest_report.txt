@@ -1,5 +1,5 @@
 ================================================
-                BACKTEST REPORT                 
+                BACKTEST REPORT
 ================================================
 Strategy:       MMStrategy
 Symbol:         TEST_o
@@ -8,21 +8,21 @@ Timeframe:      M5
 Trades
 ------------------------------------------------
 Total Trades:   1
-Wins:           0
-Losses:         1
+Wins:           1
+Losses:         0
 BreakEven:      0
-Win Rate:       0.00%
+Win Rate:       100.00%
 ------------------------------------------------
 Performance
 ------------------------------------------------
-Net Profit:     $-99.60
-Profit Factor:  0.00
-Expectancy:     $-99.60
-Avg Win:        $0.00
-Avg Loss:       $-99.60
+Net Profit:     $99.60
+Profit Factor:  inf
+Expectancy:     $99.60
+Avg Win:        $99.60
+Avg Loss:       $0.00
 ------------------------------------------------
 Risk
 ------------------------------------------------
-Consecutive Wins:   0
-Consecutive Losses: 1
+Consecutive Wins:   1
+Consecutive Losses: 0
 ================================================

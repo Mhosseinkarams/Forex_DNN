@@ -8,18 +8,12 @@ except ImportError:
     mt5_live = None
 
 class SimulationEnvironment:
-    """
-    Purpose:
-        A singleton proxy that abstracts the MetaTrader 5 API. It allows the
-        same core framework code to run in 'live' (direct MT5 calls) or
-        'backtest' (redirects to SimulationBroker) modes.
-    """
     def __init__(self):
         self.mode = 'live' # 'live' or 'backtest'
         self.broker = None
         self.clock = None
         self.account = None
-        
+
         # Proxying constants
         self.ORDER_TYPE_BUY = 0
         self.ORDER_TYPE_SELL = 1
@@ -62,15 +56,6 @@ class SimulationEnvironment:
         self.TRADE_RETCODE_NO_MONEY = 10019
 
     def set_backtest_mode(self, broker, clock, account):
-        """
-        Purpose:
-            Switches the environment to backtest mode.
-
-        Arguments:
-            broker: Instance of SimulationBroker.
-            clock: Instance of SimulationClock.
-            account: Instance of SimulationAccount.
-        """
         self.mode = 'backtest'
         self.broker = broker
         self.clock = clock
@@ -80,14 +65,6 @@ class SimulationEnvironment:
         self.mode = 'live'
 
     def get_now(self):
-        """
-        Purpose:
-            Returns the current time. In backtest mode, returns virtual
-            clock time. In live mode, returns system time.
-
-        Returns:
-            datetime: Current UTC timestamp.
-        """
         if self.mode == 'backtest':
             return self.clock.current_time()
         return datetime.now(timezone.utc)
@@ -153,6 +130,11 @@ class SimulationEnvironment:
         if self.mode == 'backtest':
             return self.broker.history_deals_get(**kwargs)
         return mt5_live.history_deals_get(**kwargs)
+
+    def history_orders_get(self, **kwargs):
+        if self.mode == 'backtest':
+            return [] # SimulationBroker currently doesn't track historical orders separately
+        return mt5_live.history_orders_get(**kwargs)
 
     def copy_rates_from_pos(self, symbol, timeframe, start_pos, count):
         if self.mode == 'backtest':

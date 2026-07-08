@@ -65,12 +65,6 @@ class SimDeal:
     position_id: int = 0
 
 class SimulationBroker:
-    """
-    Purpose:
-        A virtual broker that mocks the MetaTrader 5 trade execution API.
-        Maintains virtual positions and deals, and enforces SL/TP rules
-        based on simulated market prices.
-    """
     def __init__(self, account, clock):
         self.account = account
         self.clock = clock
@@ -80,7 +74,7 @@ class SimulationBroker:
         self.current_prices = {} # symbol -> {"bid": float, "ask": float}
         self.symbol_info_dict = {} # symbol -> info dict
         self._last_deal_time_msc = 0
-        
+
         # MT5 Constants equivalents
         self.ORDER_TYPE_BUY = ORDER_TYPE_BUY
         self.ORDER_TYPE_SELL = ORDER_TYPE_SELL
@@ -95,41 +89,31 @@ class SimulationBroker:
         self.symbol_info_dict[symbol] = info
 
     def update_market_price(self, symbol: str, bid: float, ask: float):
-        """
-        Purpose:
-            Updates the current virtual market price for a symbol.
-            Triggers check for SL/TP hits and updates account equity.
-
-        Arguments:
-            symbol (str): Target symbol.
-            bid (float): Current bid price.
-            ask (float): Current ask price.
-        """
         self.current_prices[symbol] = {"bid": bid, "ask": ask}
-        
+
         tickets_to_close = []
         for ticket, pos in self.positions.items():
             if pos.symbol == symbol:
                 pos.price_current = bid if pos.type == ORDER_TYPE_BUY else ask
-                
+
                 contract_size = self.symbol_info_dict.get(symbol, {}).get("trade_contract_size", 100000)
                 if pos.type == ORDER_TYPE_BUY:
                     pos.profit = (pos.price_current - pos.price_open) * pos.volume * contract_size
                 else:
                     pos.profit = (pos.price_open - pos.price_current) * pos.volume * contract_size
-                
+
                 if pos.sl != 0:
-                    if (pos.type == ORDER_TYPE_BUY and pos.price_current <= pos.sl) or \
-                       (pos.type == ORDER_TYPE_SELL and pos.price_current >= pos.sl):
+                    if (pos.type == ORDER_TYPE_BUY and pos.price_current <= pos.sl - 1e-9) or \
+                       (pos.type == ORDER_TYPE_SELL and pos.price_current >= pos.sl + 1e-9):
                         logger.info(f"SIM: SL hit for ticket {ticket} at {pos.sl}")
                         tickets_to_close.append((ticket, pos.sl, DEAL_REASON_SL))
-                
+
                 if pos.tp != 0:
                     if (pos.type == ORDER_TYPE_BUY and pos.price_current >= pos.tp - 1e-9) or \
                        (pos.type == ORDER_TYPE_SELL and pos.price_current <= pos.tp + 1e-9):
                         logger.info(f"SIM: TP hit for ticket {ticket} at {pos.tp}")
                         tickets_to_close.append((ticket, pos.tp, DEAL_REASON_TP))
-        
+
         for ticket, price, reason in tickets_to_close:
             self._close_sim_position(ticket, price, reason=reason)
 
@@ -137,17 +121,6 @@ class SimulationBroker:
         self.account.update(sum(p.profit for p in self.positions.values()), margin_used)
 
     def order_send(self, request: dict):
-        """
-        Purpose:
-            Virtual implementation of mt5.order_send(). Handles open,
-            close, and modify requests.
-
-        Arguments:
-            request (dict): An MqlTradeRequest-style dictionary.
-
-        Returns:
-            Result: An object with a 'retcode', 'order', and 'price'.
-        """
         action = request.get("action")
         if action == TRADE_ACTION_DEAL:
             if "position" in request: # Close order
@@ -169,7 +142,7 @@ class SimulationBroker:
         symbol = request["symbol"]
         order_type = request["type"]
         volume = request["volume"]
-        price = request["price"] 
+        price = request["price"]
         sl = request.get("sl", 0.0)
         tp = request.get("tp", 0.0)
         magic = request.get("magic", 0)
@@ -177,9 +150,9 @@ class SimulationBroker:
 
         ticket = self.next_ticket
         self.next_ticket += 1
-        
+
         now_msc = self._get_unique_time_msc()
-        
+
         pos = SimPosition(
             ticket=ticket,
             symbol=symbol,
@@ -195,7 +168,7 @@ class SimulationBroker:
             comment=comment
         )
         self.positions[ticket] = pos
-        
+
         deal = SimDeal(
             ticket=self.next_ticket,
             order=ticket,
@@ -213,30 +186,30 @@ class SimulationBroker:
         )
         self.next_ticket += 1
         self.deals.append(deal)
-        
+
         class Result:
             def __init__(self, retcode, order, price, comment):
                 self.retcode = retcode
                 self.order = order
                 self.price = price
                 self.comment = comment
-        
+
         return Result(TRADE_RETCODE_DONE, ticket, price, "Done")
 
     def _handle_close_request(self, request: dict):
         ticket = request["position"]
         volume = request["volume"]
         price = request["price"]
-        
+
         res = self._close_sim_position(ticket, price, volume=volume)
-        
+
         class Result:
             def __init__(self, retcode, order, price, comment):
                 self.retcode = retcode
                 self.order = order
                 self.price = price
                 self.comment = comment
-        
+
         if res:
             return Result(TRADE_RETCODE_DONE, ticket, price, "Done")
         else:
@@ -246,11 +219,11 @@ class SimulationBroker:
         ticket = request["position"]
         sl = request.get("sl", 0.0)
         tp = request.get("tp", 0.0)
-        
+
         if ticket in self.positions:
             self.positions[ticket].sl = sl
             self.positions[ticket].tp = tp
-            
+
             class Result:
                 def __init__(self, retcode):
                     self.retcode = retcode
@@ -260,21 +233,22 @@ class SimulationBroker:
     def _close_sim_position(self, ticket: int, price: float, volume: float = None, reason: int = DEAL_REASON_EXPERT):
         if ticket not in self.positions:
             return False
-            
+
         pos = self.positions[ticket]
         close_vol = volume if volume is not None else pos.volume
-        
+
         if close_vol > pos.volume + 1e-9:
             return False
-            
+
         now_msc = self._get_unique_time_msc()
         contract_size = self.symbol_info_dict.get(pos.symbol, {}).get("trade_contract_size", 100000)
-        
+
         if pos.type == ORDER_TYPE_BUY:
             deal_profit = (price - pos.price_open) * close_vol * contract_size
         else:
             deal_profit = (pos.price_open - price) * close_vol * contract_size
-            
+
+        exit_comment = "tp" if reason == DEAL_REASON_TP else "sl" if reason == DEAL_REASON_SL else pos.comment
         deal = SimDeal(
             ticket=self.next_ticket,
             order=ticket,
@@ -289,13 +263,13 @@ class SimulationBroker:
             time_msc=now_msc,
             position_id=ticket,
             reason=reason,
-            comment=pos.comment
+            comment=exit_comment
         )
         self.next_ticket += 1
         self.deals.append(deal)
-        
+
         self.account.apply_deal(deal_profit)
-        
+
         if abs(pos.volume - close_vol) < 1e-9:
             del self.positions[ticket]
         else:
@@ -304,7 +278,7 @@ class SimulationBroker:
                 pos.profit = (pos.price_current - pos.price_open) * pos.volume * contract_size
             else:
                 pos.profit = (pos.price_open - pos.price_current) * pos.volume * contract_size
-                
+
         return True
 
     def _calculate_total_margin(self):
@@ -322,7 +296,7 @@ class SimulationBroker:
             res = [p for p in res if p.ticket == ticket]
         if magic:
             res = [p for p in res if p.magic == magic]
-        return res if res else None 
+        return res if res else None
 
     def history_deals_get(self, position=None):
         if position:
@@ -331,7 +305,7 @@ class SimulationBroker:
 
     def symbol_info_tick(self, symbol: str):
         prices = self.current_prices.get(symbol)
-        
+
         class Tick:
             def __init__(self, bid, ask, time):
                 self.bid = bid
@@ -341,7 +315,7 @@ class SimulationBroker:
         if not prices:
             # Fallback for DrawdownManager during init if price not yet set
             return Tick(0.0, 0.0, int(self.clock.current_time().timestamp()))
-        
+
         return Tick(prices["bid"], prices["ask"], int(self.clock.current_time().timestamp()))
 
     def account_info(self):
@@ -356,7 +330,7 @@ class SimulationBroker:
         info = self.symbol_info_dict.get(symbol)
         if not info:
             return None
-        
+
         class Info:
             def __init__(self, d):
                 for k, v in d.items():
