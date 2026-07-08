@@ -11,8 +11,37 @@ except ImportError:
     mt5 = None
 
 # Exit Profiles
-EXIT_PROFILE_STANDARD = "standard"   # TP1 -> BE -> TP2
-EXIT_PROFILE_SINGLE = "single"       # TP1 -> Full Close
+EXIT_PROFILE_STANDARD = "standard"    # TP1 -> BE -> TP2
+EXIT_PROFILE_SINGLE = "single"        # TP1 -> Full Close
+EXIT_PROFILE_HIGH_RISK = "high_risk"  # TP1 -> Full Close (0.5% Risk)
+EXIT_PROFILE_REVERSAL = "reversal"    # TP1 -> Full Close (0.3% Risk)
+
+EXIT_PROFILES = {
+    EXIT_PROFILE_STANDARD: {
+        "stage": "multi",
+        "final_tp": 2,
+        "broker_tp_level": 2,
+        "default_risk": 0.01
+    },
+    EXIT_PROFILE_SINGLE: {
+        "stage": "single",
+        "final_tp": 1,
+        "broker_tp_level": 1,
+        "default_risk": 0.01
+    },
+    EXIT_PROFILE_HIGH_RISK: {
+        "stage": "single",
+        "final_tp": 1,
+        "broker_tp_level": 1,
+        "default_risk": 0.005
+    },
+    EXIT_PROFILE_REVERSAL: {
+        "stage": "single",
+        "final_tp": 1,
+        "broker_tp_level": 1,
+        "default_risk": 0.003
+    }
+}
 
 @dataclass(frozen=True)
 class SignalInfo:
@@ -350,8 +379,9 @@ class PositionLifecycleBuilder:
                     outcome_info = dataclasses.replace(
                         outcome_info,
                         realized_profit=total_profit,
-                        exit_timestamp=datetime.fromtimestamp(lex.get('time'), tz=timezone.utc).isoformat(),
+                        exit_timestamp=datetime.fromtimestamp(lex.get('time', 0), tz=timezone.utc).isoformat(),
                         broker_reason=str(lex.get('reason')),
+                        strategy_reason=lex.get('comment', outcome_info.strategy_reason),
                         deal_count=len(deals),
                         result=res_label,
                         status='completed'

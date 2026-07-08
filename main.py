@@ -18,11 +18,12 @@ from PositionManager.exit_manager import ExitManager
 from PositionManager.send_order import SendOrder
 from Strategies.mm_strategy import MMStrategy
 
-import MetaTrader5 as mt5
+from simulation.simulation_environment import env as mt5
 
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
+MODE = os.getenv("TRADING_MODE", "live") # live, demo, validation, backtest
 SYMBOLS = ["EURUSD_o", "GBPUSD_o", "XAUUSD_o"]
 TIMEFRAMES = ["M5", "M15"]
 MAGIC_UNITY = 100001
@@ -63,16 +64,29 @@ class TradingApplication:
         # 1. Initialize Logging
         setup_logging(LOG_DIR, level=logging.INFO)
         logger.info("========================================")
-        logger.info("Initializing Forex Trading Framework...")
+        logger.info(f"Initializing Forex Trading Framework ({MODE} mode)...")
         logger.info("========================================")
 
         # 2. Initialize MT5
-        creds = load_credentials(path="credentials.json")
-        if not mt5.initialize(login=creds["login"], password=creds["password"], server=creds["server"]):
-            logger.error(f"MT5 Initialization Failed: {mt5.last_error()}")
-            sys.exit(1)
+        if MODE == "backtest":
+            # For main.py, we default to SimulationBroker if in backtest mode
+            # However, SimulationRunner is the preferred way for full backtests.
+            # This allows main.py to potentially run a 'live-sim' if needed.
+            from simulation.simulation_clock import SimulationClock
+            from simulation.simulation_account import SimulationAccount
+            from simulation.simulation_broker import SimulationBroker
 
-        logger.info(f"MT5 Connected: {mt5.terminal_info().name} (Account: {creds['login']})")
+            clock = SimulationClock(datetime.now(timezone.utc))
+            account = SimulationAccount(INITIAL_BALANCE)
+            broker = SimulationBroker(account, clock)
+            mt5.set_backtest_mode(broker, clock, account)
+            logger.info("Simulation Environment Initialized.")
+        else:
+            creds = load_credentials(path="credentials.json")
+            if not mt5.initialize(login=creds["login"], password=creds["password"], server=creds["server"]):
+                logger.error(f"MT5 Initialization Failed: {mt5.last_error()}")
+                sys.exit(1)
+            logger.info(f"MT5 Connected: {mt5.terminal_info().name} (Account: {creds['login']})")
 
         # Get actual balance
         acc_info = mt5.account_info()
@@ -86,7 +100,7 @@ class TradingApplication:
         # 3. Create Objects in dependency order
         try:
             # Journal
-            tj = TradingJournal(journal_root=JOURNAL_ROOT, mode="live")
+            tj = TradingJournal(journal_root=JOURNAL_ROOT, mode=MODE)
             self.modules["journal"] = tj
 
             # Position Manager

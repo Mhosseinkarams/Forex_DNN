@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import sys
-from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE
+from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE, EXIT_PROFILES
 
 # Optional MT5 import for environments where it's not installed (e.g. Linux CI)
 try:
@@ -123,8 +123,9 @@ class SendOrder:
             return self._failure("drawdown_blocked", "Drawdown limit reached", symbol, direction, signal_category)
 
         risk_pct = self.dm.max_risk_pct()
-        DEFAULT_RISK = {"standard": 0.01, "high_risk": 0.005, "reversal": 0.003}
-        risk_pct = min(risk_pct, DEFAULT_RISK.get(signal_category, 0.01))
+        profile_cfg = EXIT_PROFILES.get(exit_profile)
+        default_risk = profile_cfg.get("default_risk", 0.01) if profile_cfg else 0.01
+        risk_pct = min(risk_pct, default_risk)
 
         # Account Balance
         acc = mt5.account_info()
@@ -145,9 +146,9 @@ class SendOrder:
 
         symbol_positions = [p for p in open_positions if p["symbol"] == symbol]
         
-        # Map exit_profile to tp_level for initial order
-        # EXIT_PROFILE_STANDARD -> TP2, EXIT_PROFILE_SINGLE -> TP1
-        tp_level = 2 if exit_profile == EXIT_PROFILE_STANDARD else 1
+        # Map exit_profile to tp_level for initial order from centralized config
+        profile_cfg = EXIT_PROFILES.get(exit_profile)
+        tp_level = profile_cfg["broker_tp_level"] if profile_cfg else 1
 
         # Calculate R and TP price based on market_price
         R = abs(market_price - sl_price)

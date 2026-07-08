@@ -4,11 +4,6 @@ from typing import List, Dict, Any
 from Collecting_Data.position_lifecycle import PositionLifecycle
 
 class StatisticsEngine:
-    """
-    Purpose:
-        The quantitative analysis engine for the framework. Translates
-        individual trade lifecycles into aggregate statistical performance.
-    """
     def __init__(self, lifecycles: List[PositionLifecycle]):
         self.lifecycles = lifecycles
         self.df = self._to_dataframe()
@@ -20,14 +15,6 @@ class StatisticsEngine:
         return pd.DataFrame(rows)
 
     def calculate_metrics(self) -> Dict[str, Any]:
-        """
-        Purpose:
-            Computes a comprehensive set of performance metrics including
-            Win Rate, Profit Factor, Expectancy, and Streak Analysis.
-
-        Returns:
-            Dict[str, Any]: Dictionary of calculated metrics.
-        """
         if self.df.empty:
             return {}
 
@@ -41,17 +28,17 @@ class StatisticsEngine:
         be_count = len(breakevens)
 
         win_rate = (win_count / total_trades * 100) if total_trades > 0 else 0
-        
+
         gross_profit = wins['outcome_realized_profit'].sum()
         gross_loss = abs(losses['outcome_realized_profit'].sum())
         net_profit = gross_profit - gross_loss
-        
+
         profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
         expectancy = (net_profit / total_trades) if total_trades > 0 else 0
 
         avg_win = wins['outcome_realized_profit'].mean() if win_count > 0 else 0
         avg_loss = losses['outcome_realized_profit'].mean() if loss_count > 0 else 0
-        
+
         avg_duration = self.df['outcome_duration'].mean() if total_trades > 0 else 0
 
         results = self.df['outcome_result'].tolist()
@@ -59,7 +46,7 @@ class StatisticsEngine:
         max_cons_losses = 0
         current_wins = 0
         current_losses = 0
-        
+
         for res in results:
             if res == 'WIN':
                 current_wins += 1

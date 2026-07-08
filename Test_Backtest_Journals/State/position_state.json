@@ -1,0 +1,20 @@
+{
+    "last_updated": "2024-01-01T00:55:00+00:00",
+    "positions": [
+        {
+            "ticket": 1000000,
+            "symbol": "TEST_o",
+            "magic": 100002,
+            "direction": 1,
+            "lot_size": 1.66,
+            "entry_price": 1.1006,
+            "sl_price": 1.1,
+            "tp_price": 1.1012,
+            "current_price": 1.1011000000000002,
+            "floating_pnl": 83.00000000002771,
+            "remaining_risk_dollars": 99.59999999998902,
+            "reward_dollars": 99.59999999998902,
+            "open_time": "2024-01-01T00:30:00+00:00"
+        }
+    ]
+}
