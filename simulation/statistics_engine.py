@@ -18,30 +18,44 @@ class StatisticsEngine:
         if self.df.empty:
             return {}
 
-        total_trades = len(self.df)
-        wins = self.df[self.df['outcome_result'] == 'WIN']
-        losses = self.df[self.df['outcome_result'] == 'LOSS']
-        breakevens = self.df[self.df['outcome_result'] == 'BREAKEVEN']
+        total_signals = len(self.df)
+        executed_trades = self.df[self.df['execution_ticket'] > 0]
+        failed_signals = self.df[self.df['outcome_result'] == 'FAILED']
+        open_positions = self.df[self.df['outcome_result'] == 'open']
+
+        closed_executed_trades = executed_trades[
+            (executed_trades['outcome_result'] == 'WIN') |
+            (executed_trades['outcome_result'] == 'LOSS') |
+            (executed_trades['outcome_result'] == 'BREAKEVEN')
+        ]
+
+        wins = closed_executed_trades[closed_executed_trades['outcome_result'] == 'WIN']
+        losses = closed_executed_trades[closed_executed_trades['outcome_result'] == 'LOSS']
+        breakevens = closed_executed_trades[closed_executed_trades['outcome_result'] == 'BREAKEVEN']
 
         win_count = len(wins)
         loss_count = len(losses)
         be_count = len(breakevens)
+        failed_count = len(failed_signals)
+        open_count = len(open_positions)
+        executed_count = len(executed_trades)
+        closed_count = len(closed_executed_trades)
 
-        win_rate = (win_count / total_trades * 100) if total_trades > 0 else 0
+        win_rate = (win_count / closed_count * 100) if closed_count > 0 else 0
 
         gross_profit = wins['outcome_realized_profit'].sum()
         gross_loss = abs(losses['outcome_realized_profit'].sum())
         net_profit = gross_profit - gross_loss
 
         profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
-        expectancy = (net_profit / total_trades) if total_trades > 0 else 0
+        expectancy = (net_profit / closed_count) if closed_count > 0 else 0
 
         avg_win = wins['outcome_realized_profit'].mean() if win_count > 0 else 0
         avg_loss = losses['outcome_realized_profit'].mean() if loss_count > 0 else 0
 
-        avg_duration = self.df['outcome_duration'].mean() if total_trades > 0 else 0
+        avg_duration = closed_executed_trades['outcome_duration'].mean() if closed_count > 0 else 0
 
-        results = self.df['outcome_result'].tolist()
+        results = closed_executed_trades['outcome_result'].tolist()
         max_cons_wins = 0
         max_cons_losses = 0
         current_wins = 0
@@ -61,7 +75,11 @@ class StatisticsEngine:
                 current_losses = 0
 
         return {
-            "total_trades": total_trades,
+            "total_signals": total_signals,
+            "executed_trades_count": executed_count,
+            "failed_count": failed_count,
+            "open_count": open_count,
+            "closed_trades_count": closed_count,
             "win_count": win_count,
             "loss_count": loss_count,
             "be_count": be_count,
