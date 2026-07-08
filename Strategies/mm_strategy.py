@@ -56,8 +56,8 @@ class MMStrategy:
         self.engine_m15 = IndicatorEngine(ema_periods=[50, 800], slope_period=32)
 
         self.last_bar_time = {} # symbol -> timeframe -> timestamp
-        self.signal_history = {} # symbol -> timeframe -> list of dicts
-        self._bar_counters = {} # symbol -> timeframe -> int
+        self.signal_history = {s: {"M5": [], "M15": []} for s in symbols}
+        self._bar_counters = {s: {"M5": 0, "M15": 0} for s in symbols}
 
         self._stop_event = threading.Event()
         self._thread = None
