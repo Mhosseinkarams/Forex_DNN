@@ -134,7 +134,7 @@ class MT5DataLoader:
             return avg_latency, avg_exec
         return None, None
 
-    def get_historical_data(self, symbol="GBPUSD_i", timeframe=mt5.TIMEFRAME_M5, count=10000):
+    def get_historical_data(self, symbol="EURUSD_o", timeframe=mt5.TIMEFRAME_M5, count=10000):
         """
         Purpose:
             Fetches historical OHLCV data, enriches it with current Ask/Bid
@@ -182,9 +182,9 @@ class MT5DataLoader:
             df['Ask'] = last_tick.ask
             df['Bid'] = last_tick.bid
             # Spread in points
-            df['Current_Spread'] = last_tick.spread
-            df['Spread'] = last_tick.spread
-            print(f"Current Ask: {last_tick.ask}, Bid: {last_tick.bid}, Spread: {last_tick.spread}")
+            df['Current_Spread'] = abs(last_tick.ask - last_tick.bid)
+            df['Spread'] = abs(last_tick.ask - last_tick.bid)
+            print(f"Current Ask: {last_tick.ask}, Bid: {last_tick.bid}, Spread: {abs(last_tick.ask - last_tick.bid)}")
         
         if self.engine:
             df = self.engine.calculate(df)

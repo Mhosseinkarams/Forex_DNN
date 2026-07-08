@@ -37,8 +37,8 @@ class YFinanceDataLoader:
             # yfinance returns 'Datetime' or 'Date'
             date_col = 'Datetime' if 'Datetime' in data.columns else 'Date'
             data.rename(columns={date_col: 'Datetime'}, inplace=True)
-
-            output_file = self.data_dir / f'GBPUSD_{interval}.csv'
+            symbol = self.ticker.replace("=X","")
+            output_file = self.data_dir / f'{symbol}_{interval}.csv'
             data.to_csv(output_file, index=False)
             print(f"Data saved to {output_file}")
             return data
