@@ -96,11 +96,21 @@ class SimulationBroker:
             if pos.symbol == symbol:
                 pos.price_current = bid if pos.type == ORDER_TYPE_BUY else ask
 
-                contract_size = self.symbol_info_dict.get(symbol, {}).get("trade_contract_size", 100000)
-                if pos.type == ORDER_TYPE_BUY:
-                    pos.profit = (pos.price_current - pos.price_open) * pos.volume * contract_size
+                info = self.symbol_info_dict.get(symbol, {})
+                tick_value = info.get("trade_tick_value")
+                tick_size = info.get("trade_tick_size")
+
+                if tick_value and tick_size:
+                    ticks = (pos.price_current - pos.price_open) / tick_size
+                    if pos.type == ORDER_TYPE_SELL:
+                        ticks = -ticks
+                    pos.profit = ticks * pos.volume * tick_value
                 else:
-                    pos.profit = (pos.price_open - pos.price_current) * pos.volume * contract_size
+                    contract_size = info.get("trade_contract_size", 100000)
+                    if pos.type == ORDER_TYPE_BUY:
+                        pos.profit = (pos.price_current - pos.price_open) * pos.volume * contract_size
+                    else:
+                        pos.profit = (pos.price_open - pos.price_current) * pos.volume * contract_size
 
                 if pos.sl != 0:
                     if (pos.type == ORDER_TYPE_BUY and pos.price_current <= pos.sl - 1e-9) or \
@@ -241,12 +251,21 @@ class SimulationBroker:
             return False
 
         now_msc = self._get_unique_time_msc()
-        contract_size = self.symbol_info_dict.get(pos.symbol, {}).get("trade_contract_size", 100000)
+        info = self.symbol_info_dict.get(pos.symbol, {})
+        tick_value = info.get("trade_tick_value")
+        tick_size = info.get("trade_tick_size")
 
-        if pos.type == ORDER_TYPE_BUY:
-            deal_profit = (price - pos.price_open) * close_vol * contract_size
+        if tick_value and tick_size:
+            ticks = (price - pos.price_open) / tick_size
+            if pos.type == ORDER_TYPE_SELL:
+                ticks = -ticks
+            deal_profit = ticks * close_vol * tick_value
         else:
-            deal_profit = (pos.price_open - price) * close_vol * contract_size
+            contract_size = info.get("trade_contract_size", 100000)
+            if pos.type == ORDER_TYPE_BUY:
+                deal_profit = (price - pos.price_open) * close_vol * contract_size
+            else:
+                deal_profit = (pos.price_open - price) * close_vol * contract_size
 
         exit_comment = "tp" if reason == DEAL_REASON_TP else "sl" if reason == DEAL_REASON_SL else pos.comment
         deal = SimDeal(
