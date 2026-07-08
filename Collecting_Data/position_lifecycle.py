@@ -94,7 +94,15 @@ class PositionLifecycle:
         return json.dumps(self.to_dict(), indent=4, default=str)
 
     def to_csv_row(self) -> Dict[str, Any]:
-        """Flattens the object into a single-level dictionary for CSV logging."""
+        """
+        Purpose:
+            Flattens the nested PositionLifecycle object into a single-level dictionary.
+            This facilitates logging to CSV files where each column represents a specific attribute.
+
+        Returns:
+            Dict[str, Any]: A dictionary where keys are prefixed by their section
+                           (e.g., 'signal_symbol', 'outcome_realized_profit').
+        """
         flat = {}
         for section_name, section_obj in dataclasses.asdict(self).items():
             if isinstance(section_obj, dict):
@@ -103,7 +111,14 @@ class PositionLifecycle:
         return flat
 
     def to_markdown(self) -> str:
-        """Returns a Markdown representation of the lifecycle."""
+        """
+        Purpose:
+            Generates a human-readable Markdown report of the entire position lifecycle.
+            Used by the TradeAuditor to provide forensic summaries.
+
+        Returns:
+            str: A formatted Markdown string containing Signal, Execution, Management, and Outcome details.
+        """
         md = []
         md.append(f"# Position Lifecycle - Ticket {self.execution.ticket}")
         md.append(f"**Signal ID:** `{self.signal.signal_id}`")
@@ -140,7 +155,25 @@ class PositionLifecycleBuilder:
         state_files: Dict[str, Any] = None
     ) -> Optional[PositionLifecycle]:
         """
-        Reconstructs a PositionLifecycle object from various data sources.
+        Purpose:
+            The central engine for trade reconstruction. It aggregates fragmented data
+            from local journals, broker history, and framework state files to build
+             a complete PositionLifecycle object.
+
+        Arguments:
+            signal_id (str): The unique UUID linking all events of the trade.
+            journal_df (pd.DataFrame): DataFrame containing all Layer 1 events.
+            broker_data (Dict[str, Any]): Data from MT5 history (deals, orders).
+            state_files (Dict[str, Any]): Dictionaries loaded from State/*.json files.
+
+        Returns:
+            Optional[PositionLifecycle]: The reconstructed object or None if required
+                                        data (like the signal event) is missing.
+
+        Notes:
+            - Handles backward compatibility for legacy 'outcome' events.
+            - Recalculates PnL and duration from broker deals for highest accuracy.
+            - Infers slippage by comparing requested vs. actual entry prices.
         """
         if journal_df.empty:
             return None

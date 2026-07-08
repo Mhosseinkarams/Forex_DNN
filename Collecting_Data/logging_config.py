@@ -4,11 +4,21 @@ from logging.handlers import RotatingFileHandler
 
 def setup_logging(log_dir: str, level=logging.INFO):
     """
-    Configures the root logger with a console handler and a RotatingFileHandler.
-    
-    Args:
+    Purpose:
+        Initializes the centralized logging system for the entire framework.
+        Ensures consistent log formatting and unified output to both console and files.
+
+    Arguments:
         log_dir (str): Directory where the log file will be saved.
-        level (int): Logging level. Defaults to logging.INFO.
+        level (int): Logging level (e.g., logging.INFO, logging.DEBUG). Defaults to logging.INFO.
+
+    Side Effects:
+        Creates the log directory if it does not exist.
+        Configures the root logger with handlers for console and a rotating file.
+
+    Notes:
+        Individual modules should not call logging.basicConfig(). Instead, they should use:
+        `logger = logging.getLogger("ModuleName")`
     """
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)

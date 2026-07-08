@@ -1,74 +1,85 @@
-# Trade Auditor
+# TradeAuditor Guide
+
+The `TradeAuditor` is a forensic tool designed to reconstruct the complete history of a trade by aggregating data from multiple fragmented sources.
 
 ## Purpose
-The Trade Auditor is a developer forensic tool designed to reconstruct the complete lifecycle of a trade within the Forex Trading Framework. It aggregates data from multiple sources to provide a clear, chronological report of what happened during a trade, without requiring manual log inspection.
 
-The auditor is **READ-ONLY**:
-- It NEVER sends orders.
-- It NEVER modifies state files or journals.
-- It NEVER changes broker data.
+Automated trading involves multiple asynchronous layers:
+- Strategy signals (logged locally).
+- Orders and deals (stored on the broker's server).
+- Exit management logic (state stored in local JSON files).
+
+When a trade goes wrong (e.g., unexpected closure, slippage), it is difficult to see the "Big Picture" from one file. The `TradeAuditor` solves this by building a canonical `PositionLifecycle` object from all available evidence.
 
 ## Architecture
-The tool is built as a standalone utility that interfaces with:
-- **TradingJournal CSV files**: Event history (signal, order_open, partial_close, outcome).
-- **Framework State Files**: `State/*.json` (PositionTracker, ExitManager, SendOrder).
-- **MetaTrader 5 API**: Historical deals, orders, and current positions.
 
-### Data Sources
-1. `Journals/<mode>/*.csv`
-2. `State/*.json`
-3. MT5 History (`history_deals_get`, `history_orders_get`)
+The auditor works by:
+1.  **Scanning Journals**: Loading all event CSVs to find the `signal_id` related to a ticket.
+2.  **Querying the Broker**: Connecting to MT5 to fetch historical deals and orders.
+3.  **Inspecting State**: Reading `exit_manager_state.json` and `position_tracker_state.json` to see the framework's intent at the time.
+4.  **Synthesizing**: Using the `PositionLifecycleBuilder` to merge these into a structured report.
 
-## Search and Reconstruction
-The auditor can find a trade using:
-- **MT5 Ticket Number** (`--ticket`)
-- **Signal ID** (`--signal-id`)
-- **Latest Trades** (`--latest`): Displays a list of recent trades for selection.
+## How Audits Work
 
-### Reconstruction Logic
-1. **Identify**: Locates the `signal_id` and `ticket` by searching through the TradingJournal.
-2. **Aggregate**: Gathers all matching events from the journal.
-3. **Fetch State**: Reads relevant snapshots from framework state files.
-4. **Broker Sync**: Queries MT5 for the actual broker-side execution details and PnL.
-5. **Timeline**: Builds a unified chronological timeline of all framework and broker events.
+### Consistency Checks
+The auditor automatically performs anomaly detection:
+- **Price Match**: Compares the journaled `actual_entry` price with the broker's `deal` price.
+- **Journal Completeness**: Verifies if `signal`, `order_open`, and `position_closed` events are all present.
+- **Latency Analysis**: Calculates the time taken from signal detection to broker execution.
+- **State Integrity**: Checks if the position was correctly registered in `ExitManager`.
 
-## Consistency Checks & Anomaly Detection
-Every audit performs automated checks to ensure system integrity:
-- **Journal Completeness**: Verifies all lifecycle events (Signal -> Order -> Outcome) are present.
-- **Broker Verification**: Compares Journal entry/exit prices and volumes against MT5 records.
-- **State Restoration**: Checks if the trade was correctly persisted and restored in framework modules.
-- **Anomaly Detection**:
-    - Duplicate signals or orders.
-    - Missing journal entries.
-    - Significant price mismatches (Journal vs. Broker).
-    - State/Journal desynchronization.
+### Timeline Reconstruction
+The auditor generates a chronological ASCII timeline of the trade:
+```text
+2023-10-27T10:00:01Z
+  signal: MMStrategy - BUY EURUSD_o
+    │
+    ▼
+2023-10-27T10:00:02Z
+  order_open: Ticket 12345678 (Entry: 1.1000)
+    │
+    ▼
+2023-10-27T10:15:30Z
+  partial_close: TP1 reached (Closed: 0.05 lot)
+    │
+    ▼
+2023-10-27T10:45:00Z
+  position_closed: Reason: stop_loss (Exit: 1.1000 - BREAKEVEN)
+```
 
 ## Usage
 
-### CLI Examples
+### Interactive Latest Trades
+The easiest way to audit recent trades:
 ```bash
-# Audit by ticket
-python trade_auditor.py --ticket 12345678
-
-# Audit by signal ID
-python trade_auditor.py --signal-id 6fd8...
-
-# Select from latest trades
-python trade_auditor.py --latest
-
-# Output to Markdown file
-python trade_auditor.py --ticket 12345678 --format markdown
-
-# Specify trading mode
-python trade_auditor.py --ticket 12345678 --mode validation
+python trade_auditor.py --mode live --latest
 ```
 
-### Reports
-Generated reports are saved in `AuditReports/`:
-- `audit_ticket_<ticket>.md`
-- `audit_ticket_<ticket>.json`
+### Audit by Ticket
+If you have a specific MT5 ticket number:
+```bash
+python trade_auditor.py --mode live --ticket 12345678
+```
 
-## Status Indicators
-- **PASS**: Data is consistent and complete.
-- **FAIL**: Critical mismatch or missing data detected.
-- **WARNING**: Non-critical issue or missing optional data (e.g., no broker history found because the position is still open).
+### Audit by Signal ID
+If you have a UUID from the journal:
+```bash
+python trade_auditor.py --mode backtest --signal-id "550e8400-e29b-41d4-a716-446655440000"
+```
+
+## Example Report
+
+The auditor can generate Markdown or JSON reports. A typical report includes:
+- **Summary**: Ticket, Symbol, Strategy, Final Result.
+- **Signal**: Indicators snapshot (e.g., EMA 600 slope at entry).
+- **Execution**: Slippage, latency, and broker deal IDs.
+- **Management**: A list of every TP hit and SL modification.
+- **Outcome**: Realized profit, duration, and R-multiple.
+
+## Investigating Failed Trades
+
+Common scenarios for using the auditor:
+1.  **Unexpected Closure**: Audit the trade to see if it was closed by the broker (SL/TP) or by a manual intervention (Reason: `manual_client`).
+2.  **High Slippage**: Check the difference between `requested_entry` and `actual_entry`.
+3.  **Missing Stages**: Verify if `ExitManager` correctly registered the position by checking the `management` section of the report.
+4.  **Drawdown Block**: If a signal wasn't taken, find the signal in the journal and use the auditor to check if `blocked_by_drawdown` was set to `True` in the extra fields.

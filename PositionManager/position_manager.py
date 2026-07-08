@@ -56,7 +56,27 @@ class PositionManager:
         comment: str = "",
     ) -> dict:
         """
-        Executes a buy or sell order.
+        Purpose:
+            Executes a market order to open a new position. Handles the
+            translation of framework parameters into an MT5 MqlTradeRequest.
+
+        Arguments:
+            symbol (str): Target symbol name.
+            direction (int): 1 for BUY, -1 for SELL.
+            lot_size (float): Volume to trade.
+            sl_price (float): Stop-loss price.
+            tp_price (float): Take-profit price.
+            strategy (str): Strategy identifier (used for magic number selection).
+            comment (str): Optional order comment.
+
+        Returns:
+            dict: Standardized result with 'success' (bool), 'ticket' (int),
+                  'entry_price' (float), and error information.
+
+        Example:
+            >>> res = pm.open_position("EURUSD_o", 1, 0.1, 1.0950, 1.1100, "mm")
+            >>> if res['success']:
+            ...     print(f"Opened ticket {res['ticket']}")
         """
         # 1. Validate inputs
         if direction not in [1, -1]:
@@ -140,7 +160,20 @@ class PositionManager:
         volume: float = None,    # None = full close, float = partial close
     ) -> dict:
         """
-        Closes an open position.
+        Purpose:
+            Closes an existing open position, either fully or partially.
+
+        Arguments:
+            ticket (int): MT5 position ticket ID.
+            volume (float): Specific volume to close. If None, the entire
+                           position is closed.
+
+        Returns:
+            dict: Standardized result containing closure details and success status.
+
+        Notes:
+            Checks for existence of the ticket and ensures requested volume
+            does not exceed active volume before submitting.
         """
         # 1. Query MT5 for position by ticket
         position = mt5.positions_get(ticket=ticket)
@@ -221,7 +254,16 @@ class PositionManager:
         tp_price: float = None,
     ) -> dict:
         """
-        Modifies SL/TP of an open position.
+        Purpose:
+            Updates the Stop-Loss and/or Take-Profit levels for an active position.
+
+        Arguments:
+            ticket (int): MT5 position ticket ID.
+            sl_price (float): New SL price. If None, existing SL is kept.
+            tp_price (float): New TP price. If None, existing TP is kept.
+
+        Returns:
+            dict: Standardized result with the updated levels and success status.
         """
         # 1. Query MT5 for position by ticket
         position = mt5.positions_get(ticket=ticket)

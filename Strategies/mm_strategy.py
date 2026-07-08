@@ -84,7 +84,16 @@ class MMStrategy:
             logger.error(f"Failed to save state: {e}")
 
     def start(self) -> None:
-        """Start background polling loop."""
+        """
+        Purpose:
+            Initializes and starts the background strategy thread.
+            The thread will continuously poll the market data feed for
+            new signal opportunities.
+
+        Side Effects:
+            - Clears signal history for the new session.
+            - Spawns a threading.Thread.
+        """
         if self._thread is not None and self._thread.is_alive():
             logger.warning("MMStrategy is already running.")
             return
@@ -99,7 +108,10 @@ class MMStrategy:
         logger.info("MMStrategy started.")
 
     def stop(self) -> None:
-        """Stop polling loop cleanly."""
+        """
+        Purpose:
+            Gracefully terminates the strategy polling thread.
+        """
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=10)
@@ -115,6 +127,17 @@ class MMStrategy:
             time.sleep(self.poll_interval_seconds)
 
     def _poll_cycle(self):
+        """
+        Purpose:
+            The main iterative unit of the strategy. Performs bar-time
+            synchronization, indicator calculation, and signal evaluation
+            for all configured symbols and timeframes.
+
+        Side Effects:
+            - Fetches data from DataFeed.
+            - Updates state_file (mm_strategy_state.json) after processing each bar.
+            - Calls SendOrder if a valid setup is detected.
+        """
         for symbol in self.symbols:
             for timeframe, fast_p, slow_p in [("M5", 50, 600), ("M15", 50, 800)]:
                 df_raw = self.data_feed.get_ohlcv(symbol, timeframe)

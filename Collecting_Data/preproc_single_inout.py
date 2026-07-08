@@ -26,6 +26,17 @@ class SingleInOutPreprocessor:
             self.engine = None
 
     def preprocess(self, filename="GBPUSD_1h.csv"):
+        """
+        Purpose:
+            Prepares data for simple Dense neural networks by calculating
+            indicators and generating basic forward-looking labels (Binary and Multi-class).
+
+        Arguments:
+            filename (str): Name of the source CSV file in the Data directory.
+
+        Returns:
+            pd.DataFrame: Preprocessed DataFrame with indicators and labels.
+        """
         input_file = self.data_dir / filename
         if not input_file.exists():
             print(f"Error: {input_file} not found.")

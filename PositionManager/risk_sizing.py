@@ -18,6 +18,27 @@ class PositionSizer:
         risk_pct: float,
         account_balance: float,
     ) -> dict:
+        """
+        Purpose:
+            Calculates the appropriate lot size (volume) for a trade based
+            on account risk and broker constraints.
+
+        Arguments:
+            symbol (str): Target symbol name.
+            entry_price (float): Intended entry price.
+            sl_price (float): Intended stop-loss price.
+            risk_pct (float): Percentage of account to risk (e.g., 0.01).
+            account_balance (float): Current account balance.
+
+        Returns:
+            dict: Result containing 'success' (bool), 'lot_size' (float),
+                  'risk_dollars' (float), and potential errors.
+
+        Notes:
+            - Validates lot size against symbol_info (volume_min, volume_max, volume_step).
+            - Applies precise rounding to match broker requirements.
+            - Returns success=False if the lot size is below the broker's minimum.
+        """
         if risk_pct <= 0 or account_balance <= 0:
             logger.error(f"Invalid input: risk_pct={risk_pct}, account_balance={account_balance}")
             return self._result(False, 0.0, 0.0, 0.0, False, "invalid_input")

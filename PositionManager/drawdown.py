@@ -130,8 +130,19 @@ class DrawdownManager:
 
     def check(self):
         """
-        Recomputes all drawdown metrics and updates trading permission.
-        Should be called frequently in the main trading loop.
+        Purpose:
+            Recomputes all drawdown metrics based on the current account balance
+            and open risk from the PositionTracker. Updates the internal permission
+            flag for opening new trades.
+
+        Side Effects:
+            - Updates self._trading_allowed.
+            - Triggers a balance snapshot if a new day is detected.
+            - Logs a warning if the drawdown limit is breached.
+
+        Notes:
+            Should be called frequently in the main trading loop to ensure risk
+            limits are enforced in real-time.
         """
         self._check_day_boundary()
 
@@ -175,6 +186,14 @@ class DrawdownManager:
     # --- Output Methods ---
 
     def trading_allowed(self) -> bool:
+        """
+        Purpose:
+            Thread-safe check to determine if the framework is permitted to
+            open new positions.
+
+        Returns:
+            bool: True if both daily and total drawdown limits are respected.
+        """
         with self._lock:
             return self._trading_allowed
 

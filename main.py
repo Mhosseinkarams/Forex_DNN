@@ -46,11 +46,21 @@ for d in [JOURNAL_ROOT, LOG_DIR, STATE_DIR]:
 logger = logging.getLogger("Main")
 
 class TradingApplication:
+    """
+    Purpose:
+        The main application class for the live trading framework.
+        Wires together all dependencies and manages the background threads.
+    """
     def __init__(self):
         self.running = True
         self.modules = {}
 
     def initialize(self):
+        """
+        Purpose:
+            Performs the sequential initialization of all framework modules
+            in the correct dependency order.
+        """
         # 1. Initialize Logging
         setup_logging(LOG_DIR, level=logging.INFO)
         logger.info("========================================")
@@ -167,6 +177,11 @@ class TradingApplication:
             sys.exit(1)
 
     def start(self):
+        """
+        Purpose:
+            Launches the background polling threads for position tracking,
+            exit management, and strategy evaluation.
+        """
         logger.info("Starting Background Services...")
 
         self.modules["position_tracker"].start()
