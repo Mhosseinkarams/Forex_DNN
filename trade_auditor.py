@@ -28,14 +28,7 @@ class TradeAuditor:
         self.logger = logging.getLogger("TradeAuditor")
 
     def load_journal_data(self) -> pd.DataFrame:
-        """
-        Purpose:
-            Aggregates all chronological event CSVs from the current mode's
-            event directory into a single Pandas DataFrame.
-
-        Returns:
-            pd.DataFrame: A unified DataFrame of all events, sorted by timestamp.
-        """
+        """Loads all journal CSVs for the current mode into a single DataFrame."""
         all_dfs = []
         mode_path = os.path.join(self.journal_root, self.mode)
         if not os.path.exists(mode_path):
@@ -189,21 +182,7 @@ class TradeAuditor:
 
     def reconstruct_trade_lifecycle(self, ticket: Optional[int] = None, signal_id: Optional[str] = None) -> Optional[PositionLifecycle]:
         """
-        Purpose:
-            The primary entry point for forensic analysis. Rebuilds a trade's
-            entire history from discovery to closure.
-
-        Arguments:
-            ticket (int): Optional MT5 ticket ID.
-            signal_id (str): Optional framework signal UUID.
-
-        Returns:
-            Optional[PositionLifecycle]: The fully populated lifecycle object
-                                        or None if trade not found.
-
-        Notes:
-            Attempts to load from a completed summary (Layer 2) first,
-            falling back to event reconstruction (Layer 1) if not yet closed.
+        Reconstructs the full lifecycle of a trade using the PositionLifecycleBuilder.
         """
         ids = self.find_trade(ticket=ticket, signal_id=signal_id)
         if not ids:
@@ -223,10 +202,15 @@ class TradeAuditor:
         # Gather Broker Data
         broker_data = None
         if ticket:
-            broker_data = self.get_mt5_history(position=ticket)
-            current_pos = self.get_mt5_position(ticket)
-            if current_pos:
-                broker_data["current_position"] = current_pos
+            if self.mode == "backtest" and mt5:
+                # mt5 is SimulationEnvironment
+                deals = mt5.history_deals_get(position=ticket)
+                broker_data = {"deals": deals, "orders": []}
+            else:
+                broker_data = self.get_mt5_history(position=ticket)
+                current_pos = self.get_mt5_position(ticket)
+                if current_pos:
+                    broker_data["current_position"] = current_pos
 
         # Gather State Data
         state_files = {
@@ -348,7 +332,7 @@ class TradeAuditor:
         journal_df = self.load_journal_data()
         if journal_df.empty:
             return []
-            
+
         unique_signals = journal_df['signal_id'].unique()
         lifecycles = []
         for sid in unique_signals:
@@ -387,15 +371,7 @@ class TradeAuditor:
         return None
 
     def save_reports(self, lifecycle: PositionLifecycle, output_dir: str = "AuditReports"):
-        """
-        Purpose:
-            Persists the audited lifecycle to disk in both human-readable
-            (Markdown) and machine-readable (JSON) formats.
-
-        Arguments:
-            lifecycle (PositionLifecycle): The object to save.
-            output_dir (str): Destination directory.
-        """
+        """Saves reports in Markdown and JSON formats."""
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 

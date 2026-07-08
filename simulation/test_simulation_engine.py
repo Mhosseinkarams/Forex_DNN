@@ -12,13 +12,13 @@ class TestSimulationEngine(unittest.TestCase):
         self.journal_root = "Test_Backtest_Journals"
         if os.path.exists(self.journal_root):
             shutil.rmtree(self.journal_root)
-            
-        # Create dummy data: 200 bars to ensure TP is hit
+
+        # Create dummy data: ascending trend, no pullbacks
         data = {
             "Datetime": pd.date_range("2024-01-01", periods=200, freq="5min"),
             "Open":  [1.1000 + i*0.0001 for i in range(200)],
             "High":  [1.1005 + i*0.0001 for i in range(200)],
-            "Low":   [1.0995 + i*0.0001 for i in range(200)],
+            "Low":   [1.0998 + i*0.0001 for i in range(200)], # Higher Low to avoid SL
             "Close": [1.1000 + i*0.0001 for i in range(200)],
             "TickVolume": [100]*200,
             "Spread": [1]*200
@@ -27,8 +27,7 @@ class TestSimulationEngine(unittest.TestCase):
         pd.DataFrame(data).to_csv(self.csv_path, index=False)
 
     def tearDown(self):
-        if os.path.exists(self.csv_path):
-            os.remove(self.csv_path)
+        pass
 
     def test_simulation_run(self):
         runner = SimulationRunner(
@@ -37,7 +36,7 @@ class TestSimulationEngine(unittest.TestCase):
             data_files={(self.symbol, "M5"): self.csv_path},
             journal_root=self.journal_root
         )
-        
+
         # Manually trigger a trade
         runner.clock.set_time(datetime(2024, 1, 1, 0, 30, tzinfo=timezone.utc))
         runner.broker.update_market_price(self.symbol, 1.1006, 1.1006)
@@ -66,15 +65,15 @@ class TestSimulationEngine(unittest.TestCase):
             signal_category="standard",
             signal_id=sid
         )
-        
+
         self.assertTrue(res["success"])
         ticket = res["ticket"]
-        
+
         runner.run()
-        
+
         auditor = TradeAuditor(journal_root=self.journal_root, mode="backtest")
         lifecycles = auditor.reconstruct_all()
-        
+
         self.assertGreaterEqual(len(lifecycles), 1)
         lc = lifecycles[0]
         self.assertEqual(lc.execution.ticket, ticket)

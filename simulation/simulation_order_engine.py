@@ -4,11 +4,6 @@ from simulation.simulation_environment import env
 logger = logging.getLogger("SimulationOrderEngine")
 
 class SimulationOrderEngine:
-    """
-    Purpose:
-        A simplified orchestrator for trade entry during backtesting.
-        Mirrors the logic of SendOrder but optimized for the simulation loop.
-    """
     def __init__(
         self,
         position_manager,
@@ -37,30 +32,12 @@ class SimulationOrderEngine:
         signal_id: str,
         comment: str = ""
     ) -> dict:
-        """
-        Purpose:
-            Executes a trade setup within the simulated environment.
-            Includes drawdown checks, lot sizing, and registration.
-
-        Arguments:
-            symbol (str): Target symbol.
-            direction (int): 1 for BUY, -1 for SELL.
-            entry_price (float): Intended price (usually 0.0 for market).
-            sl_price (float): Target stop-loss.
-            exit_profile (str): Management model (standard/single).
-            strategy (str): Strategy name.
-            signal_category (str): standard/high_risk/reversal.
-            signal_id (str): UUID from TradingJournal.
-
-        Returns:
-            dict: Standardized result dictionary.
-        """
         tick = env.symbol_info_tick(symbol)
         if tick is None:
             return {"success": False, "reason": "no_tick", "error_detail": f"No tick for {symbol}"}
-        
+
         market_price = tick.ask if direction == 1 else tick.bid
-        
+
         if not self.dm.trading_allowed():
             return {"success": False, "reason": "drawdown_blocked"}
 
@@ -70,11 +47,11 @@ class SimulationOrderEngine:
 
         acc = env.account_info()
         balance = acc.balance
-        
+
         sizing_res = self.ps.calculate_lot_size(symbol, market_price, sl_price, risk_pct, balance)
         if not sizing_res["success"]:
             return {"success": False, "reason": "sizing_failed", "error_detail": sizing_res["error"]}
-        
+
         lot_size = sizing_res["lot_size"]
         actual_risk_pct = sizing_res["risk_pct_actual"]
 
@@ -84,7 +61,7 @@ class SimulationOrderEngine:
         tp_price = market_price + (1 if direction == 1 else -1) * tp_level * R
 
         open_res = self.pm.open_position(symbol, direction, lot_size, sl_price, tp_price, strategy, comment)
-        
+
         if open_res["success"]:
             ticket = open_res["ticket"]
             actual_entry = open_res["entry_price"]
@@ -123,5 +100,5 @@ class SimulationOrderEngine:
                 "risk_pct": actual_risk_pct,
                 "signal_category": signal_category
             }
-        
+
         return {"success": False, "reason": "open_failed"}
