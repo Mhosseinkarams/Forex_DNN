@@ -81,7 +81,8 @@ class SimulationRunner:
             trading_journal=self.tj,
             drawdown_manager=self.dm,
             symbols=[symbol],
-            poll_interval_seconds=0
+            poll_interval_seconds=0,
+            state_file=os.path.join(state_dir, "mm_strategy_state.json")
         )
 
     def run(self):

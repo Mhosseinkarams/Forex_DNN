@@ -3,6 +3,7 @@ import json
 import logging
 import sys
 from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE, EXIT_PROFILES
+from Collecting_Data.utils import safe_file_replace
 
 # Optional MT5 import for environments where it's not installed (e.g. Linux CI)
 try:
@@ -52,7 +53,7 @@ class SendOrder:
             temp_file = self.state_file + ".tmp"
             with open(temp_file, "w") as f:
                 json.dump(self.ticket_categories, f, indent=4)
-            os.replace(temp_file, self.state_file)
+            safe_file_replace(temp_file, self.state_file)
         except Exception as e:
             logger.error(f"Failed to save state to {self.state_file}: {e}")
 
