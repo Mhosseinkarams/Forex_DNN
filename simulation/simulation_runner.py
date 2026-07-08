@@ -67,8 +67,8 @@ class SimulationRunner:
 
         self.tj = TradingJournal(journal_root=journal_root, mode="backtest")
         self.pm = PositionManager(magic_unity=100001, magic_mm=100002)
-        self.pt = PositionTracker(magic_numbers=[100001, 100002], poll_interval_seconds=0, state_file=os.path.join(state_dir, "position_state.json"))
-        self.dm = DrawdownManager(initial_balance=initial_balance, position_tracker=self.pt, state_file=os.path.join(state_dir, "drawdown_state.json"))
+        self.pt = PositionTracker(magic_numbers=[100001, 100002], poll_interval_seconds=0, state_file=os.path.join(state_dir, "position_tracker_state.json"))
+        self.dm = DrawdownManager(initial_balance=initial_balance, position_tracker=self.pt, state_file=os.path.join(state_dir, "drawdown_manager_state.json"))
         self.ps = PositionSizer()
         self.em = ExitManager(position_tracker=self.pt, position_manager=self.pm, trading_journal=self.tj, state_file=os.path.join(state_dir, "exit_manager_state.json"))
 
