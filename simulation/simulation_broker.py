@@ -296,7 +296,7 @@ class SimulationBroker:
             res = [p for p in res if p.ticket == ticket]
         if magic:
             res = [p for p in res if p.magic == magic]
-        return res if res else None
+        return tuple(res)
 
     def history_deals_get(self, position=None):
         if position:

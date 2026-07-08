@@ -149,7 +149,12 @@ class IndicatorEngine:
 
         # Reorder columns
         final_cols = original_cols + layer1_cols + layer2_cols
-        return df[final_cols]
+        df = df[final_cols]
+
+        # Remove duplicate columns if any (e.g. if original_cols already contained some indicators)
+        df = df.loc[:, ~df.columns.duplicated()]
+
+        return df
 
 if __name__ == "__main__": 
     import pandas as pd 
