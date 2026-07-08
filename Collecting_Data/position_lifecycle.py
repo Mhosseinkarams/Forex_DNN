@@ -244,6 +244,7 @@ class PositionLifecycleBuilder:
 
         # 2. Extract Execution Info
         order_event = relevant_events[relevant_events['event_type'] == 'order_open']
+        failure_event = relevant_events[relevant_events['event_type'] == 'order_failure']
         execution_info = None
         ticket = None
 
@@ -336,6 +337,25 @@ class PositionLifecycleBuilder:
                 deal_count=0,
                 partial_close_count=len(partial_closes),
                 duration=float(out_row.get('duration_seconds', 0)),
+                status='completed'
+            )
+        elif not failure_event.empty:
+            fail_row = failure_event.iloc[0]
+            outcome_info = OutcomeInfo(
+                exit_timestamp=fail_row.get('system_timestamp', ''),
+                average_exit_price=0,
+                close_price=0,
+                realized_profit=0,
+                profit_points=0,
+                profit_pips=0,
+                profit_percent=0,
+                r_multiple=0,
+                result='FAILED',
+                strategy_reason=fail_row.get('reason', 'Order failure'),
+                broker_reason='',
+                deal_count=0,
+                partial_close_count=0,
+                duration=0,
                 status='completed'
             )
         else:

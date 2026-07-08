@@ -123,10 +123,16 @@ class SendOrder:
             logger.warning(f"Trade blocked by DrawdownManager for {symbol}")
             return self._failure("drawdown_blocked", "Drawdown limit reached", symbol, direction, signal_category)
 
-        risk_pct = self.dm.max_risk_pct()
+        risk_budget = self.dm.max_risk_pct()
         profile_cfg = EXIT_PROFILES.get(exit_profile)
-        default_risk = profile_cfg.get("default_risk", 0.01) if profile_cfg else 0.01
-        risk_pct = min(risk_pct, default_risk)
+        required_risk = profile_cfg.get("default_risk", 0.01) if profile_cfg else 0.01
+
+        if risk_budget < required_risk:
+            logger.warning(f"Insufficient risk budget for {symbol}: available {risk_budget:.4f}, required {required_risk:.4f}")
+            self.tj.log_order_failure(signal_id, "insufficient_risk_budget")
+            return self._failure("drawdown_blocked", "insufficient_risk_budget", symbol, direction, signal_category)
+
+        risk_pct = required_risk
 
         # Account Balance
         acc = mt5.account_info()
