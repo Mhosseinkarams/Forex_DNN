@@ -303,13 +303,35 @@ class PositionLifecycleBuilder:
         # In new architecture, we look for position_closed event
         closed_event = relevant_events[relevant_events['event_type'] == 'position_closed']
 
+        # Check for order_failure
+        failure_event = relevant_events[relevant_events['event_type'] == 'order_failure']
+
         # Backward compatibility: also check for legacy 'outcome' event type
         if closed_event.empty:
             closed_event = relevant_events[relevant_events['event_type'] == 'outcome']
 
         outcome_info = None
 
-        if not closed_event.empty:
+        if not failure_event.empty:
+            fail_row = failure_event.iloc[0]
+            outcome_info = OutcomeInfo(
+                exit_timestamp=fail_row.get('system_timestamp', 'Unknown'),
+                average_exit_price=0.0,
+                close_price=0.0,
+                realized_profit=0.0,
+                profit_points=0.0,
+                profit_pips=0.0,
+                profit_percent=0.0,
+                r_multiple=0.0,
+                result='FAILED',
+                strategy_reason=fail_row.get('reason', 'Unknown'),
+                broker_reason='',
+                deal_count=0,
+                partial_close_count=0,
+                duration=0.0,
+                status='failed'
+            )
+        elif not closed_event.empty:
             out_row = closed_event.iloc[0]
 
             # In new architecture, PnL is NOT in the position_closed event.

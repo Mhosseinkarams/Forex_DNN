@@ -8,6 +8,11 @@ import pandas as pd
 from datetime import datetime, timezone
 from Collecting_Data.position_lifecycle import PositionLifecycle
 
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None
+
 logger = logging.getLogger("TradingJournal")
 
 class TradingJournal:
@@ -138,11 +143,17 @@ class TradingJournal:
             logger.error(f"Failed to write to journal {filepath}: {e}")
 
     def _get_base_data(self, event_type: str, signal_id: str, bar_timestamp: str, strategy: str, symbol: str, timeframe: str, signal_type: str, direction: int):
+        # Use MT5 get_now() if available (e.g. in simulation) otherwise use real time
+        if mt5 and hasattr(mt5, 'get_now'):
+            now_iso = mt5.get_now().isoformat()
+        else:
+            now_iso = datetime.now(timezone.utc).isoformat()
+
         return {
             "event_id": str(uuid.uuid4()),
             "signal_id": signal_id,
             "event_type": event_type,
-            "system_timestamp": datetime.now(timezone.utc).isoformat(),
+            "system_timestamp": now_iso,
             "bar_timestamp": bar_timestamp,
             "strategy": strategy,
             "symbol": symbol,
