@@ -56,8 +56,8 @@ class MMStrategy:
         self.engine_m15 = IndicatorEngine(ema_periods=[50, 800], slope_period=32)
 
         self.last_bar_time = {} # symbol -> timeframe -> timestamp
-        self.signal_history = {} # symbol -> timeframe -> list of dicts
-        self._bar_counters = {} # symbol -> timeframe -> int
+        self.signal_history = {s: {"M5": [], "M15": []} for s in symbols}
+        self._bar_counters = {s: {"M5": 0, "M15": 0} for s in symbols}
 
         self._stop_event = threading.Event()
         self._thread = None
@@ -399,10 +399,18 @@ class MMStrategy:
         if tick is None: return float(sl_price)
         entry_price = tick.ask if direction == 1 else tick.bid
         
-        # Max SL distance cap removed as requested
+        # Max SL distance cap
         info = mt5.symbol_info(symbol)
         if info is None: return float(sl_price)
         
+        pip_size = info.point * 10
+        max_sl_dist = self.max_sl_pips * pip_size
+        
+        current_dist = abs(entry_price - sl_price)
+        if current_dist > max_sl_dist:
+            sl_price = entry_price - direction * max_sl_dist
+            logger.warning(f"SL capped for {symbol} at {self.max_sl_pips} pips")
+
         # Minimum SL distance
         stops_level_price = info.trade_stops_level * info.point
         if abs(entry_price - sl_price) < stops_level_price:

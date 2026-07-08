@@ -131,6 +131,11 @@ class SimulationEnvironment:
             return self.broker.history_deals_get(**kwargs)
         return mt5_live.history_deals_get(**kwargs)
 
+    def history_orders_get(self, **kwargs):
+        if self.mode == 'backtest':
+            return [] # SimulationBroker currently doesn't track historical orders separately
+        return mt5_live.history_orders_get(**kwargs)
+
     def copy_rates_from_pos(self, symbol, timeframe, start_pos, count):
         if self.mode == 'backtest':
             # Simplified for DrawdownManager which just needs it for time
