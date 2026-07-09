@@ -171,7 +171,8 @@ class IntegrationValidator:
             mock_mt5.TRADE_RETCODE_DONE = 10009
             mock_mt5.ORDER_TYPE_BUY = 0
             mock_mt5.symbol_info.return_value = MagicMock(
-                point=0.00001, trade_stops_level=0, volume_min=0.01, volume_step=0.01, volume_max=100.0, trade_contract_size=100000
+                point=0.00001, trade_stops_level=0, volume_min=0.01, volume_step=0.01, volume_max=100.0, trade_contract_size=100000,
+                trade_tick_value=1.0, trade_tick_size=0.00001
             )
             mock_mt5.order_send.return_value = MagicMock(retcode=10009, order=123456, price=1.1011, comment="Done")
 
