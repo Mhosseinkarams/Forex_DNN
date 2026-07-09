@@ -1,0 +1,6 @@
+Validation Report - EURUSD_o M5
+Date: 2026-07-09 12:09:10.660385
+Total Bars: 10000
+BOS Count: 346
+CHOCH Count: 358
+Zones Detected: 119
