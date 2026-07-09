@@ -133,17 +133,22 @@ class PositionTracker:
                 logger.error(f"Failed to get symbol info for {p.symbol}")
                 continue
             
-            contract_size = info.trade_contract_size
             entry_price = p.price_open
             sl_price = p.sl
             tp_price = p.tp
             lot_size = p.volume
-            
-            # Remaining risk = abs(entry_price - sl_price) × lot_size × contract_size
-            risk = abs(entry_price - sl_price) * lot_size * contract_size if sl_price != 0 else 0.0
-            
-            # Reward = abs(tp_price - entry_price) × lot_size × contract_size
-            reward = abs(tp_price - entry_price) * lot_size * contract_size if tp_price != 0 else 0.0
+
+            # Use trade_tick_value if available (aligns with SimulationBroker and PositionSizer)
+            tick_value = getattr(info, 'trade_tick_value', None)
+            tick_size = getattr(info, 'trade_tick_size', None)
+
+            if tick_value and tick_size:
+                risk = (abs(entry_price - sl_price) / tick_size) * lot_size * tick_value if sl_price != 0 else 0.0
+                reward = (abs(tp_price - entry_price) / tick_size) * lot_size * tick_value if tp_price != 0 else 0.0
+            else:
+                contract_size = info.trade_contract_size
+                risk = abs(entry_price - sl_price) * lot_size * contract_size if sl_price != 0 else 0.0
+                reward = abs(tp_price - entry_price) * lot_size * contract_size if tp_price != 0 else 0.0
             
             snapshot = {
                 "ticket": p.ticket,

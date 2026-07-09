@@ -31,7 +31,7 @@ class TestSimulationEngine(unittest.TestCase):
 
     def test_simulation_run(self):
         runner = SimulationRunner(
-            symbol=self.symbol,
+            symbols=self.symbol,
             timeframes=["M5"],
             data_files={(self.symbol, "M5"): self.csv_path},
             journal_root=self.journal_root
