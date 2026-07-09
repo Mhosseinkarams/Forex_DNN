@@ -77,6 +77,7 @@ class SupplyDemandEngine:
                     # Initial strength (no look-ahead)
                     new_zone.strength_score = abs(move) / (atr[i] if atr[i] > 0 else 1e-9)
                     active_zones.append(new_zone)
+                    self.zones.append(new_zone)
 
             # 2. Update active zones (mitigation, breakage, incremental strength)
             curr_low = lows[i]; curr_high = highs[i]; curr_close = closes[i]
