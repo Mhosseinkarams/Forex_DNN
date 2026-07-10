@@ -191,6 +191,11 @@ class MMStrategy:
         dist_fast_col = f"dist_ema_{fast_p}"
         atr_col = "atr_14"
 
+        # Check if candle crossed EMA50 (the entry trigger)
+        cross_fast_val = bar_closed[cross_fast_col]
+        if cross_fast_val == 0:
+            return
+
         # Values from forming bar (index -1)
         ema_fast_val = bar_forming[ema_fast_col]
         ema_slow_val = bar_forming[ema_slow_col]
@@ -199,53 +204,62 @@ class MMStrategy:
         dist_fast_val = bar_forming[dist_fast_col]
         ema_sep_atr = abs(ema_fast_val - ema_slow_val) / (atr_val + 1e-9)
 
+        # Dynamic slope threshold based on timeframe
+        slope_threshold = self.m5_slope_threshold if timeframe == "M5" else self.m15_slope_threshold
+
         # Priority: HR -> STD -> REV
         
         # 1. High-Risk
-        hr_dir = self._evaluate_high_risk(bar_closed, ema_fast_val, ema_slow_val, slope_val, cross_fast_col)
+        hr_dir = self._evaluate_high_risk(bar_closed, ema_fast_val, ema_slow_val, slope_val, cross_fast_val, slope_threshold)
         if hr_dir:
             self._process_signal(symbol, timeframe, "high_risk", hr_dir, df)
             return
 
         # 2. Standard
-        std_dir = self._evaluate_standard(bar_closed, ema_fast_val, ema_slow_val, slope_val, ema_sep_atr, dist_fast_val)
+        std_dir = self._evaluate_standard(bar_closed, ema_fast_val, ema_slow_val, slope_val, ema_sep_atr, dist_fast_val, cross_fast_val, slope_threshold)
         if std_dir:
             self._process_signal(symbol, timeframe, "standard", std_dir, df)
             return
 
         # 3. Reversal
-        rev_dir = self._evaluate_reversal(bar_closed, ema_fast_val, ema_slow_val, ema_sep_atr, cross_fast_col)
+        rev_dir = self._evaluate_reversal(bar_closed, ema_fast_val, ema_slow_val, ema_sep_atr, cross_fast_val)
         if rev_dir:
             self._process_signal(symbol, timeframe, "reversal", rev_dir, df)
             return
 
-    def _evaluate_high_risk(self, bar_closed, ema_fast_val, ema_slow_val, slope_val, cross_fast_col):
+    def _evaluate_high_risk(self, bar_closed, ema_fast_val, ema_slow_val, slope_val, cross_fast_val, slope_threshold):
         # 1. Previous candle crosses through fast EMA
-        cross = bar_closed[cross_fast_col]
-        if cross == 0: return None
+        if cross_fast_val == 0:
+            return None
         
-        # 2. Cross direction aligns with slow EMA trend
+        # 2. Cross direction aligns with slow EMA trend (Trend Direction Context)
         direction = 0
-        if cross == 1 and ema_fast_val > ema_slow_val:
+        if cross_fast_val == 1 and ema_fast_val > ema_slow_val:
             direction = 1
-        elif cross == -1 and ema_fast_val < ema_slow_val:
+        elif cross_fast_val == -1 and ema_fast_val < ema_slow_val:
             direction = -1
         else:
             return None
         
         # 3. Previous candle body percentage
-        if bar_closed["body_pct"] < 0.70: return None
+        if bar_closed["body_pct"] < 0.70:
+            return None
         
         # 4. Previous candle size vs average
-        if bar_closed["body_vs_avg"] < 1.2: return None
+        if bar_closed["body_vs_avg"] < 1.2:
+            return None
         
         # 5. Slow EMA slope
-        if slope_val < 0.1: return None
+        if slope_val < slope_threshold:
+            return None
         
         return direction
 
-    def _evaluate_standard(self, bar_closed, ema_fast_val, ema_slow_val, slope_val, ema_sep_atr, dist_fast_val):
-        # 1. EMA alignment
+    def _evaluate_standard(self, bar_closed, ema_fast_val, ema_slow_val, slope_val, ema_sep_atr, dist_fast_val, cross_fast_val, slope_threshold):
+        if cross_fast_val == 0:
+            return None
+
+        # 1. EMA alignment (Trend Context)
         direction = 0
         if ema_fast_val > ema_slow_val:
             direction = 1
@@ -254,48 +268,61 @@ class MMStrategy:
         else:
             return None
             
-        # 2. Price proximity to fast EMA (ATR-dynamic)
-        if abs(dist_fast_val) >= self.price_to_fast_atr_threshold: return None
+        # 2. Candle crossing EMA50 in trend direction (Entry Trigger)
+        if cross_fast_val != direction:
+            return None
+
+        # 3. Price proximity to fast EMA (ATR-dynamic)
+        if abs(dist_fast_val) >= self.price_to_fast_atr_threshold:
+            return None
         
-        # 3. EMA separation (ATR-dynamic)
-        if ema_sep_atr >= self.fast_to_slow_atr_threshold: return None
+        # 4. EMA separation (ATR-dynamic)
+        if ema_sep_atr >= self.fast_to_slow_atr_threshold:
+            return None
         
-        # 4. Previous candle body percentage
-        if bar_closed["body_pct"] < 0.60: return None
+        # 5. Previous candle body percentage
+        if bar_closed["body_pct"] < 0.60:
+            return None
         
-        # 5. Previous candle size vs average
-        if bar_closed["body_vs_avg"] <= 1.0: return None
+        # 6. Previous candle size vs average
+        if bar_closed["body_vs_avg"] <= 1.0:
+            return None
         
-        # 6. Slow EMA slope
-        if slope_val < 0.1: return None
+        # 7. Slow EMA slope
+        if slope_val < slope_threshold:
+            return None
         
-        # 7. Direction match (candle confirms EMA direction)
-        if bar_closed["candle_direction"] != direction: return None
+        # 8. Direction match (candle confirms EMA direction)
+        if bar_closed["candle_direction"] != direction:
+            return None
         
         return direction
 
-    def _evaluate_reversal(self, bar_closed, ema_fast_val, ema_slow_val, ema_sep_atr, cross_fast_col):
+    def _evaluate_reversal(self, bar_closed, ema_fast_val, ema_slow_val, ema_sep_atr, cross_fast_val):
         # 1. EMA separation is large
-        if ema_sep_atr < self.reversal_ema_sep_threshold: return None
+        if ema_sep_atr < self.reversal_ema_sep_threshold:
+            return None
         
-        # 2. Previous candle crosses through fast EMA
-        cross = bar_closed[cross_fast_col]
-        if cross == 0: return None
+        # 2. Previous candle crosses through fast EMA (Entry Trigger)
+        if cross_fast_val == 0:
+            return None
         
-        # 3. Cross direction is OPPOSITE to slow EMA trend
+        # 3. Cross direction is OPPOSITE to slow EMA trend (Trend Direction Context)
         direction = 0
-        if cross == 1 and ema_fast_val < ema_slow_val:
+        if cross_fast_val == 1 and ema_fast_val < ema_slow_val:
             direction = 1
-        elif cross == -1 and ema_fast_val > ema_slow_val:
+        elif cross_fast_val == -1 and ema_fast_val > ema_slow_val:
             direction = -1
         else:
             return None
             
         # 4. Previous candle body percentage
-        if bar_closed["body_pct"] < 0.80: return None
+        if bar_closed["body_pct"] < 0.80:
+            return None
         
         # 5. Previous candle size vs average
-        if bar_closed["body_vs_avg"] < 1.5: return None
+        if bar_closed["body_vs_avg"] < 1.5:
+            return None
         
         return direction
 
@@ -521,8 +548,10 @@ if __name__ == "__main__":
             self.strategy._is_new_bar = MagicMock(return_value=True)
             self.send_order.execute.return_value = {"success": True}
             
+            df = self.strategy.engine_m5.calculate(df_raw)
+            df.loc[df.index[-2], "cross_ema_50"] = 1
             with patch.object(self.strategy, '_evaluate_standard', return_value=1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", self.strategy.engine_m5.calculate(df_raw), 50, 600)
+                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
                 
             self.trading_journal.log_signal.assert_called_once()
             self.assertEqual(self.trading_journal.log_signal.call_args[1]["signal_type"], "standard")
@@ -535,19 +564,23 @@ if __name__ == "__main__":
             df_raw = self.make_df()
             self.strategy._is_new_bar = MagicMock(return_value=True)
             
+            df = self.strategy.engine_m5.calculate(df_raw)
+            df.loc[df.index[-2], "cross_ema_50"] = 1
             with patch.object(self.strategy, '_evaluate_high_risk', return_value=1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", self.strategy.engine_m5.calculate(df_raw), 50, 600)
+                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
                 
             self.assertEqual(self.trading_journal.log_signal.call_args[1]["signal_type"], "high_risk")
-            self.assertEqual(self.send_order.execute.call_args[1]["exit_profile"], EXIT_PROFILE_SINGLE)
+            self.assertEqual(self.send_order.execute.call_args[1]["exit_profile"], EXIT_PROFILE_HIGH_RISK)
 
         def test_reversal_sell_signal(self):
             # Test Case 4: Reversal SELL
             df_raw = self.make_df()
             self.strategy._is_new_bar = MagicMock(return_value=True)
             
+            df = self.strategy.engine_m5.calculate(df_raw)
+            df.loc[df.index[-2], "cross_ema_50"] = -1
             with patch.object(self.strategy, '_evaluate_reversal', return_value=-1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", self.strategy.engine_m5.calculate(df_raw), 50, 600)
+                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
                 
             self.assertEqual(self.trading_journal.log_signal.call_args[1]["signal_type"], "reversal")
             self.assertEqual(self.trading_journal.log_signal.call_args[1]["direction"], -1)
@@ -557,10 +590,12 @@ if __name__ == "__main__":
             df_raw = self.make_df()
             self.strategy._is_new_bar = MagicMock(return_value=True)
             
+            df = self.strategy.engine_m5.calculate(df_raw)
+            df.loc[df.index[-2], "cross_ema_50"] = 1
             with patch.object(self.strategy, '_evaluate_high_risk', return_value=1), \
                  patch.object(self.strategy, '_evaluate_standard', return_value=1), \
                  patch.object(self.strategy, '_evaluate_reversal', return_value=1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", self.strategy.engine_m5.calculate(df_raw), 50, 600)
+                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
                 
             self.trading_journal.log_signal.assert_called_once()
             self.assertEqual(self.trading_journal.log_signal.call_args[1]["signal_type"], "high_risk")
@@ -570,7 +605,9 @@ if __name__ == "__main__":
             df_raw = self.make_df(ema_fast_above_slow=True, bullish_candles=False) # Bearish candle in Bullish trend
             self.strategy._is_new_bar = MagicMock(return_value=True)
             
-            self.strategy._check_and_submit_signal("EURUSD_o", "M5", self.strategy.engine_m5.calculate(df_raw), 50, 600)
+            df = self.strategy.engine_m5.calculate(df_raw)
+            df.loc[df.index[-2], "cross_ema_50"] = 1
+            self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
             self.trading_journal.log_signal.assert_not_called()
 
         def test_no_signal_repeated_bar(self):
@@ -588,8 +625,10 @@ if __name__ == "__main__":
             self.strategy._is_new_bar = MagicMock(return_value=True)
             self.drawdown_manager.trading_allowed.return_value = False
             
+            df = self.strategy.engine_m5.calculate(df_raw)
+            df.loc[df.index[-2], "cross_ema_50"] = 1
             with patch.object(self.strategy, '_evaluate_standard', return_value=1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", self.strategy.engine_m5.calculate(df_raw), 50, 600)
+                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
                 
             self.trading_journal.log_signal.assert_called_once()
             self.assertTrue(self.trading_journal.log_signal.call_args[1]["extra_fields"]["blocked_by_drawdown"])
@@ -619,8 +658,11 @@ if __name__ == "__main__":
             # Test Case 12: extra_fields logged correctly
             df_raw = self.make_df()
             self.strategy._is_new_bar = MagicMock(return_value=True)
+
+            df = self.strategy.engine_m5.calculate(df_raw)
+            df.loc[df.index[-2], "cross_ema_50"] = 1
             with patch.object(self.strategy, '_evaluate_standard', return_value=1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", self.strategy.engine_m5.calculate(df_raw), 50, 600)
+                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
             
             fields = self.trading_journal.log_signal.call_args[1]["extra_fields"]
             required = ["ema_fast", "ema_slow", "atr", "body_pct", "body_vs_avg", "ema_slope", 
