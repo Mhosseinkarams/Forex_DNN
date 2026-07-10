@@ -9,11 +9,11 @@ from simulation.simulation_broker import SimulationBroker
 from simulation.simulation_environment import env
 
 from Collecting_Data.trading_journal import TradingJournal
-from PositionManager.position_manager import PositionManager
-from PositionManager.position_tracker import PositionTracker
-from PositionManager.drawdown import DrawdownManager
-from PositionManager.risk_sizing import PositionSizer
-from PositionManager.exit_manager import ExitManager
+from Trade_Execution.position_manager import PositionManager
+from Trade_Execution.position_tracker import PositionTracker
+from Trade_Execution.drawdown import DrawdownManager
+from Trade_Execution.risk_sizing import PositionSizer
+from Trade_Execution.exit_manager import ExitManager
 from Strategies.mm_strategy import MMStrategy
 from simulation.historical_data_feed import HistoricalDataFeed
 from simulation.simulation_order_engine import SimulationOrderEngine
@@ -91,7 +91,7 @@ class SimulationRunner:
         self.ps = PositionSizer()
         self.em = ExitManager(position_tracker=self.pt, position_manager=self.pm, trading_journal=self.tj, state_file=os.path.join(state_dir, "exit_manager_state.json"))
 
-        from PositionManager.send_order import SendOrder
+        from Trade_Execution.send_order import SendOrder
         self.so = SendOrder(self.pm, self.pt, self.dm, self.ps, self.em, self.tj, state_file=os.path.join(state_dir, "send_order_state.json"))
 
         self.strategy = MMStrategy(

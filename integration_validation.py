@@ -16,12 +16,12 @@ sys.modules["MetaTrader5"] = mock_mt5
 from Collecting_Data.logging_config import setup_logging
 from Collecting_Data.trading_journal import TradingJournal
 from Collecting_Data.data_feed import MT5DataFeed, FeedHealth
-from PositionManager.position_manager import PositionManager
-from PositionManager.position_tracker import PositionTracker
-from PositionManager.drawdown import DrawdownManager
-from PositionManager.risk_sizing import PositionSizer
-from PositionManager.exit_manager import ExitManager
-from PositionManager.send_order import SendOrder
+from Trade_Execution.position_manager import PositionManager
+from Trade_Execution.position_tracker import PositionTracker
+from Trade_Execution.drawdown import DrawdownManager
+from Trade_Execution.risk_sizing import PositionSizer
+from Trade_Execution.exit_manager import ExitManager
+from Trade_Execution.send_order import SendOrder
 from Strategies.mm_strategy import MMStrategy
 
 class IntegrationValidator:
