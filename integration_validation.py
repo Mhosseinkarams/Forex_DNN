@@ -148,6 +148,7 @@ class IntegrationValidator:
             # Inject synthetic signal context
             df_raw = self.df.get_ohlcv("EURUSD_o", "M5")
             df = self.strategy.engine_m5.calculate(df_raw)
+            df.loc[df.index[-2], "cross_ema_50"] = 1
 
             # Manually trigger signal processing with mock evaluations
             # Mocking _process_signal to avoid full order execution here, we do it in validate_order_flow
