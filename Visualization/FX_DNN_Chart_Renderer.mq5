@@ -43,10 +43,10 @@ int OnCalculate(const int rates_total,
                 const double &low[],
                 const double &close[],
                 const long &tick_volume[],
-                const long &spread[],
-                const datetime &real_volume[])
+                const long &volume[],
+                const int &spread[])
 {
-   return(rates_total);
+    return(rates_total);
 }
 
 //+------------------------------------------------------------------+
