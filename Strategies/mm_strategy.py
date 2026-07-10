@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
+from typing import Optional, List
 import pandas as pd
 import numpy as np
 
@@ -18,6 +19,13 @@ from Collecting_Data.indicators import IndicatorEngine
 from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE, EXIT_PROFILE_HIGH_RISK, EXIT_PROFILE_REVERSAL
 from Collecting_Data.utils import safe_file_replace
 from Core.trend_context import TrendContext, TrendContextBuilder
+
+# Market Data Pipeline & Trade Location Modules
+from Market_Data_Pipeline.structure_graph import MarketStructureGraph, StructureLevel, Zone, BOS, CHOCH
+from Market_Data_Pipeline.structure_engine import MarketStructureEngine
+from Market_Data_Pipeline.supply_demand_engine import SupplyDemandEngine
+from Market_Data_Pipeline.state_engine import MarketStateEngine, StateContext
+from Trade_Execution.location_engine import TradeLocationEngine
 
 logger = logging.getLogger("MMStrategy")
 
@@ -38,6 +46,7 @@ class MMStrategy:
         fast_to_slow_atr_threshold: float = 3.0,
         reversal_ema_sep_threshold: float = 9.0,
         state_file: str = "mm_strategy_state.json",
+        location_engine: Optional[TradeLocationEngine] = None
     ):
         self.data_feed = data_feed
         self.send_order = send_order
@@ -56,6 +65,12 @@ class MMStrategy:
 
         self.engine_m5 = IndicatorEngine(ema_periods=[50, 600], slope_period=32)
         self.engine_m15 = IndicatorEngine(ema_periods=[50, 800], slope_period=32)
+
+        # Re-use analytical engines
+        self.struct_engine = MarketStructureEngine(lookback=3)
+        self.sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
+        self.state_engine = MarketStateEngine()
+        self.location_engine = location_engine or TradeLocationEngine()
 
         self.last_bar_time = {} # symbol -> timeframe -> timestamp
         self.signal_history = {s: {"M5": [], "M15": []} for s in symbols}
@@ -91,10 +106,6 @@ class MMStrategy:
             Initializes and starts the background strategy thread.
             The thread will continuously poll the market data feed for
             new signal opportunities.
-
-        Side Effects:
-            - Clears signal history for the new session.
-            - Spawns a threading.Thread.
         """
         if self._thread is not None and self._thread.is_alive():
             logger.warning("MMStrategy is already running.")
@@ -134,11 +145,6 @@ class MMStrategy:
             The main iterative unit of the strategy. Performs bar-time
             synchronization, indicator calculation, and signal evaluation
             for all configured symbols and timeframes.
-
-        Side Effects:
-            - Fetches data from DataFeed.
-            - Updates state_file (mm_strategy_state.json) after processing each bar.
-            - Calls SendOrder if a valid setup is detected.
         """
         for symbol in self.symbols:
             for timeframe, fast_p, slow_p in [("M5", 50, 600), ("M15", 50, 800)]:
@@ -176,8 +182,41 @@ class MMStrategy:
         
         return False
 
+    def _build_market_structure_graph(self, symbol: str, timeframe: str, df: pd.DataFrame) -> MarketStructureGraph:
+        """
+        Build and populate a MarketStructureGraph using the structural engines.
+        """
+        # Run analytical engines on the dataframe
+        df_struct = self.struct_engine.process(df)
+        df_sd = self.sd_engine.process(df_struct)
+
+        last_row = df_sd.iloc[-1]
+        dt = pd.to_datetime(last_row["Datetime"]) if "Datetime" in df_sd.columns else datetime.now(timezone.utc)
+
+        # Create MarketStructureGraph instance
+        graph = MarketStructureGraph(
+            symbol=symbol,
+            timeframe=timeframe,
+            timestamp=dt,
+            swing_highs=list(self.struct_engine.swings),
+            swing_lows=list(self.struct_engine.swings), # Swings list has both High and Low
+            protected_high=self.struct_engine.protected_high,
+            protected_low=self.struct_engine.protected_low,
+            bos=list(self.struct_engine.bos_list),
+            choch=list(self.struct_engine.choch_list),
+            supply_zones=[z for z in self.sd_engine.zones if z.type == 'Supply'],
+            demand_zones=[z for z in self.sd_engine.zones if z.type == 'Demand'],
+            trend_direction="Bull" if last_row.get("trend", 0) == 1 else ("Bear" if last_row.get("trend", 0) == -1 else "Neutral"),
+            atr=float(last_row.get("atr_14", 0.0001)),
+            volatility=float(last_row.get("atr_14", 0.0001) * 10000.0) # Relative scaling
+        )
+        # Separate swings properly
+        graph.swing_highs = [s for s in self.struct_engine.swings if s.level_type == 'SwingHigh']
+        graph.swing_lows = [s for s in self.struct_engine.swings if s.level_type == 'SwingLow']
+
+        return graph
+
     def _check_and_submit_signal(self, symbol, timeframe, df, fast_p, slow_p):
-        # Index -1 is forming bar, -2 is last closed bar
         idx_closed = -2
         idx_forming = -1
         
@@ -338,7 +377,7 @@ class MMStrategy:
             exit_profile = EXIT_PROFILE_REVERSAL
             risk_pct_default = 0.003
 
-        # SL Calculation
+        # SL Calculation using shared engines and TradeLocationEngine
         sl_price = self._calculate_sl(symbol, direction, df)
         
         # Live ask/bid for entry_price
@@ -426,23 +465,25 @@ class MMStrategy:
             logger.info(f"Order result for {symbol}: {res.get('success')} - {res.get('reason')}")
 
     def _calculate_sl(self, symbol, direction, df):
-        # SL is based on swing high/low over a lookback (default 10 bars)
-        # Using 10 closed bars before the forming bar: df.iloc[-11:-1]
-        lookback_df = df.iloc[-11:-1]
-        
-        if direction == 1:
-            sl_price = lookback_df["Low"].min()
-        else:
-            sl_price = lookback_df["High"].max()
-            
-        # Entry price for SL calculation (live)
+        # 1. Fetch current price
         tick = mt5.symbol_info_tick(symbol)
-        if tick is None: return float(sl_price)
-        entry_price = tick.ask if direction == 1 else tick.bid
-        
-        # Max SL distance cap
+        if tick is None:
+            # Fallback to last close
+            entry_price = float(df.iloc[-1]["Close"])
+        else:
+            entry_price = float(tick.ask if direction == 1 else tick.bid)
+
+        # 2. Build the current bar's MarketStructureGraph
+        msg = self._build_market_structure_graph(symbol, "M5", df)
+
+        # 3. Resolve base SL price from TradeLocationEngine using structural coordinates
+        levels = self.location_engine.get_trade_levels(msg, direction, entry_price)
+        sl_price = levels["sl_price"]
+
+        # 4. Apply pip distance and broker constraints exactly as required by MMStrategy
         info = mt5.symbol_info(symbol)
-        if info is None: return float(sl_price)
+        if info is None:
+            return float(sl_price)
         
         pip_size = info.point * 10
         max_sl_dist = self.max_sl_pips * pip_size
