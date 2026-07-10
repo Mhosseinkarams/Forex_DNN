@@ -158,6 +158,11 @@ class TradingApplication:
                 sys.exit(1)
             self.modules["data_feed"] = df
 
+            # Visualization Engine (Chart Annotator)
+            from Visualization.chart_annotator import ChartAnnotationEngine
+            annotator = ChartAnnotationEngine()
+            self.modules["annotator"] = annotator
+
             # MM Strategy
             strategy = MMStrategy(
                 data_feed=df,
@@ -166,7 +171,8 @@ class TradingApplication:
                 drawdown_manager=dm,
                 symbols=SYMBOLS,
                 poll_interval_seconds=POLL_INTERVAL_STRATEGY,
-                state_file=os.path.join(STATE_DIR, "mm_strategy_state.json")
+                state_file=os.path.join(STATE_DIR, "mm_strategy_state.json"),
+                annotator=annotator
             )
             self.modules["strategy"] = strategy
 
