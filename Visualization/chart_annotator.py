@@ -1,8 +1,6 @@
-import logging
 import os
-import json
-from typing import Optional, Dict, Any
-import pandas as pd
+import logging
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 
 # Optional MT5 import
@@ -14,20 +12,300 @@ except ImportError:
 from Market_Data_Pipeline.structure_graph import MarketStructureGraph
 from Market_Data_Pipeline.state_engine import StateContext
 from Visualization.debug_config import DebugConfig
+from Visualization.render_types import DrawInstruction
+from Visualization.draw_instruction_writer import DrawInstructionWriter
 
 logger = logging.getLogger("VisualizationEngine")
 
 class ChartAnnotationEngine:
     """
     Purpose:
-        The VisualizationEngine (ChartAnnotationEngine) draws structural elements,
-        supply/demand zones, market states, trade levels, and strategy signals
-        directly on MT5 charts (by writing JSON files to MT5 Files directory) and
-        Matplotlib figures (for validation notebooks).
-        Operates passively without influencing trading decisions.
+        The passive ChartAnnotationEngine builds structural, state, levels, signal,
+        and ML visualization drawing instructions as DrawInstruction objects,
+        which are then written to independent CSV files per symbol via DrawInstructionWriter.
+        It also supports Matplotlib overlay for passive interactive debugging in research notebooks.
     """
     def __init__(self, config: Optional[DebugConfig] = None):
         self.config = config or DebugConfig()
+
+    def render(
+        self,
+        symbol: str,
+        structure_graph: MarketStructureGraph,
+        state_context: Optional[StateContext] = None,
+        trade_plan: Optional[Dict[str, Any]] = None,
+        decision: Optional[Dict[str, Any]] = None,
+        ml_output: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Main API called by the trading engine/strategy.
+        Determines which CSV files need to be written or updated based on DebugConfig layers.
+        """
+        # Determine target directory
+        target_dir = None
+        if mt5 is not None:
+            try:
+                info = mt5.terminal_info()
+                if info and hasattr(info, "data_path") and info.data_path:
+                    target_dir = os.path.join(info.data_path, "MQL5", "Files")
+            except Exception as e:
+                logger.debug(f"Could not fetch MT5 terminal info: {e}")
+
+        if not target_dir:
+            # Fallback for offline/backtest mode
+            target_dir = os.path.join("output", "Files")
+
+        os.makedirs(target_dir, exist_ok=True)
+
+        # 1. Swings and Structure Breaks (BOS, CHOCH) -> EURUSD_structure.csv
+        if self.config.is_enabled("swings") or self.config.is_enabled("structure"):
+            struct_insts = []
+
+            # Swings
+            if self.config.is_enabled("swings"):
+                for i, sh in enumerate(structure_graph.swing_highs):
+                    time_str = sh.timestamp.strftime("%Y.%m.%d %H:%M:%S") if sh.timestamp else ""
+                    struct_insts.append(DrawInstruction(
+                        type_name="SWING",
+                        name=f"FXDNN_SWING_H_{i}",
+                        time1=time_str,
+                        price1=f"{sh.price:.5f}",
+                        color="Red",
+                        style="ArrowDown",
+                        text=f"H{sh.index}:{sh.price:.5f}"
+                    ))
+                for i, sl in enumerate(structure_graph.swing_lows):
+                    time_str = sl.timestamp.strftime("%Y.%m.%d %H:%M:%S") if sl.timestamp else ""
+                    struct_insts.append(DrawInstruction(
+                        type_name="SWING",
+                        name=f"FXDNN_SWING_L_{i}",
+                        time1=time_str,
+                        price1=f"{sl.price:.5f}",
+                        color="Green",
+                        style="ArrowUp",
+                        text=f"L{sl.index}:{sl.price:.5f}"
+                    ))
+
+                if structure_graph.protected_high:
+                    ph = structure_graph.protected_high
+                    time_str = ph.timestamp.strftime("%Y.%m.%d %H:%M:%S") if ph.timestamp else ""
+                    struct_insts.append(DrawInstruction(
+                        type_name="LEVEL",
+                        name="FXDNN_PROTECTED_HIGH",
+                        time1=time_str,
+                        price1=f"{ph.price:.5f}",
+                        color="DarkRed",
+                        style="Solid",
+                        text="Protected High"
+                    ))
+                if structure_graph.protected_low:
+                    pl = structure_graph.protected_low
+                    time_str = pl.timestamp.strftime("%Y.%m.%d %H:%M:%S") if pl.timestamp else ""
+                    struct_insts.append(DrawInstruction(
+                        type_name="LEVEL",
+                        name="FXDNN_PROTECTED_LOW",
+                        time1=time_str,
+                        price1=f"{pl.price:.5f}",
+                        color="DarkGreen",
+                        style="Solid",
+                        text="Protected Low"
+                    ))
+
+            # Structure Breaks
+            if self.config.is_enabled("structure"):
+                for i, b in enumerate(structure_graph.bos):
+                    time_str = b.timestamp.strftime("%Y.%m.%d %H:%M:%S") if b.timestamp else ""
+                    color = "Blue" if b.direction == 1 else "Magenta"
+                    dir_text = "Bullish" if b.direction == 1 else "Bearish"
+                    struct_insts.append(DrawInstruction(
+                        type_name="BOS",
+                        name=f"FXDNN_BOS_{i}",
+                        time1=time_str,
+                        price1=f"{b.broken_level:.5f}",
+                        color=color,
+                        style="Dash",
+                        text=f"BOS ({dir_text})"
+                    ))
+                for i, c in enumerate(structure_graph.choch):
+                    time_str = c.timestamp.strftime("%Y.%m.%d %H:%M:%S") if c.timestamp else ""
+                    color = "Cyan" if c.new_trend == 1 else "Orange"
+                    dir_text = "Bullish" if c.new_trend == 1 else "Bearish"
+                    struct_insts.append(DrawInstruction(
+                        type_name="CHOCH",
+                        name=f"FXDNN_CHOCH_{i}",
+                        time1=time_str,
+                        price1=f"{c.price:.5f}",
+                        color=color,
+                        style="DashDot",
+                        text=f"CHOCH ({dir_text})"
+                    ))
+
+            DrawInstructionWriter.write_instructions(
+                os.path.join(target_dir, f"{symbol}_structure.csv"),
+                struct_insts
+            )
+
+        # 2. Supply & Demand Zones -> EURUSD_zones.csv
+        if self.config.is_enabled("zones"):
+            zone_insts = []
+            for i, z in enumerate(structure_graph.supply_zones):
+                time_start = z.created_time.strftime("%Y.%m.%d %H:%M:%S") if z.created_time else ""
+                broken_status = "Broken" if z.broken else "Active"
+                zone_insts.append(DrawInstruction(
+                    type_name="ZONE",
+                    name=f"FXDNN_ZONE_SUPPLY_{i}",
+                    time1=time_start,
+                    price1=f"{z.lower:.5f}",
+                    price2=f"{z.upper:.5f}",
+                    color="LightCoral",
+                    style="Supply",
+                    text=f"Supply Zone | Str: {z.strength_score:.1f} | {broken_status}"
+                ))
+            for i, z in enumerate(structure_graph.demand_zones):
+                time_start = z.created_time.strftime("%Y.%m.%d %H:%M:%S") if z.created_time else ""
+                broken_status = "Broken" if z.broken else "Active"
+                zone_insts.append(DrawInstruction(
+                    type_name="ZONE",
+                    name=f"FXDNN_ZONE_DEMAND_{i}",
+                    time1=time_start,
+                    price1=f"{z.lower:.5f}",
+                    price2=f"{z.upper:.5f}",
+                    color="LightBlue",
+                    style="Demand",
+                    text=f"Demand Zone | Str: {z.strength_score:.1f} | {broken_status}"
+                ))
+
+            DrawInstructionWriter.write_instructions(
+                os.path.join(target_dir, f"{symbol}_zones.csv"),
+                zone_insts
+            )
+
+        # 3. Trade Levels (SL, TP, Entry, Invalidation) -> EURUSD_levels.csv
+        if self.config.is_enabled("levels") and trade_plan:
+            levels_insts = []
+            entry = trade_plan.get("entry_price")
+            sl = trade_plan.get("sl_price")
+            tp = trade_plan.get("tp_price")
+            invalidation = trade_plan.get("invalidation_level")
+
+            if entry:
+                levels_insts.append(DrawInstruction(
+                    type_name="LEVEL", name="FXDNN_LEVEL_ENTRY", price1=f"{entry:.5f}", color="Blue", style="Solid", text="Entry"
+                ))
+            if sl:
+                levels_insts.append(DrawInstruction(
+                    type_name="LEVEL", name="FXDNN_LEVEL_SL", price1=f"{sl:.5f}", color="Red", style="Dash", text="StopLoss"
+                ))
+            if tp:
+                levels_insts.append(DrawInstruction(
+                    type_name="LEVEL", name="FXDNN_LEVEL_TP", price1=f"{tp:.5f}", color="Green", style="Dash", text="TakeProfit"
+                ))
+            if invalidation:
+                levels_insts.append(DrawInstruction(
+                    type_name="LEVEL", name="FXDNN_LEVEL_INVALIDATION", price1=f"{invalidation:.5f}", color="Gray", style="Dot", text="Invalidation"
+                ))
+
+            DrawInstructionWriter.write_instructions(
+                os.path.join(target_dir, f"{symbol}_levels.csv"),
+                levels_insts
+            )
+
+        # 4. Signals (Accepted & Rejected) -> EURUSD_signals.csv
+        if self.config.is_enabled("signals") and decision:
+            sig_insts = []
+            direction = decision.get("direction", 0)
+            accepted = decision.get("accepted", True)
+            reason = decision.get("reason", "")
+            sig_type = decision.get("signal_type", "Standard")
+            strategy = decision.get("strategy", "MM")
+
+            if direction != 0:
+                color = "Green" if accepted else "Gray"
+                style = "ArrowUp" if direction == 1 else "ArrowDown"
+                status_text = "Accepted" if accepted else "Rejected"
+                label = f"{strategy} {sig_type} {status_text} | Reason: {reason}"
+
+                sig_insts.append(DrawInstruction(
+                    type_name="SIGNAL",
+                    name="FXDNN_SIGNAL_LATEST",
+                    color=color,
+                    style=style,
+                    text=label
+                ))
+
+            DrawInstructionWriter.write_instructions(
+                os.path.join(target_dir, f"{symbol}_signals.csv"),
+                sig_insts
+            )
+
+        # 5. Market State -> EURUSD_state.csv
+        if self.config.is_enabled("structure") and state_context:
+            state_insts = [
+                DrawInstruction(
+                    type_name="PANEL",
+                    name="FXDNN_PANEL_STATE",
+                    text=(
+                        f"Trend:{state_context.trend_direction};"
+                        f"Confidence:{state_context.confidence_score:.2f};"
+                        f"Volatility:{state_context.volatility_regime};"
+                        f"Market:{state_context.regime}"
+                    )
+                )
+            ]
+            DrawInstructionWriter.write_instructions(
+                os.path.join(target_dir, f"{symbol}_state.csv"),
+                state_insts
+            )
+
+        # 6. ML Output -> EURUSD_ml.csv
+        if self.config.is_enabled("ml") and ml_output:
+            ml_insts = [
+                DrawInstruction(
+                    type_name="PANEL",
+                    name="FXDNN_PANEL_ML",
+                    text=(
+                        f"TradeQualityScore:{ml_output.get('quality_score', 0.0):.2f};"
+                        f"BreakProbability:{ml_output.get('break_prob', 0.0):.2f};"
+                        f"RangeProbability:{ml_output.get('range_prob', 0.0):.2f};"
+                        f"TrendProbability:{ml_output.get('trend_prob', 0.0):.2f};"
+                        f"Confidence:{ml_output.get('confidence', 0.0):.2f}"
+                    )
+                )
+            ]
+            DrawInstructionWriter.write_instructions(
+                os.path.join(target_dir, f"{symbol}_ml.csv"),
+                ml_insts
+            )
+
+    def annotate_mt5(
+        self,
+        symbol: str,
+        msg: MarketStructureGraph,
+        state_ctx: Optional[StateContext] = None,
+        trade_levels: Optional[Dict[str, Any]] = None,
+        signal_info: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Legacy shim to maintain backwards compatibility with existing strategy/execution code.
+        Directly redirects to self.render to keep things highly aligned.
+        """
+        decision_dict = None
+        if signal_info:
+            decision_dict = {
+                "direction": signal_info.get("direction", 0),
+                "accepted": signal_info.get("accepted", True),
+                "reason": signal_info.get("reason", "Legacy Signal"),
+                "signal_type": "Legacy",
+                "strategy": "MM"
+            }
+
+        self.render(
+            symbol=symbol,
+            structure_graph=msg,
+            state_context=state_ctx,
+            trade_plan=trade_levels,
+            decision=decision_dict
+        )
 
     def annotate_matplotlib(
         self,
@@ -40,8 +318,8 @@ class ChartAnnotationEngine:
     ):
         """
         Draw structural overlays directly on a Matplotlib axis.
+        This provides offline interactive debugging / backtest visualization validation.
         """
-        import matplotlib.pyplot as plt
         import matplotlib.patches as patches
 
         # Title/State text overlay
@@ -62,8 +340,10 @@ class ChartAnnotationEngine:
         if self.config.is_enabled("swings"):
             for swing in msg.swing_highs:
                 ax.plot(swing.index, swing.price, 'v', color='red', markersize=6, alpha=0.7)
+                ax.text(swing.index, swing.price + (msg.atr * 0.1), f"H:{swing.index}", color='red', fontsize=6)
             for swing in msg.swing_lows:
                 ax.plot(swing.index, swing.price, '^', color='green', markersize=6, alpha=0.7)
+                ax.text(swing.index, swing.price - (msg.atr * 0.1), f"L:{swing.index}", color='green', fontsize=6)
 
             if msg.protected_high:
                 ax.plot(msg.protected_high.index, msg.protected_high.price, 'o', color='darkred', markersize=8, label='Protected High')
@@ -86,11 +366,9 @@ class ChartAnnotationEngine:
 
         # 3. Supply & Demand Zones (rectangles)
         if self.config.is_enabled("zones"):
-            # Supply (Red translucent rectangle)
             for z in msg.supply_zones:
                 if z.broken:
                     continue
-                # Draw a translucent bar across the width
                 rect = patches.Rectangle(
                     (z.created_idx, z.lower),
                     100,  # Arbitrary lookahead width for notebook
@@ -100,7 +378,6 @@ class ChartAnnotationEngine:
                 ax.add_patch(rect)
                 ax.text(z.created_idx, z.upper, f"Supply (Str: {z.strength_score:.1f})", color='red', fontsize=7, alpha=0.7)
 
-            # Demand (Blue translucent rectangle)
             for z in msg.demand_zones:
                 if z.broken:
                     continue
@@ -153,7 +430,7 @@ class ChartAnnotationEngine:
                     arrowprops=dict(facecolor=color, shrink=0.05, width=1.5, headwidth=6)
                 )
 
-        # 6. ML probability overlays (predicted probability, confidence, break probability)
+        # 6. ML probability overlays
         if self.config.is_enabled("ml") and ml_info:
             ml_text = (
                 f"ML Trade Quality: {ml_info.get('quality_score', 0.0):.2f}\n"
@@ -166,70 +443,3 @@ class ChartAnnotationEngine:
                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5),
                 fontsize=8
             )
-
-    def annotate_mt5(
-        self,
-        symbol: str,
-        msg: MarketStructureGraph,
-        state_ctx: Optional[StateContext] = None,
-        trade_levels: Optional[Dict[str, Any]] = None,
-        signal_info: Optional[Dict[str, Any]] = None
-    ):
-        """
-        Draw structural overlays directly on live MT5 terminal by saving drawing instructions
-        to the MQL5 Files directory. Allows any MT5 Indicator/EA to read and render them.
-        """
-        if mt5 is None:
-            return
-
-        try:
-            info = mt5.terminal_info()
-            if not info:
-                return
-            data_path = getattr(info, "data_path", None)
-            if not data_path:
-                return
-
-            # Construct path: data_path/MQL5/Files/FX_DNN_draw_data_<symbol>.json
-            files_dir = os.path.join(data_path, "MQL5", "Files")
-            os.makedirs(files_dir, exist_ok=True)
-            filepath = os.path.join(files_dir, f"FX_DNN_draw_data_{symbol}.json")
-
-            # Build a serializable dictionary representing all drawable layers
-            draw_data = {
-                "timestamp": str(datetime.now(timezone.utc)),
-                "symbol": symbol,
-                "timeframe": msg.timeframe,
-                "swings": [
-                    {"price": s.price, "index": s.index, "type": s.level_type}
-                    for s in (msg.swing_highs + msg.swing_lows)
-                ],
-                "protected_high": {"price": msg.protected_high.price, "index": msg.protected_high.index} if msg.protected_high else None,
-                "protected_low": {"price": msg.protected_low.price, "index": msg.protected_low.index} if msg.protected_low else None,
-                "bos": [
-                    {"index": b.index, "direction": b.direction, "level": b.broken_level}
-                    for b in msg.bos
-                ],
-                "choch": [
-                    {"index": c.index, "trend": c.new_trend, "price": c.price}
-                    for c in msg.choch
-                ],
-                "zones": [
-                    {"upper": z.upper, "lower": z.lower, "type": z.type, "strength": z.strength_score, "fresh": z.freshness}
-                    for z in (msg.supply_zones + msg.demand_zones)
-                ],
-                "state": {
-                    "regime": state_ctx.regime if state_ctx else "Unknown",
-                    "trend": state_ctx.trend_direction if state_ctx else "Neutral",
-                    "volatility": state_ctx.volatility_regime if state_ctx else "Normal",
-                    "confidence": state_ctx.confidence_score if state_ctx else 0.0
-                } if state_ctx else None,
-                "levels": trade_levels,
-                "signal": signal_info
-            }
-
-            with open(filepath, "w") as f:
-                json.dump(draw_data, f, indent=4)
-            logger.info(f"Successfully saved chart annotation draw data for {symbol} to {filepath}")
-        except Exception as e:
-            logger.error(f"Failed to write MT5 drawing json file: {e}")

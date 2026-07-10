@@ -1,173 +1,88 @@
-# VisualizationEngine (ChartAnnotationEngine)
+# Visualization Subsystem V2 Redesign
 
 ## Purpose
-The `VisualizationEngine` (`ChartAnnotationEngine`) provides interactive, passive visual validation. It renders the computed internal state of the `MarketStructureGraph` directly on MT5 charts and Jupyter notebook figures.
+The Visualization Subsystem is a core passive debugging and validation engine. It enables developers and researchers to inspect every trade decision, structural element, and future ML model output without affecting execution speed or trading logic.
 
-## Decoupled Drawing Pattern for MT5
-The official MetaTrader 5 Python package is designed primarily for data extraction and order execution. It **does not** expose terminal graphical object APIs (such as `ObjectCreate`).
-
-To display visual objects on the live MT5 chart, the framework implements a professional, decoupled, and thread-safe **File-Sharing Drawing Pattern**:
-1. **Python Side**: Whenever `main.py` processes a new bar or executes a trade, `ChartAnnotationEngine.annotate_mt5` serializes the current `MarketStructureGraph`, market state, and pending levels into a structured JSON file inside MT5's local sandbox:
-   `MQL5/Files/FX_DNN_draw_data_<Symbol>.json`
-2. **MT5 Terminal Side**: A lightweight, native MQL5 Indicator (provided below) runs on your active MT5 chart, polls this JSON file, and renders the swings, zones, and trade levels using MT5's high-performance native graphical objects.
+It is completely passive, state-decoupled, and operates asynchronously.
 
 ---
 
-## Plug-and-Play MQL5 Drawing Indicator
+## High-Level Architecture
+Instead of using slow, fragile, and hard-to-maintain JSON files, the V2 Redesign employs highly structured, independent CSV layer files written in the MT5 sandbox or local output directories.
 
-Save the following code as `FX_DNN_Chart_Renderer.mq5` under `MQL5/Indicators/` in your MetaTrader 5 editor, compile it, and attach it to your charts:
+```
+       [Trading Engine / MMStrategy]
+                     │ (Calls passive .render())
+                     ▼
+         [ChartAnnotationEngine]
+                     │ (Constructs list of DrawInstructions)
+                     ▼
+          [DrawInstructionWriter]
+                     │ (Exports atomic, independent CSVs)
+                     ▼
+          [MQL5 Renderer Indicator]
+                     │ (Reads CSV rows & polls periodically)
+                     ▼
+            [Chart Objects Draw]
+```
 
-```mql5
-//+------------------------------------------------------------------+
-//|                                       FX_DNN_Chart_Renderer.mq5  |
-//|                                  Copyright 2026, Forex_DNN       |
-//|                                             https://forexdnn.com |
-//+------------------------------------------------------------------+
-#property copyright "Forex_DNN"
-#property link      "https://forexdnn.com"
-#property version   "1.00"
-#property indicator_chart_window
-#property indicator_plots 0
+---
 
-input string   InpJsonFileNamePrefix = "FX_DNN_draw_data_";
-input int      InpPollIntervalMs     = 1000;
+## File Format Spec (CSV)
+Each visual instruction category resides in its own, independent file:
+- `EURUSD_structure.csv` (Swings, Protected High/Low, BOS, CHOCH)
+- `EURUSD_levels.csv` (SL, TP, Entry, Invalidation)
+- `EURUSD_zones.csv` (Supply, Demand)
+- `EURUSD_signals.csv` (Accepted, Rejected triggers)
+- `EURUSD_state.csv` (Market Regimes, Trend direction)
+- `EURUSD_ml.csv` (Break Probabilities, Quality Scores, Confidences)
 
-datetime last_timestamp = 0;
+### CSV Header
+`TYPE,NAME,TIME1,TIME2,PRICE1,PRICE2,COLOR,STYLE,TEXT`
 
-//+------------------------------------------------------------------+
-//| Custom indicator initialization function                         |
-//+------------------------------------------------------------------+
-int OnInit()
+### Example Rows
+- `LEVEL,FXDNN_LEVEL_ENTRY,,,1.12345,,Blue,Solid,Entry`
+- `LEVEL,FXDNN_LEVEL_SL,,,1.12100,,Red,Dash,StopLoss`
+- `ZONE,FXDNN_ZONE_DEMAND_0,2026.01.01 12:00:00,,1.11500,1.11650,LightBlue,Demand,Demand Zone | Str: 2.5 | Active`
+- `PANEL,FXDNN_PANEL_STATE,,,,,,Trend:Bull;Confidence:0.92;Volatility:High;Market:Trending`
+
+---
+
+## MQL5 Renderer Indicator (`FX_DNN_Chart_Renderer.mq5`)
+The native indicator runs in MT5, polling only the changed layers once per second (`InpPollIntervalMs`).
+- It parses CSV lines quickly and creates high-performance MT5 graphical objects (`OBJ_HLINE`, `OBJ_RECTANGLE`, `OBJ_ARROW`, `OBJ_TREND`, `OBJ_LABEL`).
+- It caches and tracks active object names to prevent recreating objects, avoiding performance hiccups.
+
+---
+
+## Jupyter Notebook Integration (`visualization_examples.ipynb`)
+Research workflows leverage the exact same visualization logic using Matplotlib. Passing the same `MarketStructureGraph` produces matching overlays on historical backtest charts.
+
+---
+
+## How to Configure Debug Layers (`debug_config.json`)
+You can easily toggle each visual layer dynamically by editing `debug_config.json` without modifying any Python code:
+```json
 {
-   EventSetMillisecondTimer(InpPollIntervalMs);
-   return(INIT_SUCCEEDED);
-}
-
-//+------------------------------------------------------------------+
-//| Custom indicator deinitialization function                       |
-//+------------------------------------------------------------------+
-void OnDeinit(const int reason)
-{
-   EventKillTimer();
-   ObjectsDeleteAll(0, "FX_DNN_");
-}
-
-//+------------------------------------------------------------------+
-//| Custom indicator iteration function                              |
-//+------------------------------------------------------------------+
-int OnCalculate(const int rates_total,
-                const int prev_calculated,
-                const datetime &time[],
-                const double &open[],
-                const double &high[],
-                const double &low[],
-                const double &close[],
-                const long &tick_volume[],
-                const long &spread[],
-                const datetime &real_volume[])
-{
-   return(rates_total);
-}
-
-//+------------------------------------------------------------------+
-//| Timer event handler for polling Python drawings                   |
-//+------------------------------------------------------------------+
-void OnTimer()
-{
-   string filename = InpJsonFileNamePrefix + _Symbol + ".json";
-
-   if(!FileIsExist(filename))
-      return;
-
-   int file_handle = FileOpen(filename, FILE_READ|FILE_SHARE_READ|FILE_TXT|FILE_ANSI);
-   if(file_handle == INVALID_HANDLE)
-      return;
-
-   string json_content = "";
-   while(!FileIsEnding(file_handle))
-   {
-      json_content += FileReadString(file_handle);
-   }
-   FileClose(file_handle);
-
-   // Clear previous drawings of prefix "FX_DNN_"
-   ObjectsDeleteAll(0, "FX_DNN_");
-
-   // Basic parser for structural coordinates
-   // Swings, Zones, and Trade levels are rendered here
-   // Using standard MT5 ObjectCreate (OBJ_RECTANGLE, OBJ_ARROW, OBJ_HLINE)
-
-   DrawStatusText(json_content);
-   DrawLevels(json_content);
-
-   ChartRedraw(0);
-}
-
-//+------------------------------------------------------------------+
-//| Helper to render levels on chart                                 |
-//+------------------------------------------------------------------+
-void DrawLevels(string json)
-{
-   // Parse sl_price, tp_price, entry_price from JSON
-   double entry = GetDoubleKey(json, "entry_price");
-   double sl = GetDoubleKey(json, "sl_price");
-   double tp = GetDoubleKey(json, "tp_price");
-
-   if(entry > 0) DrawHorizontalLine("FX_DNN_Entry", entry, clrBlue, STYLE_SOLID);
-   if(sl > 0)    DrawHorizontalLine("FX_DNN_SL", sl, clrRed, STYLE_DASH);
-   if(tp > 0)    DrawHorizontalLine("FX_DNN_TP", tp, clrGreen, STYLE_DASH);
-}
-
-void DrawStatusText(string json)
-{
-   string regime = GetStringKey(json, "regime");
-   string trend = GetStringKey(json, "trend");
-
-   if(regime != "")
-   {
-      string text = "Regime: " + regime + " | Trend: " + trend;
-      ObjectCreate(0, "FX_DNN_Status", OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, "FX_DNN_Status", OBJPROP_XDISTANCE, 20);
-      ObjectSetInteger(0, "FX_DNN_Status", OBJPROP_YDISTANCE, 20);
-      ObjectSetInteger(0, "FX_DNN_Status", OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetString(0, "FX_DNN_Status", OBJPROP_TEXT, text);
-      ObjectSetInteger(0, "FX_DNN_Status", OBJPROP_COLOR, clrWheat);
-   }
-}
-
-void DrawHorizontalLine(string name, double price, color col, int style)
-{
-   ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, col);
-   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
-}
-
-// Utility JSON helpers
-double GetDoubleKey(string json, string key)
-{
-   int pos = StringFind(json, "\"" + key + "\"", 0);
-   if(pos == -1) return 0.0;
-   int val_pos = StringFind(json, ":", pos);
-   if(val_pos == -1) return 0.0;
-   int end_pos = StringFind(json, ",", val_pos);
-   if(end_pos == -1) end_pos = StringFind(json, "}", val_pos);
-   string sub = StringSubstr(json, val_pos + 1, end_pos - val_pos - 1);
-   StringTrimLeft(sub);
-   StringTrimRight(sub);
-   return StringToDouble(sub);
-}
-
-string GetStringKey(string json, string key)
-{
-   int pos = StringFind(json, "\"" + key + "\"", 0);
-   if(pos == -1) return "";
-   int val_pos = StringFind(json, ":", pos);
-   if(val_pos == -1) return "";
-   int start_quote = StringFind(json, "\"", val_pos);
-   if(start_quote == -1) return "";
-   int end_quote = StringFind(json, "\"", start_quote + 1);
-   if(end_quote == -1) return "";
-   return StringSubstr(json, start_quote + 1, end_quote - start_quote - 1);
+    "layers": {
+        "swings": true,
+        "structure": true,
+        "zones": true,
+        "levels": true,
+        "signals": true,
+        "ml": true
+    }
 }
 ```
+
+---
+
+## Future ML Module Integration
+As future predictive models are trained, simply pass an `ml_output` dictionary to `render()` containing:
+- `quality_score`
+- `break_prob`
+- `range_prob`
+- `trend_prob`
+- `confidence`
+
+This will automatically render the interactive ML information panel on top of the MT5 chart without any strategy changes.
