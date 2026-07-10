@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Any
 import pandas as pd
 import numpy as np
 
@@ -46,7 +46,8 @@ class MMStrategy:
         fast_to_slow_atr_threshold: float = 3.0,
         reversal_ema_sep_threshold: float = 9.0,
         state_file: str = "mm_strategy_state.json",
-        location_engine: Optional[TradeLocationEngine] = None
+        location_engine: Optional[TradeLocationEngine] = None,
+        annotator: Optional[Any] = None
     ):
         self.data_feed = data_feed
         self.send_order = send_order
@@ -62,6 +63,7 @@ class MMStrategy:
         self.fast_to_slow_atr_threshold = fast_to_slow_atr_threshold
         self.reversal_ema_sep_threshold = reversal_ema_sep_threshold
         self.state_file = state_file
+        self.annotator = annotator
 
         self.engine_m5 = IndicatorEngine(ema_periods=[50, 600], slope_period=32)
         self.engine_m15 = IndicatorEngine(ema_periods=[50, 800], slope_period=32)
@@ -163,6 +165,15 @@ class MMStrategy:
                 self._bar_counters[symbol][timeframe] += 1
                 logger.info(f"New bar detected for {symbol} {timeframe}: {df.iloc[-1]['Datetime']}")
                 
+                # Active chart annotation
+                if self.annotator:
+                    try:
+                        msg = self._build_market_structure_graph(symbol, timeframe, df)
+                        state_ctx = self.state_engine.evaluate(msg)
+                        self.annotator.annotate_mt5(symbol, msg, state_ctx)
+                    except Exception as ex:
+                        logger.error(f"Failed to passively annotate chart: {ex}")
+
                 self._check_and_submit_signal(symbol, timeframe, df, fast_p, slow_p)
                 self._save_state()
 
@@ -386,6 +397,19 @@ class MMStrategy:
             logger.error(f"Failed to fetch valid tick for {symbol}: {tick}")
             return
         entry_price = float(tick.ask if direction == 1 else tick.bid)
+
+        # Active chart annotation for signal levels
+        if self.annotator:
+            try:
+                msg = self._build_market_structure_graph(symbol, timeframe, df)
+                state_ctx = self.state_engine.evaluate(msg)
+                self.annotator.annotate_mt5(
+                    symbol, msg, state_ctx,
+                    trade_levels={"entry_price": entry_price, "sl_price": sl_price, "tp_price": entry_price + direction * (abs(entry_price - sl_price) * 2.0)},
+                    signal_info={"direction": direction, "accepted": True, "reason": signal_type}
+                )
+            except Exception as ex:
+                logger.error(f"Failed to passively annotate signal: {ex}")
         
         # Distance metrics for ML
         extra_fields = self._get_signal_distances(symbol, timeframe, signal_type, direction)

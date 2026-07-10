@@ -1,7 +1,9 @@
 import logging
+import os
+import json
 from typing import Optional, Dict, Any
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Optional MT5 import
 try:
@@ -20,7 +22,8 @@ class ChartAnnotationEngine:
     Purpose:
         The VisualizationEngine (ChartAnnotationEngine) draws structural elements,
         supply/demand zones, market states, trade levels, and strategy signals
-        directly on MT5 charts (when active) and Matplotlib figures (for validation notebooks).
+        directly on MT5 charts (by writing JSON files to MT5 Files directory) and
+        Matplotlib figures (for validation notebooks).
         Operates passively without influencing trading decisions.
     """
     def __init__(self, config: Optional[DebugConfig] = None):
@@ -173,14 +176,60 @@ class ChartAnnotationEngine:
         signal_info: Optional[Dict[str, Any]] = None
     ):
         """
-        Draw structural overlays directly on live MT5 terminal using MT5 graphical object functions.
-        (Operates as a safe no-op if MT5 is not connected or mock environment is active).
+        Draw structural overlays directly on live MT5 terminal by saving drawing instructions
+        to the MQL5 Files directory. Allows any MT5 Indicator/EA to read and render them.
         """
         if mt5 is None:
             return
 
-        # MT5 Object drawing logic
-        # Clean existing objects of prefix "FX_DNN_"
-        # Draw horizontal lines, rectangles, arrows as needed
-        # Since this is a passive layer, we log the action and perform terminal object additions.
-        logger.debug(f"Passive MT5 drawing requested for {symbol}")
+        try:
+            info = mt5.terminal_info()
+            if not info:
+                return
+            data_path = getattr(info, "data_path", None)
+            if not data_path:
+                return
+
+            # Construct path: data_path/MQL5/Files/FX_DNN_draw_data_<symbol>.json
+            files_dir = os.path.join(data_path, "MQL5", "Files")
+            os.makedirs(files_dir, exist_ok=True)
+            filepath = os.path.join(files_dir, f"FX_DNN_draw_data_{symbol}.json")
+
+            # Build a serializable dictionary representing all drawable layers
+            draw_data = {
+                "timestamp": str(datetime.now(timezone.utc)),
+                "symbol": symbol,
+                "timeframe": msg.timeframe,
+                "swings": [
+                    {"price": s.price, "index": s.index, "type": s.level_type}
+                    for s in (msg.swing_highs + msg.swing_lows)
+                ],
+                "protected_high": {"price": msg.protected_high.price, "index": msg.protected_high.index} if msg.protected_high else None,
+                "protected_low": {"price": msg.protected_low.price, "index": msg.protected_low.index} if msg.protected_low else None,
+                "bos": [
+                    {"index": b.index, "direction": b.direction, "level": b.broken_level}
+                    for b in msg.bos
+                ],
+                "choch": [
+                    {"index": c.index, "trend": c.new_trend, "price": c.price}
+                    for c in msg.choch
+                ],
+                "zones": [
+                    {"upper": z.upper, "lower": z.lower, "type": z.type, "strength": z.strength_score, "fresh": z.freshness}
+                    for z in (msg.supply_zones + msg.demand_zones)
+                ],
+                "state": {
+                    "regime": state_ctx.regime if state_ctx else "Unknown",
+                    "trend": state_ctx.trend_direction if state_ctx else "Neutral",
+                    "volatility": state_ctx.volatility_regime if state_ctx else "Normal",
+                    "confidence": state_ctx.confidence_score if state_ctx else 0.0
+                } if state_ctx else None,
+                "levels": trade_levels,
+                "signal": signal_info
+            }
+
+            with open(filepath, "w") as f:
+                json.dump(draw_data, f, indent=4)
+            logger.info(f"Successfully saved chart annotation draw data for {symbol} to {filepath}")
+        except Exception as e:
+            logger.error(f"Failed to write MT5 drawing json file: {e}")
