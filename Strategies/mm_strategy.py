@@ -17,6 +17,7 @@ except ImportError:
 from Collecting_Data.indicators import IndicatorEngine
 from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE, EXIT_PROFILE_HIGH_RISK, EXIT_PROFILE_REVERSAL
 from Collecting_Data.utils import safe_file_replace
+from Core.trend_context import TrendContext, TrendContextBuilder
 
 logger = logging.getLogger("MMStrategy")
 
@@ -183,60 +184,50 @@ class MMStrategy:
         bar_closed = df.iloc[idx_closed]
         bar_forming = df.iloc[idx_forming]
         
-        # Columns
-        ema_fast_col = f"ema_{fast_p}"
-        ema_slow_col = f"ema_{slow_p}"
-        slope_col = f"ema_slope_{slow_p}"
-        cross_fast_col = f"cross_ema_{fast_p}"
-        dist_fast_col = f"dist_ema_{fast_p}"
-        atr_col = "atr_14"
-
         # Check if candle crossed EMA50 (the entry trigger)
+        cross_fast_col = f"cross_ema_{fast_p}"
         cross_fast_val = bar_closed[cross_fast_col]
         if cross_fast_val == 0:
             return
 
-        # Values from forming bar (index -1)
-        ema_fast_val = bar_forming[ema_fast_col]
-        ema_slow_val = bar_forming[ema_slow_col]
-        slope_val = bar_forming[slope_col]
-        atr_val = bar_forming[atr_col]
-        dist_fast_val = bar_forming[dist_fast_col]
-        ema_sep_atr = abs(ema_fast_val - ema_slow_val) / (atr_val + 1e-9)
-
-        # Dynamic slope threshold based on timeframe
+        # Build TrendContext at forming bar (index -1)
         slope_threshold = self.m5_slope_threshold if timeframe == "M5" else self.m15_slope_threshold
+        builder = TrendContextBuilder(slope_threshold=slope_threshold)
+        trend_context = builder.build(symbol, timeframe, df, idx=idx_forming)
+
+        dist_fast_val = bar_forming[f"dist_ema_{fast_p}"]
 
         # Priority: HR -> STD -> REV
         
         # 1. High-Risk
-        hr_dir = self._evaluate_high_risk(bar_closed, ema_fast_val, ema_slow_val, slope_val, cross_fast_val, slope_threshold)
+        hr_dir = self._evaluate_high_risk(bar_closed, trend_context)
         if hr_dir:
-            self._process_signal(symbol, timeframe, "high_risk", hr_dir, df)
+            self._process_signal(symbol, timeframe, "high_risk", hr_dir, df, trend_context)
             return
 
         # 2. Standard
-        std_dir = self._evaluate_standard(bar_closed, ema_fast_val, ema_slow_val, slope_val, ema_sep_atr, dist_fast_val, cross_fast_val, slope_threshold)
+        std_dir = self._evaluate_standard(bar_closed, trend_context, dist_fast_val)
         if std_dir:
-            self._process_signal(symbol, timeframe, "standard", std_dir, df)
+            self._process_signal(symbol, timeframe, "standard", std_dir, df, trend_context)
             return
 
         # 3. Reversal
-        rev_dir = self._evaluate_reversal(bar_closed, ema_fast_val, ema_slow_val, ema_sep_atr, cross_fast_val)
+        rev_dir = self._evaluate_reversal(bar_closed, trend_context)
         if rev_dir:
-            self._process_signal(symbol, timeframe, "reversal", rev_dir, df)
+            self._process_signal(symbol, timeframe, "reversal", rev_dir, df, trend_context)
             return
 
-    def _evaluate_high_risk(self, bar_closed, ema_fast_val, ema_slow_val, slope_val, cross_fast_val, slope_threshold):
+    def _evaluate_high_risk(self, bar_closed, trend_context):
         # 1. Previous candle crosses through fast EMA
+        cross_fast_val = bar_closed.get("cross_ema_50", 0)
         if cross_fast_val == 0:
             return None
         
         # 2. Cross direction aligns with slow EMA trend (Trend Direction Context)
         direction = 0
-        if cross_fast_val == 1 and ema_fast_val > ema_slow_val:
+        if cross_fast_val == 1 and trend_context.trend_direction == "Bull":
             direction = 1
-        elif cross_fast_val == -1 and ema_fast_val < ema_slow_val:
+        elif cross_fast_val == -1 and trend_context.trend_direction == "Bear":
             direction = -1
         else:
             return None
@@ -250,20 +241,22 @@ class MMStrategy:
             return None
         
         # 5. Slow EMA slope
-        if slope_val < slope_threshold:
+        slope_threshold = self.m5_slope_threshold if trend_context.timeframe == "M5" else self.m15_slope_threshold
+        if trend_context.ema_slope < slope_threshold:
             return None
         
         return direction
 
-    def _evaluate_standard(self, bar_closed, ema_fast_val, ema_slow_val, slope_val, ema_sep_atr, dist_fast_val, cross_fast_val, slope_threshold):
+    def _evaluate_standard(self, bar_closed, trend_context, dist_fast_val=None):
+        cross_fast_val = bar_closed.get("cross_ema_50", 0)
         if cross_fast_val == 0:
             return None
 
         # 1. EMA alignment (Trend Context)
         direction = 0
-        if ema_fast_val > ema_slow_val:
+        if trend_context.trend_direction == "Bull":
             direction = 1
-        elif ema_fast_val < ema_slow_val:
+        elif trend_context.trend_direction == "Bear":
             direction = -1
         else:
             return None
@@ -273,11 +266,13 @@ class MMStrategy:
             return None
 
         # 3. Price proximity to fast EMA (ATR-dynamic)
+        if dist_fast_val is None:
+            dist_fast_val = bar_closed.get("dist_ema_50", 0.0)
         if abs(dist_fast_val) >= self.price_to_fast_atr_threshold:
             return None
         
         # 4. EMA separation (ATR-dynamic)
-        if ema_sep_atr >= self.fast_to_slow_atr_threshold:
+        if trend_context.ema_distance_atr >= self.fast_to_slow_atr_threshold:
             return None
         
         # 5. Previous candle body percentage
@@ -289,7 +284,8 @@ class MMStrategy:
             return None
         
         # 7. Slow EMA slope
-        if slope_val < slope_threshold:
+        slope_threshold = self.m5_slope_threshold if trend_context.timeframe == "M5" else self.m15_slope_threshold
+        if trend_context.ema_slope < slope_threshold:
             return None
         
         # 8. Direction match (candle confirms EMA direction)
@@ -298,20 +294,21 @@ class MMStrategy:
         
         return direction
 
-    def _evaluate_reversal(self, bar_closed, ema_fast_val, ema_slow_val, ema_sep_atr, cross_fast_val):
+    def _evaluate_reversal(self, bar_closed, trend_context):
         # 1. EMA separation is large
-        if ema_sep_atr < self.reversal_ema_sep_threshold:
+        if trend_context.ema_distance_atr < self.reversal_ema_sep_threshold:
             return None
         
         # 2. Previous candle crosses through fast EMA (Entry Trigger)
+        cross_fast_val = bar_closed.get("cross_ema_50", 0)
         if cross_fast_val == 0:
             return None
         
         # 3. Cross direction is OPPOSITE to slow EMA trend (Trend Direction Context)
         direction = 0
-        if cross_fast_val == 1 and ema_fast_val < ema_slow_val:
+        if cross_fast_val == 1 and trend_context.trend_direction == "Bear":
             direction = 1
-        elif cross_fast_val == -1 and ema_fast_val > ema_slow_val:
+        elif cross_fast_val == -1 and trend_context.trend_direction == "Bull":
             direction = -1
         else:
             return None
@@ -326,7 +323,7 @@ class MMStrategy:
         
         return direction
 
-    def _process_signal(self, symbol, timeframe, signal_type, direction, df):
+    def _process_signal(self, symbol, timeframe, signal_type, direction, df, trend_context):
         # bar_timestamp is the Datetime of the signal bar (bar[-2])
         bar_timestamp = str(df.iloc[-2]["Datetime"])
         
@@ -354,24 +351,26 @@ class MMStrategy:
         # Distance metrics for ML
         extra_fields = self._get_signal_distances(symbol, timeframe, signal_type, direction)
         
-        # Add indicator values to extra_fields
-        idx_forming = -1
+        # Add indicator and trend context values to extra_fields
         idx_closed = -2
-        fast_p = 50
-        slow_p = 600 if timeframe == "M5" else 800
+        idx_forming = -1
         atr_val = float(df.iloc[idx_forming]["atr_14"])
-        ema_fast_val = float(df.iloc[idx_forming][f"ema_{fast_p}"])
-        ema_slow_val = float(df.iloc[idx_forming][f"ema_{slow_p}"])
-        slope_val = float(df.iloc[idx_forming][f"ema_slope_{slow_p}"])
         
         extra_fields.update({
-            "ema_fast": ema_fast_val,
-            "ema_slow": ema_slow_val,
+            "trend_direction": trend_context.trend_direction,
+            "trend_strength": trend_context.trend_strength,
+            "is_strong_trend": trend_context.is_strong_trend,
+            "is_weak_trend": trend_context.is_weak_trend,
+            "bars_since_cross": trend_context.bars_since_cross,
+            "bars_since_trend_change": trend_context.bars_since_trend_change,
+            "ema_fast": trend_context.ema_fast,
+            "ema_slow": trend_context.ema_slow,
+            "ema_slope": trend_context.ema_slope,
+            "ema_distance": trend_context.ema_distance,
+            "ema_separation_atr": trend_context.ema_distance_atr,
             "atr": atr_val,
             "body_pct": float(df.iloc[idx_closed]["body_pct"]),
             "body_vs_avg": float(df.iloc[idx_closed]["body_vs_avg"]),
-            "ema_slope": slope_val,
-            "ema_separation_atr": abs(ema_fast_val - ema_slow_val) / (atr_val + 1e-9),
             "risk_pct_default": risk_pct_default,
         })
         
@@ -380,6 +379,20 @@ class MMStrategy:
             extra_fields["blocked_by_drawdown"] = True
             logger.info(f"Signal {signal_type} {direction} for {symbol} BLOCKED by drawdown")
         
+        # Print a snapshot of the context to live logs
+        ema_slope_dir_text = "Positive" if trend_context.trend_direction == "Bull" else "Negative"
+        snapshot = (
+            f"\n--- Trend Context ---\n"
+            f"Direction : {trend_context.trend_direction}\n"
+            f"Strength : {trend_context.trend_strength}\n"
+            f"EMA Distance : {trend_context.ema_distance_atr:.1f} ATR\n"
+            f"EMA Slope : {ema_slope_dir_text}\n"
+            f"Bars Since Cross : {trend_context.bars_since_cross}\n"
+            f"Bars Since Trend Change : {trend_context.bars_since_trend_change}\n"
+            f"---------------------"
+        )
+        logger.info(snapshot)
+
         # Log to journal
         signal_id = self.trading_journal.log_signal(
             signal_type=signal_type,
