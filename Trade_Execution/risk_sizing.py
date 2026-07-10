@@ -1,0 +1,120 @@
+import logging
+import math
+from simulation.simulation_environment import env as mt5
+
+logger = logging.getLogger("PositionSizer")
+
+class PositionSizer:
+    """
+    Module 6 — Risk Sizing
+    Computes lot size from a risk percentage and SL distance.
+    """
+
+    def calculate_lot_size(
+        self,
+        symbol: str,
+        entry_price: float,
+        sl_price: float,
+        risk_pct: float,
+        account_balance: float,
+    ) -> dict:
+        """
+        Purpose:
+            Calculates the appropriate lot size (volume) for a trade based
+            on account risk and broker constraints.
+
+        Arguments:
+            symbol (str): Target symbol name.
+            entry_price (float): Intended entry price.
+            sl_price (float): Intended stop-loss price.
+            risk_pct (float): Percentage of account to risk (e.g., 0.01).
+            account_balance (float): Current account balance.
+
+        Returns:
+            dict: Result containing 'success' (bool), 'lot_size' (float),
+                  'risk_dollars' (float), and potential errors.
+
+        Notes:
+            - Validates lot size against symbol_info (volume_min, volume_max, volume_step).
+            - Applies precise rounding to match broker requirements.
+            - Returns success=False if the lot size is below the broker's minimum.
+        """
+        if risk_pct <= 0 or account_balance <= 0:
+            logger.error(f"Invalid input: risk_pct={risk_pct}, account_balance={account_balance}")
+            return self._result(False, 0.0, 0.0, 0.0, False, "invalid_input")
+
+        sl_distance = abs(entry_price - sl_price)
+        if sl_distance == 0:
+            logger.error(f"Invalid SL distance: entry={entry_price}, sl={sl_price}")
+            return self._result(False, 0.0, 0.0, 0.0, False, "invalid_sl_distance")
+
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            logger.error(f"Symbol info unavailable for {symbol}")
+            return self._result(False, 0.0, 0.0, 0.0, False, "symbol_info_unavailable")
+
+        risk_dollars = account_balance * risk_pct
+
+        # Use trade_tick_value if available (Module 6 improvement)
+        tick_value = getattr(info, 'trade_tick_value', None)
+        tick_size = getattr(info, 'trade_tick_size', None)
+
+        if tick_value and tick_size:
+            # New formula: risk / (ticks_to_sl * value_per_tick)
+            raw_lot = risk_dollars / ((sl_distance / tick_size) * tick_value)
+        else:
+            # Fallback to contract size based calculation
+            contract_size = info.trade_contract_size
+            raw_lot = risk_dollars / (sl_distance * contract_size)
+
+        volume_step = info.volume_step
+        volume_min = info.volume_min
+        volume_max = info.volume_max
+
+        lot_size = math.floor(round(raw_lot / volume_step, 10)) * volume_step
+
+        step_str = f"{volume_step:.8f}".rstrip('0').rstrip('.')
+        precision = len(step_str.split('.')[1]) if '.' in step_str else 0
+        lot_size = round(lot_size, precision)
+
+        capped_at_max = False
+        if lot_size < volume_min:
+            logger.warning(
+                f"Lot size {lot_size} below minimum {volume_min} for {symbol}. "
+                f"Inputs: balance={account_balance}, risk_pct={risk_pct}, sl_dist={sl_distance}, "
+                f"raw_lot={raw_lot:.6f}"
+            )
+            return self._result(False, 0.0, 0.0, 0.0, False, "lot_size_below_minimum")
+
+        if lot_size > volume_max:
+            logger.warning(f"Lot size {lot_size} capped at maximum {volume_max} for {symbol}")
+            lot_size = volume_max
+            capped_at_max = True
+
+        if tick_value and tick_size:
+            actual_risk_dollars = lot_size * (sl_distance / tick_size) * tick_value
+        else:
+            actual_risk_dollars = lot_size * sl_distance * info.trade_contract_size
+
+        actual_risk_pct = actual_risk_dollars / account_balance
+
+        logger.info(f"SUCCESS: {symbol} lot_size={lot_size} risk=${actual_risk_dollars:.2f} ({actual_risk_pct*100:.2f}%)")
+
+        return self._result(
+            success=True,
+            lot_size=lot_size,
+            risk_dollars=actual_risk_dollars,
+            risk_pct_actual=actual_risk_pct,
+            capped_at_max=capped_at_max,
+            error=None
+        )
+
+    def _result(self, success, lot_size, risk_dollars, risk_pct_actual, capped_at_max, error):
+        return {
+            "success": success,
+            "lot_size": lot_size,
+            "risk_dollars": risk_dollars,
+            "risk_pct_actual": risk_pct_actual,
+            "capped_at_max": capped_at_max,
+            "error": error
+        }
