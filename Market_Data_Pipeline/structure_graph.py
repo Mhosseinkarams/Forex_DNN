@@ -10,6 +10,28 @@ class StructureLevel:
     strength: int = 1
     level_type: str = "SwingPoint"  # 'SwingHigh', 'SwingLow', 'ProtectedHigh', 'ProtectedLow'
 
+    # Version 1.0 additions
+    strength_score: float = 1.0
+    confirmation_candle: int = 0
+    confirmation_delay: int = 0
+    bars_since_confirmation: int = -1
+    is_valid: bool = True
+    broken: bool = False
+    reason: str = "active"
+    structure_type: str = "Major"  # 'Major', 'Minor', 'Internal'
+    parent_index: Optional[int] = None
+
+    # Debugging and Support fields
+    why_detected: str = ""
+    rule_fired: str = ""
+    thresholds_satisfied: List[str] = field(default_factory=list)
+    thresholds_failed: List[str] = field(default_factory=list)
+    confidence_score: float = 1.0
+
+    @property
+    def datetime(self) -> Optional[datetime]:
+        return self.timestamp
+
 @dataclass
 class LiquidityPool:
     upper: float
@@ -30,6 +52,20 @@ class BOS:
     distance: float = 0.0
     atr_normalized_distance: float = 0.0
 
+    # Version 1.0 additions
+    break_candle: int = 0
+    impulse_size: float = 0.0
+    atr_normalized_impulse: float = 0.0
+    volume: float = 0.0
+    break_strength: float = 1.0
+
+    # Debugging and Support fields
+    why_detected: str = ""
+    rule_fired: str = ""
+    thresholds_satisfied: List[str] = field(default_factory=list)
+    thresholds_failed: List[str] = field(default_factory=list)
+    confidence_score: float = 1.0
+
 @dataclass
 class CHOCH:
     index: int
@@ -38,6 +74,16 @@ class CHOCH:
     timestamp: Optional[datetime] = None
     price: float = 0.0
     strength: int = 1
+
+    # Version 1.0 additions
+    confirmation_score: float = 1.0
+
+    # Debugging and Support fields
+    why_detected: str = ""
+    rule_fired: str = ""
+    thresholds_satisfied: List[str] = field(default_factory=list)
+    thresholds_failed: List[str] = field(default_factory=list)
+    confidence_score: float = 1.0
 
 @dataclass
 class Zone:
@@ -53,6 +99,24 @@ class Zone:
     mitigated: bool = False
     mitigated_idx: Optional[int] = None
     strength_score: float = 0.0
+
+    # Version 1.0 additions
+    creation_candle: int = 0
+    origin_candle: int = 0
+    freshness_score: float = 1.0
+    number_of_reactions: int = 0
+    average_rejection: float = 0.0
+    average_penetration: float = 0.0
+    invalidated: bool = False
+    active: bool = True
+    nested_inside_idx: Optional[int] = None
+
+    # Debugging and Support fields
+    why_detected: str = ""
+    rule_fired: str = ""
+    thresholds_satisfied: List[str] = field(default_factory=list)
+    thresholds_failed: List[str] = field(default_factory=list)
+    confidence_score: float = 1.0
 
     @property
     def mid(self) -> float:
@@ -93,6 +157,10 @@ class MarketStructureGraph:
     volatility: float = 0.0
     range_width_pips: float = 0.0
     session: str = "Unknown"          # "London", "NewYork", "Asian"
+
+    # Version 1.0 additions
+    current_bias: str = "Neutral"      # e.g. "Bullish", "Bearish", "Neutral"
+    structure_confidence: float = 1.0
 
     def get_nearest_demand(self, price: float) -> Optional[Zone]:
         active_demands = [z for z in self.demand_zones if not z.broken and z.upper < price]
