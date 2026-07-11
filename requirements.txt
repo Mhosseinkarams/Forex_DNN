@@ -12,3 +12,4 @@ yfinance
 mplfinance
 scipy
 jupyter
+lightgbm
