@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dataset Quality Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 font-sans p-8">
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-8 border-b pb-4">
+            <h1 class="text-4xl font-bold text-gray-800">Dataset Validation & Quality Report</h1>
+            <p class="text-gray-600 mt-2">Comprehensive data validation, split analysis, and feature dependencies</p>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+            <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+                <h3 class="text-gray-500 text-sm font-semibold">Train Samples</h3>
+                <p class="text-3xl font-bold mt-2 text-indigo-600">5</p>
+            </div>
+            <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+                <h3 class="text-gray-500 text-sm font-semibold">Test Samples</h3>
+                <p class="text-3xl font-bold mt-2 text-green-600">5</p>
+            </div>
+            <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+                <h3 class="text-gray-500 text-sm font-semibold">Total Features</h3>
+                <p class="text-3xl font-bold mt-2 text-gray-800">20</p>
+            </div>
+            <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+                <h3 class="text-gray-500 text-sm font-semibold">Missing Values</h3>
+                <p class="text-3xl font-bold mt-2 text-red-600">0</p>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+            <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+                <h2 class="text-xl font-bold text-gray-700 mb-4">Class Balance (Train Set)</h2>
+                <div class="w-full h-64 flex justify-center">
+                    <canvas id="trainClassChart"></canvas>
+                </div>
+            </div>
+
+            <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+                <h2 class="text-xl font-bold text-gray-700 mb-4">Top Feature Correlations</h2>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full bg-white text-left text-sm">
+                        <thead>
+                            <tr class="bg-gray-100">
+                                <th class="p-3">Feature</th>
+                                <th class="p-3">Abs Correlation Coefficient</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100 mb-8">
+            <h2 class="text-xl font-bold text-gray-700 mb-4">Feature Distribution Statistics (Top 20)</h2>
+            <div class="overflow-x-auto">
+                <table class="min-w-full bg-white text-left text-sm">
+                    <thead>
+                        <tr class="bg-gray-100">
+                            <th class="p-3">Feature</th>
+                            <th class="p-3">Mean</th>
+                            <th class="p-3">Std Dev</th>
+                            <th class="p-3">Min</th>
+                            <th class="p-3">Max</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="border-b"><td class="p-3 font-mono font-semibold">ema50_slope</td><td class="p-3">0.7737</td><td class="p-3">0.1267</td><td class="p-3">0.5966</td><td class="p-3">0.9239</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">ema600_slope</td><td class="p-3">0.6659</td><td class="p-3">0.1890</td><td class="p-3">0.4433</td><td class="p-3">0.9073</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">ema_separation</td><td class="p-3">13467.1225</td><td class="p-3">8714.3130</td><td class="p-3">1095.0304</td><td class="p-3">24430.9263</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">ema_compression</td><td class="p-3">0.0002</td><td class="p-3">0.0004</td><td class="p-3">0.0000</td><td class="p-3">0.0009</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">distance_to_ema50</td><td class="p-3">-0.2393</td><td class="p-3">0.8724</td><td class="p-3">-1.0435</td><td class="p-3">0.8828</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">candle_body</td><td class="p-3">0.4388</td><td class="p-3">0.2419</td><td class="p-3">0.1733</td><td class="p-3">0.7177</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">upper_wick</td><td class="p-3">0.1475</td><td class="p-3">0.0553</td><td class="p-3">0.0892</td><td class="p-3">0.2325</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">lower_wick</td><td class="p-3">0.2094</td><td class="p-3">0.1262</td><td class="p-3">0.1062</td><td class="p-3">0.4087</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">candle_range</td><td class="p-3">-1386.7841</td><td class="p-3">4077.4459</td><td class="p-3">-8390.3359</td><td class="p-3">2271.0462</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">volume</td><td class="p-3">45.4000</td><td class="p-3">29.4839</td><td class="p-3">11.0000</td><td class="p-3">87.0000</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">atr</td><td class="p-3">3.7079</td><td class="p-3">1.3236</td><td class="p-3">1.3511</td><td class="p-3">4.4474</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">atr_percentile</td><td class="p-3">0.6572</td><td class="p-3">0.3312</td><td class="p-3">0.0667</td><td class="p-3">0.8431</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">atr_ratio</td><td class="p-3">1.1969</td><td class="p-3">0.4249</td><td class="p-3">0.4396</td><td class="p-3">1.4352</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">realized_volatility</td><td class="p-3">1.0950</td><td class="p-3">0.0970</td><td class="p-3">0.9303</td><td class="p-3">1.1608</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">rolling_std</td><td class="p-3">1.1040</td><td class="p-3">0.0466</td><td class="p-3">1.0442</td><td class="p-3">1.1490</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">trend_score</td><td class="p-3">0.0156</td><td class="p-3">0.0154</td><td class="p-3">0.0001</td><td class="p-3">0.0377</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">range_score</td><td class="p-3">0.1190</td><td class="p-3">0.0060</td><td class="p-3">0.1132</td><td class="p-3">0.1270</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">compression_score</td><td class="p-3">1.8663</td><td class="p-3">4.6614</td><td class="p-3">-1.1477</td><td class="p-3">10.1409</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">ema50_distance_v1</td><td class="p-3">-0.2351</td><td class="p-3">1.3071</td><td class="p-3">-1.5004</td><td class="p-3">1.3113</td></tr><tr class="border-b"><td class="p-3 font-mono font-semibold">ema50_distance_v2</td><td class="p-3">300.2830</td><td class="p-3">4418.8430</td><td class="p-3">-3627.1141</td><td class="p-3">6600.1511</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const ctxTrain = document.getElementById('trainClassChart').getContext('2d');
+        new Chart(ctxTrain, {
+            type: 'bar',
+            data: {
+                labels: ["TRANSITION"],
+                datasets: [{
+                    label: 'Count',
+                    data: [5],
+                    backgroundColor: '#4F46E5',
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { beginAtZero: true }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
