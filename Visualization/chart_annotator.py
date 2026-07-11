@@ -264,10 +264,11 @@ class ChartAnnotationEngine:
                     type_name="PANEL",
                     name="FXDNN_PANEL_ML",
                     text=(
-                        f"TradeQualityScore:{ml_output.get('quality_score', 0.0):.2f};"
-                        f"BreakProbability:{ml_output.get('break_prob', 0.0):.2f};"
-                        f"RangeProbability:{ml_output.get('range_prob', 0.0):.2f};"
-                        f"TrendProbability:{ml_output.get('trend_prob', 0.0):.2f};"
+                        f"TrendProb:{ml_output.get('trend_prob', 0.0):.2f};"
+                        f"RangeProb:{ml_output.get('range_prob', 0.0):.2f};"
+                        f"TransitionProb:{ml_output.get('transition_prob', 0.0):.2f};"
+                        f"BreakProb:{ml_output.get('break_prob', 0.0):.2f};"
+                        f"RejectProb:{ml_output.get('reject_prob', 0.0):.2f};"
                         f"Confidence:{ml_output.get('confidence', 0.0):.2f}"
                     )
                 )
@@ -433,8 +434,14 @@ class ChartAnnotationEngine:
         # 6. ML probability overlays
         if self.config.is_enabled("ml") and ml_info:
             ml_text = (
-                f"ML Trade Quality: {ml_info.get('quality_score', 0.0):.2f}\n"
-                f"Zone Break Prob: {ml_info.get('break_prob', 0.0):.2f}"
+                f"Market State State Probabilities:\n"
+                f"  Trend: {ml_info.get('trend_prob', 0.0)*100:.1f}%\n"
+                f"  Range: {ml_info.get('range_prob', 0.0)*100:.1f}%\n"
+                f"  Transition: {ml_info.get('transition_prob', 0.0)*100:.1f}%\n"
+                f"Level Break Probabilities:\n"
+                f"  Break: {ml_info.get('break_prob', 0.0)*100:.1f}%\n"
+                f"  Reject: {ml_info.get('reject_prob', 0.0)*100:.1f}%\n"
+                f"Confidence: {ml_info.get('confidence', 0.0)*100:.1f}%"
             )
             ax.text(
                 0.75, 0.05, ml_text,

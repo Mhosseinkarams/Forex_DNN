@@ -47,7 +47,9 @@ class MMStrategy:
         reversal_ema_sep_threshold: float = 9.0,
         state_file: str = "mm_strategy_state.json",
         location_engine: Optional[TradeLocationEngine] = None,
-        annotator: Optional[Any] = None
+        annotator: Optional[Any] = None,
+        market_state_model: Optional[Any] = None,
+        level_break_model: Optional[Any] = None
     ):
         self.data_feed = data_feed
         self.send_order = send_order
@@ -64,6 +66,8 @@ class MMStrategy:
         self.reversal_ema_sep_threshold = reversal_ema_sep_threshold
         self.state_file = state_file
         self.annotator = annotator
+        self.market_state_model = market_state_model
+        self.level_break_model = level_break_model
 
         self.engine_m5 = IndicatorEngine(ema_periods=[50, 600], slope_period=32)
         self.engine_m15 = IndicatorEngine(ema_periods=[50, 800], slope_period=32)
@@ -170,7 +174,38 @@ class MMStrategy:
                     try:
                         msg = self._build_market_structure_graph(symbol, timeframe, df)
                         state_ctx = self.state_engine.evaluate(msg)
-                        self.annotator.annotate_mt5(symbol, msg, state_ctx)
+
+                        # Generate ml output for the passive annotator if models exist
+                        ml_out = {}
+                        if self.market_state_model is not None or self.level_break_model is not None:
+                            try:
+                                idx_closed = -2
+                                from ML.feature_pipeline import FeaturePipeline
+                                # Try with market_state_model registry or default
+                                reg = self.market_state_model.registry if self.market_state_model else self.level_break_model.registry
+                                fp_pipeline = FeaturePipeline(reg)
+                                feats = fp_pipeline.extract_all(df, msg, idx=idx_closed)
+                                features_df = pd.DataFrame([feats])
+
+                                if self.market_state_model is not None:
+                                    s_prob = self.market_state_model.predict_proba(features_df)
+                                    ml_out["trend_prob"] = s_prob.get("TREND", 0.0)
+                                    ml_out["range_prob"] = s_prob.get("RANGE", 0.0)
+                                    ml_out["transition_prob"] = s_prob.get("TRANSITION", 0.0)
+                                if self.level_break_model is not None:
+                                    b_prob = self.level_break_model.predict_proba(features_df)
+                                    ml_out["break_prob"] = b_prob.get("BREAK", 0.0)
+                                    ml_out["reject_prob"] = b_prob.get("REJECT", 0.0)
+                                    ml_out["confidence"] = b_prob.get("confidence", 0.0)
+                            except Exception:
+                                pass
+
+                        self.annotator.render(
+                            symbol=symbol,
+                            structure_graph=msg,
+                            state_context=state_ctx,
+                            ml_output=ml_out
+                        )
                     except Exception as ex:
                         logger.error(f"Failed to passively annotate chart: {ex}")
 
@@ -403,10 +438,22 @@ class MMStrategy:
             try:
                 msg = self._build_market_structure_graph(symbol, timeframe, df)
                 state_ctx = self.state_engine.evaluate(msg)
-                self.annotator.annotate_mt5(
-                    symbol, msg, state_ctx,
-                    trade_levels={"entry_price": entry_price, "sl_price": sl_price, "tp_price": entry_price + direction * (abs(entry_price - sl_price) * 2.0)},
-                    signal_info={"direction": direction, "accepted": True, "reason": signal_type}
+
+                decision_dict = {
+                    "direction": direction,
+                    "accepted": True,
+                    "reason": signal_type,
+                    "signal_type": signal_type,
+                    "strategy": "mm"
+                }
+
+                self.annotator.render(
+                    symbol=symbol,
+                    structure_graph=msg,
+                    state_context=state_ctx,
+                    trade_plan={"entry_price": entry_price, "sl_price": sl_price, "tp_price": entry_price + direction * (abs(entry_price - sl_price) * 2.0)},
+                    decision=decision_dict,
+                    ml_output=ml_render_data
                 )
             except Exception as ex:
                 logger.error(f"Failed to passively annotate signal: {ex}")
@@ -436,6 +483,51 @@ class MMStrategy:
             "body_vs_avg": float(df.iloc[idx_closed]["body_vs_avg"]),
             "risk_pct_default": risk_pct_default,
         })
+
+        # Run ML inference if models are loaded
+        ml_render_data = {}
+        if self.market_state_model is not None:
+            try:
+                msg = self._build_market_structure_graph(symbol, timeframe, df)
+                from ML.feature_pipeline import FeaturePipeline
+                fp_pipeline = FeaturePipeline(self.market_state_model.registry)
+                feats = fp_pipeline.extract_all(df, msg, idx=idx_closed)
+                features_df = pd.DataFrame([feats])
+
+                state_probas = self.market_state_model.predict_proba(features_df)
+                extra_fields["ml_trend_prob"] = state_probas.get("TREND", 0.0)
+                extra_fields["ml_range_prob"] = state_probas.get("RANGE", 0.0)
+                extra_fields["ml_transition_prob"] = state_probas.get("TRANSITION", 0.0)
+                extra_fields["ml_state_confidence"] = state_probas.get("confidence", 0.0)
+
+                ml_render_data["trend_prob"] = state_probas.get("TREND", 0.0)
+                ml_render_data["range_prob"] = state_probas.get("RANGE", 0.0)
+                ml_render_data["transition_prob"] = state_probas.get("TRANSITION", 0.0)
+
+                logger.info(f"ML Market State (Trend: {state_probas.get('TREND', 0.0)*100:.1f}%, Range: {state_probas.get('RANGE', 0.0)*100:.1f}%, Transition: {state_probas.get('TRANSITION', 0.0)*100:.1f}%)")
+            except Exception as ml_ex:
+                logger.warning(f"Failed to run ML market state inference: {ml_ex}")
+
+        if self.level_break_model is not None:
+            try:
+                msg = self._build_market_structure_graph(symbol, timeframe, df)
+                from ML.feature_pipeline import FeaturePipeline
+                fp_pipeline = FeaturePipeline(self.level_break_model.registry)
+                feats = fp_pipeline.extract_all(df, msg, idx=idx_closed)
+                features_df = pd.DataFrame([feats])
+
+                break_probas = self.level_break_model.predict_proba(features_df)
+                extra_fields["ml_break_prob"] = break_probas.get("BREAK", 0.0)
+                extra_fields["ml_reject_prob"] = break_probas.get("REJECT", 0.0)
+                extra_fields["ml_break_confidence"] = break_probas.get("confidence", 0.0)
+
+                ml_render_data["break_prob"] = break_probas.get("BREAK", 0.0)
+                ml_render_data["reject_prob"] = break_probas.get("REJECT", 0.0)
+                ml_render_data["confidence"] = break_probas.get("confidence", 0.0)
+
+                logger.info(f"ML Level Break (Break: {break_probas.get('BREAK', 0.0)*100:.1f}%, Reject: {break_probas.get('REJECT', 0.0)*100:.1f}%)")
+            except Exception as ml_ex:
+                logger.warning(f"Failed to run ML level break inference: {ml_ex}")
         
         trading_allowed = self.drawdown_manager.trading_allowed()
         if not trading_allowed:
