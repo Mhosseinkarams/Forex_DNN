@@ -64,8 +64,15 @@ class DataCleaner:
 
         # 4. Normalize categoricals (e.g. label column)
         if label_col in df_clean.columns:
-            if df_clean[label_col].dtype == object or isinstance(df_clean[label_col].dtype, pd.CategoricalDtype):
+            if df_clean[label_col].dtype == object or isinstance(df_clean[label_col].dtype, pd.CategoricalDtype) or pd.api.types.is_string_dtype(df_clean[label_col]):
                 df_clean[label_col] = df_clean[label_col].astype(str).str.upper().str.strip()
+
+        # 5. Encode any non-label string/object columns (like "session") to integers
+        for col in df_clean.columns:
+            if col not in [label_col, "target", "zone_type", "timestamp", "Datetime"]:
+                if pd.api.types.is_string_dtype(df_clean[col]) or isinstance(df_clean[col].dtype, pd.CategoricalDtype):
+                    logger.info(f"Encoding categorical column '{col}' to categorical codes.")
+                    df_clean[col] = df_clean[col].astype('category').cat.codes.astype(int)
 
         cleaned_len = len(df_clean)
         logger.info(f"Dataset cleaning completed. Rows: {initial_len} -> {cleaned_len}")
