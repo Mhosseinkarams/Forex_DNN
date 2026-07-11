@@ -65,25 +65,27 @@ class ChartAnnotationEngine:
             if self.config.is_enabled("swings"):
                 for i, sh in enumerate(structure_graph.swing_highs):
                     time_str = sh.timestamp.strftime("%Y.%m.%d %H:%M:%S") if sh.timestamp else ""
+                    color = "Orange" if getattr(sh, "structure_type", "Major") == "Minor" else ("Magenta" if getattr(sh, "structure_type", "Major") == "Internal" else "Red")
                     struct_insts.append(DrawInstruction(
                         type_name="SWING",
                         name=f"FXDNN_SWING_H_{i}",
                         time1=time_str,
                         price1=f"{sh.price:.5f}",
-                        color="Red",
+                        color=color,
                         style="ArrowDown",
-                        text=f"H{sh.index}:{sh.price:.5f}"
+                        text=f"H{sh.index}:{sh.price:.5f}({getattr(sh, 'structure_type', 'Major')})"
                     ))
                 for i, sl in enumerate(structure_graph.swing_lows):
                     time_str = sl.timestamp.strftime("%Y.%m.%d %H:%M:%S") if sl.timestamp else ""
+                    color = "LightGreen" if getattr(sl, "structure_type", "Major") == "Minor" else ("Cyan" if getattr(sl, "structure_type", "Major") == "Internal" else "Green")
                     struct_insts.append(DrawInstruction(
                         type_name="SWING",
                         name=f"FXDNN_SWING_L_{i}",
                         time1=time_str,
                         price1=f"{sl.price:.5f}",
-                        color="Green",
+                        color=color,
                         style="ArrowUp",
-                        text=f"L{sl.index}:{sl.price:.5f}"
+                        text=f"L{sl.index}:{sl.price:.5f}({getattr(sl, 'structure_type', 'Major')})"
                     ))
 
                 if structure_graph.protected_high:
