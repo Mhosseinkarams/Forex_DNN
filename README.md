@@ -306,70 +306,72 @@ OVERALL STATUS: PASS
 
 ## 5. Collect Historical Data
 
-The framework uses clean, uniform CSV historical bar feeds for research, ML dataset generation, and historical simulation.
+The framework features a professional, high-performance historical data downloader located at `Collecting_Data/historical_data_collector.py`.
 
-### 5.1 Historical Collection Commands
-To collect historical M5 and M15 bars directly from your connected MT5 terminal, create a simple script (e.g. `collect_history.py` inside a user workflow or run via terminal utility) or utilize `MT5DataFeed` programmatically.
+### 5.1 Provider Abstraction
+The data collector is architected with a decoupled data provider interface:
+- **BaseDataProvider**: Abstract interface for all current and future data feeds.
+- **MT5DataProvider**: Concrete implementation utilizing the official MetaTrader 5 Python API for real-time and historical bar copy operations.
+- **MockDataProvider**: Synthetically replicates historical data chunks for rapid, environment-agnostic CI testing and validation.
+- *Future Providers*: Seamlessly extensible to plug in Dukascopy, OANDA, or custom CSV historical files without breaking downstream feature calculation, strategy backtesting, or ML pipelines.
 
-Here is an example utility script you can create as `collect_history.py`:
-```python
-import os
-import pandas as pd
-from Collecting_Data.data_feed import MT5DataFeed
-from simulation.simulation_environment import env as mt5
-from Collecting_Data.auth import load_credentials
+### 5.2 Core Features
+1. **Symbol Discovery & Filtering**: Automatically fetches visible symbols from MT5 and filters out non-selectable ones. Discovered symbols can be filtered by category: `forex`, `metals`, `indices`, `crypto`, or `all`.
+2. **Chunked Downloading**: Requests data in configurable date range chunks (e.g. 180 days) to optimize memory footprint and network stability. If a chunk fails, it retries with an exponential backoff.
+3. **Robust State Resume**: Interrupted downloads can be resumed seamlessly. The collector records progress in `download_state.json` (`last_downloaded_datetime`, `symbol`, `timeframe`, `chunk_index`). Subsequent executions read the progress and start downloading exactly where they were interrupted.
+4. **Data Validation**: Every single chunk is verified dynamically for:
+   - Missing timestamps (gaps larger than timeframe duration, excluding weekends)
+   - Duplicate candles (duplicate timestamps)
+   - Invalid OHLC boundaries (e.g. High < Low, close <= 0, open <= 0)
+   - Negative Tick Volume
+   - Timezone consistency (forces UTC)
+5. **Incremental Storage**: Outputs are structured under `HistoricalData/` (or your preferred output directory), storing each symbol/timeframe separately:
+   ```text
+   HistoricalData/
+       EURUSD/
+           M5.csv
+           M5.parquet
+           metadata.json
+   ```
+   - **Parquet**: Highly optimized and recommended for downstream Machine Learning (`FeaturePipeline` → `LabelEngine`).
+   - **CSV**: Supported for general auditing and Excel verification.
+   - **metadata.json**: Tracks metrics like broker, timezone, first/last candle, number of bars, duplicates removed, and missing candles.
+   - **download_report.csv**: A global report tracking symbols, total bars, start/end dates, elapsed time, status, and errors.
+6. **Parallel Downloading**: Supports downloading multiple symbols concurrently via multithreading (ThreadPoolExecutor) with configurable worker counts (default: 4 workers).
 
-creds = load_credentials("credentials.json")
-mt5.initialize(login=creds["login"], password=creds["password"], server=creds["server"])
-
-feed = MT5DataFeed()
-feed.connect()
-
-symbols = ["EURUSD_o", "GBPUSD_o", "GBPJPY_o", "XAUUSD_o"]
-timeframes = {"M5": mt5.TIMEFRAME_M5, "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1}
-
-os.makedirs("Data", exist_ok=True)
-
-for sym in symbols:
-    for tf_name, tf_val in timeframes.items():
-        print(f"Downloading 100,000 candles of {sym} on {tf_name}...")
-        bars = mt5.copy_rates_from_pos(sym, tf_val, 0, 100000)
-        if bars is not None and len(bars) > 0:
-            df = pd.DataFrame(bars)
-            df['time'] = pd.to_datetime(df['time'], unit='s')
-            # Rename columns to standard framework format
-            df = df.rename(columns={
-                "time": "Datetime", "open": "Open", "high": "High",
-                "low": "Low", "close": "Close", "tick_volume": "TickVolume", "spread": "Spread"
-            })
-            # Drop unnecessary columns
-            df = df[["Datetime", "Open", "High", "Low", "Close", "TickVolume", "Spread"]]
-            output_path = f"Data/{sym}_{tf_name}.csv"
-            df.to_csv(output_path, index=False)
-            print(f"Saved {len(df)} bars to {output_path}")
-        else:
-            print(f"Failed to copy rates for {sym} {tf_name}")
-
-mt5.shutdown()
-```
-
-Run the script:
+### 5.3 CLI Ingestion Commands
+Execute the collector directly from your CLI terminal:
 ```bash
-python collect_history.py
+# Download complete history for all Forex pairs starting from 2010-06-01 on M5 timeframe
+python Collecting_Data/historical_data_collector.py \
+    --timeframe M5 \
+    --start 2010-06-01 \
+    --end auto \
+    --symbols all \
+    --filter forex \
+    --format parquet \
+    --workers 4
+
+# Download specific metals and crypto pairs
+python Collecting_Data/historical_data_collector.py \
+    --timeframe M15 \
+    --start 2018-01-01 \
+    --symbols XAUUSD,BTCUSD \
+    --output-dir HistoricalData
 ```
 
-### 5.2 Expected CSV Data Format
-The generated historical files inside `Data/` will have this exact layout:
+### 5.4 Expected CSV Data Format
+The generated historical files inside `HistoricalData/<SYMBOL>/` will have this exact schema, matching downstream framework expectations:
 ```csv
 Datetime,Open,High,Low,Close,TickVolume,Spread
-2024-01-01 08:00:00,1.09124,1.09156,1.09101,1.09142,425,1
-2024-01-01 08:05:00,1.09141,1.09210,1.09138,1.09198,512,1
+2024-01-01 08:00:00+00:00,1.09124,1.09156,1.09101,1.09142,425,1
+2024-01-01 08:05:00+00:00,1.09141,1.09210,1.09138,1.09198,512,1
 ...
 ```
 
-### 5.3 Guidelines & Recommendations
-- **Candles to download**: Standardizing on **100,000 candles** provides enough chronological data for modeling (approx. 1 year of M5 bars).
-- **Timeframe Configurations**: Make sure to download corresponding symbols on **both** M5 and M15 timeframes. `MMStrategy` evaluates both M15 (for high-level swing structure) and M5 (for entry candle indicators and micro trends).
+### 5.5 Guidelines & Recommendations
+- **Downstream Usability**: Datasets generated by this tool are fully aligned with the schema expected by `FeaturePipeline`, `LabelEngine`, and `SimulationRunner`.
+- **Timeframe Strategy**: For `MMStrategy` trading or backtesting, ensure both **M5** and **M15** datasets are downloaded for your target symbols.
 
 ---
 
