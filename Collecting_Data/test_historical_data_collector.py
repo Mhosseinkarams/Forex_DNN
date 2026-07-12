@@ -216,5 +216,71 @@ class TestHistoricalDataCollector(unittest.TestCase):
         self.assertIn("download_date", metadata)
 
 
+class TestConsoleProgressMonitor(unittest.TestCase):
+    def test_worker_registration(self):
+        from Collecting_Data.historical_data_collector import ConsoleProgressMonitor
+        monitor = ConsoleProgressMonitor(num_workers=4, enabled=False)
+
+        slot1 = monitor.register_worker("thread-a")
+        slot2 = monitor.register_worker("thread-b")
+        slot1_again = monitor.register_worker("thread-a")
+
+        self.assertEqual(slot1, 1)
+        self.assertEqual(slot2, 2)
+        self.assertEqual(slot1_again, 1)
+
+    def test_progress_updates(self):
+        from Collecting_Data.historical_data_collector import ConsoleProgressMonitor
+        monitor = ConsoleProgressMonitor(num_workers=2, enabled=False)
+
+        # Test updating slot
+        monitor.update(1, "EURUSD", "M5", 2, 5, "Downloading")
+        self.assertEqual(monitor.slots[1]["symbol"], "EURUSD")
+        self.assertEqual(monitor.slots[1]["chunk"], 2)
+        self.assertEqual(monitor.slots[1]["total"], 5)
+        self.assertEqual(monitor.slots[1]["status"], "Downloading")
+
+    def test_drawing_and_clearing_safeguards(self):
+        from Collecting_Data.historical_data_collector import ConsoleProgressMonitor
+        monitor = ConsoleProgressMonitor(num_workers=2, enabled=True)
+        # Force TTY to True to execute full print escape-paths under test
+        monitor.enabled = True
+
+        # Should execute draw cleanly without crash
+        monitor.update(1, "GBPUSD", "M15", 1, 3, "Running")
+        monitor.update(2, "EURUSD", "M5", 0, 3, "Starting")
+
+        # Test clear/redraw cleanly
+        monitor.clear()
+        monitor.redraw()
+        monitor.clear()
+
+    def test_logging_handler_integration(self):
+        import logging
+        from Collecting_Data.historical_data_collector import ConsoleProgressMonitor, ProgressAwareStreamHandler
+
+        monitor = ConsoleProgressMonitor(num_workers=1, enabled=True)
+        monitor.enabled = True
+        monitor.active_lines_printed = True
+
+        import io
+        stream = io.StringIO()
+        handler = ProgressAwareStreamHandler(monitor=monitor, stream=stream)
+
+        record = logging.LogRecord(
+            name="test_logger",
+            level=logging.INFO,
+            pathname="test_path.py",
+            lineno=10,
+            msg="Progress-aware log works!",
+            args=(),
+            exc_info=None
+        )
+
+        handler.emit(record)
+        output = stream.getvalue()
+        self.assertIn("Progress-aware log works!", output)
+
+
 if __name__ == "__main__":
     unittest.main()
