@@ -169,6 +169,11 @@ class LabelEngine:
                     "engine_version": "1.0.0",
                 }
 
+                # Copy raw OHLCV and EMAs for research and plotting
+                for raw_col in ["Open", "High", "Low", "Close", "TickVolume", "ema_50", "ema_600", "ema_800"]:
+                    if raw_col in df_final.columns:
+                        row_data[raw_col] = df_final.iloc[end_idx][raw_col]
+
                 # Add individual rule info for explanation
                 for k, v in label_info.items():
                     row_data[f"meta_labeler_{k}"] = v
