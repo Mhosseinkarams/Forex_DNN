@@ -5,6 +5,11 @@ import json
 import tempfile
 import pandas as pd
 from datetime import datetime, timezone, timedelta
+import sys
+# Ensure project root is in path
+project_root = os.path.abspath(os.path.join(os.getcwd(), '..')) if os.path.basename(os.getcwd()) == 'examples' else os.getcwd()
+if project_root not in sys.path: sys.path.insert(0, project_root)
+
 from Collecting_Data.historical_data_collector import (
     HistoricalDataCollector,
     MockDataProvider
