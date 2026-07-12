@@ -4,6 +4,7 @@ historical_data_collector.py
 Official historical data downloader for the Forex_DNN framework.
 Supports multiple providers with provider-based abstraction (MT5, Dukascopy, OANDA, CSV, Mock),
 chunked downloading, resume capability, data validation, parallel downloading, and metadata generation.
+Includes live multi-worker progress display.
 """
 
 import os
@@ -14,6 +15,7 @@ import math
 import logging
 import argparse
 import re
+import threading
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from abc import ABC, abstractmethod
@@ -28,12 +30,136 @@ except ImportError:
     mt5 = None
 
 # Configure Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
 logger = logging.getLogger("HistoricalDataCollector")
+
+
+# ── Console Progress Monitor ──────────────────────────────────────────────────
+
+class ConsoleProgressMonitor:
+    """
+    Thread-safe console progress visualizer that maintains a live status row
+    for each concurrent worker utilizing ANSI escape sequences.
+    """
+    def __init__(self, num_workers: int, enabled: bool = True):
+        self.num_workers = num_workers
+        self.enabled = enabled and sys.stdout.isatty()
+        self.lock = threading.Lock()
+
+        # State for each slot: {slot_index: {"symbol": "...", "timeframe": "...", "chunk": 0, "total": 0, "status": "Idle", "thread_id": None}}
+        self.slots = {i: {"symbol": "-", "timeframe": "-", "chunk": 0, "total": 0, "status": "Idle", "thread_id": None} for i in range(1, num_workers + 1)}
+        self.active_lines_printed = False
+
+    def register_worker(self, thread_id) -> int:
+        """Assigns an unassigned slot index to a thread, making it thread-safe."""
+        with self.lock:
+            # Check if thread is already registered
+            for slot, info in self.slots.items():
+                if info.get("thread_id") == thread_id:
+                    return slot
+            # Assign to first unassigned slot
+            for slot, info in self.slots.items():
+                if info.get("thread_id") is None:
+                    self.slots[slot]["thread_id"] = thread_id
+                    return slot
+            # Fallback
+            return 1
+
+    def update(self, slot_id: int, symbol: str, timeframe: str, chunk: int, total: int, status: str):
+        with self.lock:
+            self.slots[slot_id].update({
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "chunk": chunk,
+                "total": total,
+                "status": status
+            })
+            if not self.enabled:
+                return
+            self._draw()
+
+    def _draw(self):
+        if not self.enabled:
+            return
+
+        # Generate lines
+        lines = []
+        for slot, info in self.slots.items():
+            sym = info["symbol"]
+            tf = info["timeframe"]
+            chk = info["chunk"]
+            tot = info["total"]
+            status = info["status"]
+
+            # Progress bar
+            bar_len = 20
+            if tot > 0:
+                pct = int((chk / tot) * 100)
+                filled = int((chk / tot) * bar_len)
+            else:
+                pct = 0
+                filled = 0
+
+            bar = "█" * filled + "░" * (bar_len - filled)
+
+            line = f"Worker {slot:02d}: [{sym: <8} {tf: <4}] | {status: <12} | Chunk {chk:02d}/{tot:02d} [{bar}] {pct:3d}%"
+            lines.append(line)
+
+        if self.active_lines_printed:
+            # Move cursor up by num_workers lines
+            sys.stdout.write(f"\033[{self.num_workers}A")
+            for line in lines:
+                # Clear line and print
+                sys.stdout.write(f"\033[K{line}\n")
+        else:
+            for line in lines:
+                sys.stdout.write(f"{line}\n")
+            self.active_lines_printed = True
+        sys.stdout.flush()
+
+    def clear(self):
+        """Clears the progress monitor output from console."""
+        if not self.enabled or not self.active_lines_printed:
+            return
+        with self.lock:
+            # Move cursor up and clear lines
+            sys.stdout.write(f"\033[{self.num_workers}A")
+            for _ in range(self.num_workers):
+                sys.stdout.write("\033[K\n")
+            # Move back up to leave cursor where it was
+            sys.stdout.write(f"\033[{self.num_workers}A")
+            sys.stdout.flush()
+            self.active_lines_printed = False
+
+    def redraw(self):
+        """Redraws the progress monitor after being cleared."""
+        if not self.enabled:
+            return
+        with self.lock:
+            self._draw()
+
+
+class ProgressAwareStreamHandler(logging.StreamHandler):
+    """
+    Log stream handler that intercepts emitting, temporarily clears
+    the live progress monitor, prints the log, and restores the progress display.
+    """
+    def __init__(self, monitor: ConsoleProgressMonitor = None, stream=None):
+        super().__init__(stream)
+        self.monitor = monitor
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            if self.monitor and self.monitor.enabled and self.monitor.active_lines_printed:
+                self.monitor.clear()
+                self.stream.write(msg + self.terminator)
+                self.stream.flush()
+                self.monitor.redraw()
+            else:
+                self.stream.write(msg + self.terminator)
+                self.stream.flush()
+        except Exception:
+            self.handleError(record)
 
 
 # ── Provider Abstractions ─────────────────────────────────────────────────────
@@ -418,12 +544,13 @@ class HistoricalDataCollector:
     """
     Orchestrator class for downloading, validating, merging, and saving historical market data.
     """
-    def __init__(self, provider: BaseDataProvider, output_dir: str = "HistoricalData", format: str = "parquet", chunk_size_days: int = 180, max_workers: int = 4):
+    def __init__(self, provider: BaseDataProvider, output_dir: str = "HistoricalData", format: str = "parquet", chunk_size_days: int = 180, max_workers: int = 4, monitor: ConsoleProgressMonitor = None):
         self.provider = provider
         self.output_dir = output_dir
         self.format = format.lower()
         self.chunk_size_days = chunk_size_days
         self.max_workers = max_workers
+        self.monitor = monitor
         self.state_file = os.path.join(output_dir, "download_state.json")
         self.state = self._load_state()
 
@@ -635,8 +762,26 @@ class HistoricalDataCollector:
         total_invalid_ohlc = 0
         total_negative_vol = 0
 
+        # Dynamic Worker registration with Console Progress Monitor
+        slot_id = None
+        if self.monitor:
+            slot_id = self.monitor.register_worker(threading.get_ident())
+            self.monitor.update(slot_id, symbol, timeframe, 0, total_chunks, "Starting")
+
         # Try to select symbol
-        self.provider.symbol_select(symbol, True)
+        if not self.provider.symbol_select(symbol, True):
+            logger.warning(f"Symbol {symbol} cannot be selected by provider. Skipping.")
+            if self.monitor and slot_id:
+                self.monitor.update(slot_id, symbol, timeframe, 0, total_chunks, "Skipped")
+            return {
+                "symbol": symbol,
+                "bars": 0,
+                "start": str(start_date),
+                "end": str(end_date),
+                "status": "Skipped",
+                "elapsed": time.perf_counter() - t0_symbol,
+                "errors": 1
+            }
 
         for idx, (c_start, c_end) in enumerate(chunks_ranges, 1):
             logger.info(f"[{symbol}] Downloading Chunk {idx} / {total_chunks} ({c_start.date()} to {c_end.date()})")
@@ -669,6 +814,8 @@ class HistoricalDataCollector:
                     "status": "in_progress"
                 }
                 self._save_state()
+                if self.monitor and slot_id:
+                    self.monitor.update(slot_id, symbol, timeframe, idx - 1, total_chunks, "Failed")
                 return {
                     "symbol": symbol,
                     "bars": 0,
@@ -701,6 +848,10 @@ class HistoricalDataCollector:
             }
             self._save_state()
 
+            # Live Progress Update
+            if self.monitor and slot_id:
+                self.monitor.update(slot_id, symbol, timeframe, idx, total_chunks, f"Chunk {idx}/{total_chunks}")
+
         # Merge and finalize
         final_df = self.merge_chunks(chunks_data)
 
@@ -712,6 +863,8 @@ class HistoricalDataCollector:
                 "status": "failed"
             }
             self._save_state()
+            if self.monitor and slot_id:
+                self.monitor.update(slot_id, symbol, timeframe, 0, total_chunks, "No Data")
             return {
                 "symbol": symbol,
                 "bars": 0,
@@ -774,6 +927,10 @@ class HistoricalDataCollector:
         }
         self._save_state()
 
+        # Mark slot complete in monitor
+        if self.monitor and slot_id:
+            self.monitor.update(slot_id, symbol, timeframe, total_chunks, total_chunks, "Completed")
+
         elapsed_time = time.perf_counter() - t0_symbol
         logger.info(f"Successfully finalized {symbol} in {elapsed_time:.2f}s. Total bars: {len(final_df)}")
 
@@ -815,6 +972,11 @@ class HistoricalDataCollector:
         # Support parallel downloading using a ThreadPoolExecutor
         if self.max_workers > 1 and len(target_symbols) > 1:
             logger.info(f"Downloading {len(target_symbols)} symbols concurrently with {self.max_workers} workers.")
+
+            # Start dynamic console display
+            if self.monitor:
+                self.monitor._draw()
+
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 futures = {
                     executor.submit(self.download_symbol, sym, timeframe, start_date, end_date): sym
@@ -838,6 +1000,9 @@ class HistoricalDataCollector:
                         })
         else:
             logger.info("Downloading symbols sequentially.")
+            if self.monitor:
+                self.monitor._draw()
+
             for sym in target_symbols:
                 try:
                     res = self.download_symbol(sym, timeframe, start_date, end_date)
@@ -853,6 +1018,10 @@ class HistoricalDataCollector:
                         "elapsed": 0.0,
                         "errors": 1
                     })
+
+        # Clear monitor display block nicely at the end
+        if self.monitor:
+            self.monitor.clear()
 
         # Generate download_report.csv
         report_df = pd.DataFrame(results)
@@ -918,13 +1087,31 @@ def main():
             logger.error("Failed to connect to specified provider.")
             sys.exit(1)
 
+    # Resolve active workers
+    num_workers = args.workers
+
+    # Initialize Progress Monitor
+    monitor = ConsoleProgressMonitor(num_workers=num_workers, enabled=True)
+
+    # Swap standard log handler with our progress-aware custom handler
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, ProgressAwareStreamHandler):
+            # Create a progress-aware handler sharing the same format
+            formatter = handler.formatter
+            new_handler = ProgressAwareStreamHandler(monitor=monitor, stream=sys.stdout)
+            new_handler.setFormatter(formatter)
+            root_logger.removeHandler(handler)
+            root_logger.addHandler(new_handler)
+
     # Initialize and execute collector
     collector = HistoricalDataCollector(
         provider=provider,
         output_dir=args.output_dir,
         format=args.format,
         chunk_size_days=args.chunk_size_days,
-        max_workers=args.workers
+        max_workers=num_workers,
+        monitor=monitor
     )
 
     try:
