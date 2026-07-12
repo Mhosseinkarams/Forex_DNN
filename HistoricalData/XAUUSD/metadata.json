@@ -1,0 +1,14 @@
+{
+    "symbol": "XAUUSD",
+    "timeframe": "M5",
+    "download_date": "2026-07-12T15:04:32.721731+00:00",
+    "first_candle": "2026-06-01T00:00:00+00:00",
+    "last_candle": "2026-07-01T00:00:00+00:00",
+    "number_of_bars": 6433,
+    "duplicates_removed": 0,
+    "invalid_ohlc_removed": 0,
+    "negative_volume_removed": 0,
+    "missing_candles_estimated": 2208,
+    "broker": "MockBroker",
+    "timezone": "UTC"
+}
