@@ -458,6 +458,15 @@ POSITION_FEATURES = [
         units="atr",
         description="Distance to the invalidation level (stop loss) in ATR units",
         source_module="IndicatorEngine"
+    ),
+    FeatureDefinition(
+        name="risk_reward_estimate",
+        display_name="Risk Reward Estimate",
+        category="Position",
+        dtype=float,
+        units="ratio",
+        description="Estimated risk reward ratio based on structural levels",
+        source_module="TradeLocationEngine"
     )
 ]
 
