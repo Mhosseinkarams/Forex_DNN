@@ -5,7 +5,10 @@ import pandas as pd
 import numpy as np
 import json
 from datetime import datetime, timedelta, timezone
-
+import sys
+# Ensure project root is in path
+project_root = os.path.abspath(os.path.join(os.getcwd(), '..')) if os.path.basename(os.getcwd()) == 'examples' else os.getcwd()
+if project_root not in sys.path: sys.path.insert(0, project_root)
 from ML.feature_registry import FeatureRegistry
 from Market_Data_Pipeline.historical_dataset_builder import HistoricalDatasetBuilder
 
@@ -18,7 +21,7 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         os.makedirs(self.test_output_dir, exist_ok=True)
 
         # Generate some synthetic data for a couple of symbols
-        self.symbols = ["EURUSD", "GBPUSD"]
+        self.symbols = ["XAUUSD", "YM"]
         self.timeframe = "M5"
         self.num_bars = 200
 
@@ -110,8 +113,8 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
             timeframe=self.timeframe
         )
         files = builder.find_files()
-        self.assertIn("EURUSD", files)
-        self.assertIn("GBPUSD", files)
+        self.assertIn("XAUUSD", files)
+        self.assertIn("YM", files)
         self.assertEqual(len(files), 2)
 
     def test_generates_rolling_windows(self):
@@ -123,7 +126,7 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
             timeframe=self.timeframe
         )
         files = builder.find_files()
-        df_labeled = builder.process_symbol("EURUSD", files["EURUSD"])
+        df_labeled = builder.process_symbol("XAUUSD", files["XAUUSD"])
 
         # Check standard columns
         self.assertFalse(df_labeled.empty)
@@ -157,8 +160,8 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         self.assertEqual(metadata["window_size"], 35)
         self.assertEqual(metadata["timeframe"], self.timeframe)
         self.assertEqual(metadata["sample_count"], len(df_final))
-        self.assertIn("EURUSD", metadata["symbols"])
-        self.assertIn("GBPUSD", metadata["symbols"])
+        self.assertIn("XAUUSD", metadata["symbols"])
+        self.assertIn("YM", metadata["symbols"])
 
         # Check metadata json saved
         meta_path = os.path.join(self.test_output_dir, "dataset_v001_metadata.json")
