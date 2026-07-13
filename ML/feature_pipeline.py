@@ -75,6 +75,7 @@ class FeaturePipeline:
             "distance_to_nearest_low": self._extract_distance_to_nearest_low,
             "distance_to_structure_break": self._extract_distance_to_structure_break,
             "distance_to_invalidation_level": self._extract_distance_to_invalidation_level,
+            "risk_reward_estimate": self._extract_risk_reward_estimate,
             "ema50_distance_v1": self._extract_ema50_distance_v1,
             "ema50_distance_v2": self._extract_ema50_distance_v2,
         }
@@ -499,6 +500,19 @@ class FeaturePipeline:
             last_low = lows[-1]
             return float(abs(close - last_low) / atr)
         return 1.5
+
+    def _extract_risk_reward_estimate(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
+        from Trade_Execution.location_engine import TradeLocationEngine
+        tle = TradeLocationEngine()
+        row = df.iloc[idx]
+        close = row["Close"]
+        # Use overall trend to decide direction
+        direction = 1 if row.get("trend", 0) >= 0 else -1
+        try:
+            levels = tle.get_trade_levels(msg, direction, close)
+            return float(levels.get("rr_ratio", 2.0))
+        except Exception:
+            return 2.0
 
     def _extract_ema50_distance_v1(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
         row = df.iloc[idx]
