@@ -1,5 +1,7 @@
 import os
 import argparse
+import json
+from datetime import datetime
 import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score
@@ -9,6 +11,14 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     print("==================================================")
     print("      TRAINING MARKET STATE CLASSIFIER MODEL      ")
     print("==================================================")
+
+    # Initialize Directory Layout Structure
+    for d in [
+        "raw_data", "processed_data", "cache", "datasets",
+        "models", "models/MarketState", "models/LevelBreak",
+        "experiments", "training_runs", "reports", "backtests"
+    ]:
+        os.makedirs(d, exist_ok=True)
 
     np.random.seed(random_seed)
 
@@ -89,6 +99,38 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     # Save the trained model
     clf.save(model_save_path)
     print(f"Model saved successfully to {model_save_path}")
+
+    # Enforce Model Reproducibility & Registry
+    dataset_dir = os.path.dirname(os.path.abspath(dataset_path))
+    metadata_path = os.path.join(dataset_dir, "metadata.json")
+
+    dataset_version = "unknown"
+    dataset_hash = "unknown"
+    git_commit = "unknown"
+
+    if os.path.exists(metadata_path):
+        try:
+            with open(metadata_path, "r") as f:
+                meta = json.load(f)
+                dataset_version = meta.get("dataset_version", os.path.basename(dataset_dir))
+                dataset_hash = meta.get("fingerprint", {}).get("dataset_hash", "unknown")
+                git_commit = meta.get("fingerprint", {}).get("git_commit", "unknown")
+        except Exception as e:
+            print(f"Warning: Failed to load dataset metadata: {e}")
+
+    reproducibility = {
+        "trained_from_dataset": dataset_version,
+        "dataset_hash": dataset_hash,
+        "git_commit": git_commit,
+        "training_script_version": "1.1",
+        "training_date": datetime.now().isoformat()
+    }
+
+    model_dir = os.path.dirname(os.path.abspath(model_save_path))
+    repro_path = os.path.join(model_dir, "reproducibility.json")
+    with open(repro_path, "w") as f:
+        json.dump(reproducibility, f, indent=4)
+    print(f"Saved model reproducibility registry to {repro_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

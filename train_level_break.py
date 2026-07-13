@@ -10,6 +10,14 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     print("    TRAINING LEVEL BREAK PROBABILITY MODEL        ")
     print("==================================================")
 
+    # Initialize Directory Layout Structure
+    for d in [
+        "raw_data", "processed_data", "cache", "datasets",
+        "models", "models/MarketState", "models/LevelBreak",
+        "experiments", "training_runs", "reports", "backtests"
+    ]:
+        os.makedirs(d, exist_ok=True)
+
     np.random.seed(random_seed)
 
     # Check if dataset exists, if not generate dummy

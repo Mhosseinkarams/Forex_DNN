@@ -1,0 +1,11 @@
+{
+    "window_size": 35,
+    "window_stride": 1,
+    "label_version": "1.0.0",
+    "rules": {
+        "ema_separation_trend": 1.5,
+        "ema_separation_range": 0.8,
+        "min_bos_trend": 1,
+        "min_rejections_range": 2
+    }
+}

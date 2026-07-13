@@ -6,9 +6,12 @@ import numpy as np
 import json
 from datetime import datetime, timedelta, timezone
 import sys
+
 # Ensure project root is in path
 project_root = os.path.abspath(os.path.join(os.getcwd(), '..')) if os.path.basename(os.getcwd()) == 'examples' else os.getcwd()
-if project_root not in sys.path: sys.path.insert(0, project_root)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from ML.feature_registry import FeatureRegistry
 from Market_Data_Pipeline.historical_dataset_builder import HistoricalDatasetBuilder
 
@@ -17,8 +20,13 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         # Create temp folders
         self.test_input_dir = "test_historical_inputs"
         self.test_output_dir = "test_historical_outputs"
+        self.test_datasets_dir = "test_historical_datasets"
+        self.test_cache_dir = "test_historical_cache"
+
         os.makedirs(self.test_input_dir, exist_ok=True)
         os.makedirs(self.test_output_dir, exist_ok=True)
+        os.makedirs(self.test_datasets_dir, exist_ok=True)
+        os.makedirs(self.test_cache_dir, exist_ok=True)
 
         # Generate some synthetic data for a couple of symbols
         self.symbols = ["XAUUSD", "YM"]
@@ -27,7 +35,6 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
 
         # Create synthetic CSV/Parquet files
         for sym in self.symbols:
-            # We can use nested structure
             sym_dir = os.path.join(self.test_input_dir, sym)
             os.makedirs(sym_dir, exist_ok=True)
 
@@ -37,10 +44,9 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
 
     def tearDown(self):
         # Clean up temp folders
-        if os.path.exists(self.test_input_dir):
-            shutil.rmtree(self.test_input_dir)
-        if os.path.exists(self.test_output_dir):
-            shutil.rmtree(self.test_output_dir)
+        for folder in [self.test_input_dir, self.test_output_dir, self.test_datasets_dir, self.test_cache_dir]:
+            if os.path.exists(folder):
+                shutil.rmtree(folder)
 
     def _generate_synthetic_candles(self, num_bars: int) -> pd.DataFrame:
         np.random.seed(42)
@@ -110,7 +116,9 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         builder = HistoricalDatasetBuilder(
             input_dir=self.test_input_dir,
             output_dir=self.test_output_dir,
-            timeframe=self.timeframe
+            timeframe=self.timeframe,
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
         )
         files = builder.find_files()
         self.assertIn("XAUUSD", files)
@@ -118,17 +126,17 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         self.assertEqual(len(files), 2)
 
     def test_generates_rolling_windows(self):
-        # We test that processing a single symbol runs windows and features correctly
         builder = HistoricalDatasetBuilder(
             input_dir=self.test_input_dir,
             output_dir=self.test_output_dir,
             window_size=35,
-            timeframe=self.timeframe
+            timeframe=self.timeframe,
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
         )
         files = builder.find_files()
         df_labeled = builder.process_symbol("XAUUSD", files["XAUUSD"])
 
-        # Check standard columns
         self.assertFalse(df_labeled.empty)
         self.assertIn("symbol", df_labeled.columns)
         self.assertIn("timeframe", df_labeled.columns)
@@ -139,7 +147,9 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         builder = HistoricalDatasetBuilder(
             input_dir=self.test_input_dir,
             output_dir=self.test_output_dir,
-            timeframe=self.timeframe
+            timeframe=self.timeframe,
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
         )
         enabled_feats = [f.name for f in builder.registry.list_enabled()]
         self.assertIn("ema50_slope", enabled_feats)
@@ -151,7 +161,9 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
             output_dir=self.test_output_dir,
             window_size=35,
             timeframe=self.timeframe,
-            version="v001"
+            version="v001",
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
         )
         df_final, metadata = builder.build_dataset(max_workers=2)
 
@@ -163,8 +175,7 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         self.assertIn("XAUUSD", metadata["symbols"])
         self.assertIn("YM", metadata["symbols"])
 
-        # Check metadata json saved
-        meta_path = os.path.join(self.test_output_dir, "dataset_v001_metadata.json")
+        meta_path = os.path.join(self.test_datasets_dir, "v001", "metadata.json")
         self.assertTrue(os.path.exists(meta_path))
         with open(meta_path, "r") as f:
             saved_metadata = json.load(f)
@@ -176,17 +187,18 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
             output_dir=self.test_output_dir,
             window_size=35,
             timeframe=self.timeframe,
-            version="v002"
+            version="v002",
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
         )
         df_final, metadata = builder.build_dataset(max_workers=1)
 
-        parquet_path = os.path.join(self.test_output_dir, "dataset_v002.parquet")
-        csv_path = os.path.join(self.test_output_dir, "dataset_v002.csv")
+        parquet_path = os.path.join(self.test_datasets_dir, "v002", "dataset.parquet")
+        csv_path = os.path.join(self.test_datasets_dir, "v002", "dataset.csv")
 
         self.assertTrue(os.path.exists(parquet_path))
         self.assertTrue(os.path.exists(csv_path))
 
-        # Check they load properly
         df_parquet = pd.read_parquet(parquet_path)
         df_csv = pd.read_csv(csv_path)
 
@@ -199,7 +211,9 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
             output_dir=self.test_output_dir,
             window_size=35,
             timeframe=self.timeframe,
-            version="v003"
+            version="v003",
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
         )
         df_final, metadata = builder.build_dataset(max_workers=1)
 
@@ -208,6 +222,190 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         self.assertIn("nan_count", metadata["validation"])
         self.assertIn("duplicate_rows", metadata["validation"])
         self.assertIn("memory_usage_mb", metadata["validation"])
+
+    def test_caching_and_resume(self):
+        # 1. First run processes and caches
+        builder1 = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            version="v004",
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        df1, _ = builder1.build_dataset(max_workers=1)
+        self.assertFalse(df1.empty)
+
+        # Check cache file exists
+        cache_file = os.path.join(self.test_cache_dir, f"XAUUSD_{self.timeframe}_v004_cache.parquet")
+        self.assertTrue(os.path.exists(cache_file))
+
+        # 2. Second run loads from cache (extremely fast!)
+        builder2 = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            version="v004",
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        df2, _ = builder2.build_dataset(max_workers=1)
+        self.assertEqual(len(df1), len(df2))
+
+    def test_version_increment(self):
+        builder1 = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        df1, meta1 = builder1.build_dataset(max_workers=1)
+        self.assertEqual(meta1["version"], "v001")
+
+        builder2 = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        df2, meta2 = builder2.build_dataset(max_workers=1)
+        self.assertEqual(meta2["version"], "v002")
+
+    def test_engine_plugin_registration(self):
+        class MockCustomEngine:
+            def __init__(self):
+                self.executed = False
+            def process(self, df):
+                self.executed = True
+                df["custom_plugin_col"] = 42.0
+                return df
+
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            timeframe=self.timeframe,
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        plugin = MockCustomEngine()
+        builder.register_engine(plugin)
+
+        # Verify it got added to pipeline
+        self.assertIn(plugin, builder.pipeline.stages)
+
+    def test_deterministic_sample_ids(self):
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        df, _ = builder.build_dataset(max_workers=1)
+
+        self.assertIn("sample_id", df.columns)
+        first_sample_id = df.iloc[0]["sample_id"]
+        # Pattern check, e.g., XAUUSD_M5_2026-01-01T02:50
+        self.assertTrue(first_sample_id.startswith("XAUUSD_M5_2026-01-"))
+
+    def test_manifest_and_statistics(self):
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            version="v005",
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        builder.build_dataset(max_workers=1)
+
+        v_dir = os.path.join(self.test_datasets_dir, "v005")
+
+        # Verify existence of the 8 required files
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "dataset.parquet")))
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "dataset.csv")))
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "metadata.json")))
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "feature_registry.json")))
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "engine_versions.json")))
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "label_config.json")))
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "statistics.json")))
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "manifest.json")))
+
+        with open(os.path.join(v_dir, "manifest.json"), "r") as f:
+            manifest = json.load(f)
+            self.assertEqual(manifest["version"], "v005")
+            self.assertEqual(manifest["window_size"], 35)
+
+        with open(os.path.join(v_dir, "statistics.json"), "r") as f:
+            stats = json.load(f)
+            self.assertIn("Rows", stats)
+            self.assertIn("Columns", stats)
+            self.assertIn("Features", stats)
+            self.assertIn("Generation_Time_Sec", stats)
+
+    def test_fingerprints_in_output(self):
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            version="v006",
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        _, metadata = builder.build_dataset(max_workers=1)
+
+        # Check that fingerprints exist
+        self.assertIn("fingerprint", metadata)
+        fingerprint = metadata["fingerprint"]
+        self.assertIn("dataset_hash", fingerprint)
+        self.assertIn("feature_hash", fingerprint)
+        self.assertIn("engine_hash", fingerprint)
+        self.assertIn("git_commit", fingerprint)
+        self.assertIn("creation_time", fingerprint)
+
+    def test_html_quality_report_saved(self):
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            version="v007",
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        builder.build_dataset(max_workers=1)
+
+        report_path = os.path.join(self.test_datasets_dir, "v007", "dataset_quality_report.html")
+        self.assertTrue(os.path.exists(report_path))
+        with open(report_path, "r") as f:
+            html = f.read()
+            self.assertIn("Dataset Quality & Health Report", html)
+            self.assertIn("dataset_hash", html)
+            self.assertIn("feature_hash", html)
+
+    def test_directory_layout_initialized(self):
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            timeframe=self.timeframe,
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        for folder in [
+            "raw_data", "processed_data", "cache", "datasets",
+            "models", "models/MarketState", "models/LevelBreak",
+            "experiments", "training_runs", "reports", "backtests"
+        ]:
+            self.assertTrue(os.path.exists(folder))
 
 if __name__ == "__main__":
     unittest.main()
