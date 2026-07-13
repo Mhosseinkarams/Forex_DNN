@@ -561,6 +561,21 @@ Model saved successfully to output/level_break_probability.joblib
 
 ---
 
+### 8.3 Machine Learning Research Workbench
+
+We provide an interactive development laboratory and prototype sandbox in `notebooks/ml_pipeline_research.ipynb`. This notebook is designed to inspect, debug, and validate every stage of the machine learning training workflow prior to compiling it into production modules.
+
+**Features of the Research Workbench:**
+- **Configuration**: Dynamic switching between `MarketStateClassifier` and `LevelBreakProbabilityModel` workflows.
+- **Visual Validation**: An interactive **Random Sample Explorer** that visualizes historical candlestick sequences of 35 candles, overlaid with indicators, BOS/CHOCH events, and active supply/demand zones.
+- **Data Quality Safeguards**: Automatic checks for missing timestamps, duplicate datetimes, and NaN cells, plus auto-flagging of suspicious anomalies (low variance, collinearity).
+- **Advanced Evaluation**: Confusion matrix heatmaps, binary/multiclass ROC-AUC curves, Precision-Recall curves, and Calibration curves.
+- **Deterministic Archiving**: Packages and archives trained model weights, configurations, performance metrics, and plots into a timestamped directory under `output/research_experiments/`.
+
+For complete details on using the workbench and migrating notebook prototypes to production modules, see the [ML Pipeline Research Guide](docs/ml_pipeline_research.md).
+
+---
+
 ## 9. Run Backtesting
 
 The framework contains a high-fidelity, event-driven backtesting engine (`simulation/`) that mocks MT5 tick data and execution behavior.
