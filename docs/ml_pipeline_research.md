@@ -10,7 +10,7 @@ The ML Research Workbench is a unified development laboratory designed to protot
 
 Before writing production-grade ML pipeline components, it is critical to have an interactive and highly transparent playground where developers can:
 - **Inspect** data loads, timestamp integrity, and missing values.
-- **Trace** how raw prices are sequential-transformed by the `IndicatorEngine`, `MarketStructureEngine`, and `SupplyDemandEngine` into a `MarketStructureGraph`.
+- **Trace** how raw prices are sequentially transformed by the `IndicatorEngine`, `MarketStructureEngine`, and `SupplyDemandEngine` into a `MarketStructureGraph`.
 - **Analyze** rule-based label assignments (from `LabelEngine` and `DatasetBuilder`) and observe drop reasons for ambiguous windows.
 - **Audit** feature vectors for correctness against the `FeatureRegistry`.
 - **Visualize** dataset distributions, correlation structures, and suspicious anomalies (colinearity, zero variance).
@@ -59,11 +59,85 @@ This visual audit ensures the data pipeline has zero look-ahead bias and that in
 
 ---
 
-## 4. Relationship to Production Pipelines & Migration Guide
+## 4. API Reference and Usage Examples
+
+The core classes used in this pipeline have programmatic APIs that are clean, modular, and reusable.
+
+### 4.1 HistoricalDatasetBuilder
+The production-grade historical data processor.
+```python
+from Market_Data_Pipeline.historical_dataset_builder import HistoricalDatasetBuilder
+
+# Instantiate builder
+builder = HistoricalDatasetBuilder(
+    input_dir="HistoricalData",
+    output_dir="output",
+    window_size=35,
+    window_stride=1,
+    timeframe="M5"
+)
+
+# Execute parallel multi-symbol dataset construction
+df, metadata = builder.build_dataset(max_workers=4)
+```
+
+### 4.2 LabelEngine
+Responsible for sliding-window deterministic labeling with strict look-ahead protection.
+```python
+from ML.label_engine import LabelEngine
+from ML.market_state_labeler import MarketStateLabeler
+
+# Initialize labeler and engine coordinator
+labeler = MarketStateLabeler()
+label_engine = LabelEngine(
+    window_size=35,
+    window_stride=1,
+    labeler=labeler
+)
+
+# Process raw historical candles into a labeled feature matrix
+df_labeled = label_engine.generate_dataset(
+    data_inputs=df_enriched,
+    symbol="EURUSD",
+    timeframe="M5",
+    ms_engine=ms_stage,
+    sd_engine=sd_stage
+)
+```
+
+### 4.3 FeaturePipeline
+Resolves point-in-time features strictly dynamically to ensure zero data leakage.
+```python
+from ML.feature_registry import FeatureRegistry
+from ML.feature_pipeline import FeaturePipeline
+
+# Load feature schema definitions
+registry = FeatureRegistry(load_defaults=True)
+pipeline = FeaturePipeline(registry)
+
+# Extract a single point-in-time feature vector at bar index 100
+features_dict = pipeline.extract_all(df_enriched, msg, idx=100)
+```
+
+### 4.4 DatasetCleaner
+Normalizes outputs, manages missing columns, encodes string features, and drops low variance data.
+```python
+from ML.data_cleaner import DataCleaner
+
+# Initialize cleaner
+cleaner = DataCleaner()
+
+# Process labeled inputs
+df_cleaned = cleaner.clean(df_labeled, label_col="target")
+```
+
+---
+
+## 5. Relationship to Production Pipelines & Migration Guide
 
 The ML Research Workbench is the upstream blueprint for future production pipelines. Once code is refined and validated in the notebook, it should be migrated into clean, structured Python modules.
 
-### Future Production Module Target Layout
+### 5.1 Future Production Module Target Layout
 ```
 ML/
 ├── configs/
@@ -76,9 +150,24 @@ ML/
 └── analyzer.py                     <-- Migrated from Section 12 (error diagnostics)
 ```
 
-### Migration Workflow Steps
-1. **Config Extraction**: Move hyperparameters from Section 1 to a unified YAML/JSON config file inside `ML/configs/` or `Core/config.py`.
-2. **Modular Functions**: Extract helper functions from the notebook (e.g. data validation, index lookups) and place them in utility classes.
-3. **Pipeline Orchestrator**: Migrate training loops from Section 10 and 11 into a production-grade script/class (e.g. `ML/trainer.py`), accepting configuration arguments and running headless via CLI.
-4. **Automation of Visual Metrics**: Migrate curve plots to headless exporters that save reports automatically (e.g., using `matplotlib` without interactive UI displays).
-5. **Continuous Verification**: Keep the research notebook updated so that anytime a developer proposes a new feature group or labeling rule, it is validated in the workbench first, and then compiled into production.
+### 5.2 Step-by-Step Production Migration Instructions
+When a feature, model, or labeler in the notebook has been thoroughly validated:
+
+1. **Parameters & Configuration Isolation**:
+   - Extract the parameters dictionary in Section 1 into a unified YAML file (e.g., `ML/configs/default_config.yaml`).
+   - Use a command-line parser (e.g., `argparse`) in your script to load the config.
+
+2. **Refining the Analytical pipeline**:
+   - Section 3 and 5 execute the indicator, structural engines and features. Ensure any new indicator or math formula is written as an abstract class in `ML/feature_groups.py` and registered within `ML/feature_registry.py`.
+
+3. **Continuous Target Labeling**:
+   - Section 4 runs the label assignment. If you define a new target rule (e.g., predicting 5 bars out), wrap it into a subclass of `BaseLabeler` and place it under `ML/market_state_labeler.py` or a dedicated labelers module.
+
+4. **Model Serialization and Training Automation**:
+   - Section 10 trains the LightGBM models. Migrate this training logic to `ML/trainer.py` so it can be scheduled or triggered via CLI headless operations (e.g., `python ML/trainer.py --config configs/default_config.yaml`).
+
+5. **Exporters and Dashboards**:
+   - Section 11 plots multiple evaluation curves. In the production script, wrap these Matplotlib plots with headless exporters (e.g. `plt.savefig`) and auto-generate the detailed HTML dashboards (`reports/performance_dashboard.html`) without launching interactive notebook interfaces.
+
+6. **Continuous Quality Verification**:
+   - Keep this workbench updated! Propose all future labels, feature groups, and risk thresholds inside `notebooks/ml_pipeline_research.ipynb` first, run visual validation via the Random Sample Explorer, and only migrate them into production after confirming zero look-ahead bias and improved metric performance.
