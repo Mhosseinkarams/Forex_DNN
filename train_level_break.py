@@ -1,9 +1,14 @@
 import os
 import argparse
+import json
+from datetime import datetime
 import numpy as np
 import pandas as pd
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score, roc_auc_score
+
 from ML.models.level_break_probability import LevelBreakProbabilityModel
+from ML.trainer import Trainer
+from ML.evaluator import Evaluator
+
 
 def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42):
     print("==================================================")
@@ -40,60 +45,53 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     df = pd.read_csv(dataset_path)
     print(f"Loaded dataset containing {len(df)} samples.")
 
-    # Separate features and targets
+    # Initialize child class with external YAML config
+    config_path = "configs/level_break.yaml" if os.path.exists("configs/level_break.yaml") else None
+
+    clf = LevelBreakProbabilityModel(
+        model_type="lightgbm",
+        config_path=config_path,
+        random_state=random_seed
+    )
+
+    # Use Trainer to perform train/val split, training, and registration
+    trainer = Trainer(random_seed=random_seed)
+
+    # Extract feature columns automatically
     feature_cols = [c for c in df.columns if c not in ["target", "zone_type", "timestamp"]]
-    X = df[feature_cols]
-    y = df["target"]
 
-    # Chronological Split (No random shuffling)
-    split_idx = int(len(df) * 0.8)
-    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-    y_train, y_test = y.iloc[:split_idx].to_numpy(), y.iloc[split_idx:].to_numpy()
+    train_results = trainer.train_model(
+        model=clf,
+        df=df,
+        target_col="target",
+        feature_cols=feature_cols,
+        test_size=0.2,
+        chronological=True,
+        dataset_version="unknown",
+        dataset_hash="unknown",
+        model_save_path=model_save_path,
+        is_production=True,
+        version="1.0.0"
+    )
 
-    print(f"Train samples: {len(X_train)} | Test samples: {len(X_test)}")
+    X_val = train_results["X_val"]
+    y_val = train_results["y_val"]
 
-    # Train LevelBreakProbabilityModel wrapper
-    clf = LevelBreakProbabilityModel(model_type="lightgbm", random_state=random_seed)
-    clf.fit(X_train, y_train, feature_names=feature_cols)
+    # Use Evaluator to create premium Markdown & HTML reports
+    evaluator = Evaluator(output_dir="reports")
+    classes = ["REJECT", "BREAK"]
 
-    # Predict and Evaluate
-    y_pred = clf.model.predict(X_test)
-    y_proba = clf.model.predict_proba(X_test)[:, 1]
+    evaluator.evaluate_and_report(
+        model=clf,
+        X_val=X_val,
+        y_val=y_val,
+        classes=classes,
+        report_name="level_break_evaluation_report"
+    )
 
-    acc = accuracy_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred)
-    auc = roc_auc_score(y_test, y_proba)
+    print(f"\n--- Model Performance Summary ---")
+    print(clf.get_summary())
 
-    print("\n--- Model Performance Evaluation ---")
-    print(f"Accuracy: {acc:.4f}")
-    print(f"F1-Score: {f1:.4f}")
-    print(f"ROC-AUC:  {auc:.4f}")
-    print("\n--- Classification Report ---")
-    print(classification_report(y_test, y_pred, target_names=["REJECT", "BREAK"]))
-
-    print("\n--- Confusion Matrix ---")
-    print(confusion_matrix(y_test, y_pred))
-
-    # Print Feature Importance
-    print("\n--- Top 10 Feature Importances ---")
-    importances = clf.get_feature_importance()
-    sorted_importance = sorted(importances.items(), key=lambda x: x[1], reverse=True)
-    for name, imp in sorted_importance[:10]:
-        print(f"{name:<35}: {imp:.4f}")
-
-    # Check SHAP availability
-    try:
-        import shap
-        print("\nCalculating SHAP values...")
-        explainer = shap.TreeExplainer(clf.model)
-        shap_values = explainer.shap_values(X_test)
-        print("SHAP calculation: SUCCESS")
-    except ImportError:
-        print("\nSHAP library not installed. Skipping SHAP explanation calculation.")
-
-    # Save the trained model
-    clf.save(model_save_path)
-    print(f"Model saved successfully to {model_save_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

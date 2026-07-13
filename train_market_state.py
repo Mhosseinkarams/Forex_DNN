@@ -5,7 +5,11 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score
+
 from ML.models.market_state_classifier import MarketStateClassifier
+from ML.trainer import Trainer
+from ML.evaluator import Evaluator
+
 
 def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42):
     print("==================================================")
@@ -25,9 +29,7 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     # Check if dataset exists, if not generate or use synthetic dummy data for demo
     if not os.path.exists(dataset_path):
         print(f"Dataset path '{dataset_path}' not found. Creating a synthetic dataset for demonstration purposes...")
-        # Make a dummy dataset
         n_samples = 1000
-        # Generate random features (e.g., 49 features matching registry count)
         from ML.feature_registry import FeatureRegistry
         reg = FeatureRegistry()
         enabled_features = [f.name for f in reg.list_enabled()]
@@ -44,69 +46,21 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     df = pd.read_csv(dataset_path)
     print(f"Loaded dataset containing {len(df)} samples.")
 
-    # Separate features and labels
-    feature_cols = [c for c in df.columns if c not in ["label", "confidence", "timestamp"]]
-    X = df[feature_cols]
-    y = df["label"]
+    # Initialize child class with external YAML config
+    config_path = "configs/market_state.yaml" if os.path.exists("configs/market_state.yaml") else None
 
-    # Encode labels to integer indices
-    classes = ["TREND", "RANGE", "TRANSITION"]
-    class_to_idx = {c: i for i, c in enumerate(classes)}
-    y_encoded = y.map(class_to_idx).fillna(2).astype(int).to_numpy()
+    clf = MarketStateClassifier(
+        model_type="lightgbm",
+        config_path=config_path,
+        random_state=random_seed
+    )
 
-    # Chronological Split (No random shuffling)
-    split_idx = int(len(df) * 0.8)
-    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-    y_train, y_test = y_encoded[:split_idx], y_encoded[split_idx:]
-
-    print(f"Train samples: {len(X_train)} | Test samples: {len(X_test)}")
-
-    # Train MarketStateClassifier wrapper
-    clf = MarketStateClassifier(model_type="lightgbm", random_state=random_seed)
-    clf.fit(X_train, y_train, feature_names=feature_cols)
-
-    # Predict and Evaluate
-    y_pred = clf.model.predict(X_test)
-    acc = accuracy_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred, average="weighted")
-
-    print("\n--- Model Performance Evaluation ---")
-    print(f"Accuracy: {acc:.4f}")
-    print(f"F1-Score (Weighted): {f1:.4f}")
-    print("\n--- Classification Report ---")
-    print(classification_report(y_test, y_pred, target_names=classes))
-
-    print("\n--- Confusion Matrix ---")
-    print(confusion_matrix(y_test, y_pred))
-
-    # Print Feature Importance
-    print("\n--- Top 10 Feature Importances ---")
-    importances = clf.get_feature_importance()
-    sorted_importance = sorted(importances.items(), key=lambda x: x[1], reverse=True)
-    for name, imp in sorted_importance[:10]:
-        print(f"{name:<35}: {imp:.4f}")
-
-    # Check SHAP availability
-    try:
-        import shap
-        print("\nCalculating SHAP values...")
-        explainer = shap.TreeExplainer(clf.model)
-        shap_values = explainer.shap_values(X_test)
-        print("SHAP calculation: SUCCESS")
-    except ImportError:
-        print("\nSHAP library not installed. Skipping SHAP explanation calculation.")
-
-    # Save the trained model
-    clf.save(model_save_path)
-    print(f"Model saved successfully to {model_save_path}")
-
-    # Enforce Model Reproducibility & Registry
+    # Read dataset metadata if available
     dataset_dir = os.path.dirname(os.path.abspath(dataset_path))
     metadata_path = os.path.join(dataset_dir, "metadata.json")
 
     dataset_version = "unknown"
     dataset_hash = "unknown"
-    git_commit = "unknown"
 
     if os.path.exists(metadata_path):
         try:
@@ -114,15 +68,54 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
                 meta = json.load(f)
                 dataset_version = meta.get("dataset_version", os.path.basename(dataset_dir))
                 dataset_hash = meta.get("fingerprint", {}).get("dataset_hash", "unknown")
-                git_commit = meta.get("fingerprint", {}).get("git_commit", "unknown")
         except Exception as e:
             print(f"Warning: Failed to load dataset metadata: {e}")
 
+    # Use Trainer to perform train/val split, training, and registration
+    trainer = Trainer(random_seed=random_seed)
+
+    # Extract feature columns automatically
+    feature_cols = [c for c in df.columns if c not in ["label", "confidence", "timestamp"]]
+
+    train_results = trainer.train_model(
+        model=clf,
+        df=df,
+        target_col="label",
+        feature_cols=feature_cols,
+        test_size=0.2,
+        chronological=True,
+        dataset_version=dataset_version,
+        dataset_hash=dataset_hash,
+        model_save_path=model_save_path,
+        is_production=True,
+        version="1.0.0"
+    )
+
+    X_val = train_results["X_val"]
+    y_val = train_results["y_val"]
+
+    # Use Evaluator to create premium Markdown & HTML reports
+    evaluator = Evaluator(output_dir="reports")
+    classes = ["TREND", "RANGE", "TRANSITION"]
+
+    evaluator.evaluate_and_report(
+        model=clf,
+        X_val=X_val,
+        y_val=y_val,
+        classes=classes,
+        report_name="market_state_evaluation_report"
+    )
+
+    print(f"\n--- Model Performance Summary ---")
+    print(clf.get_summary())
+
+    # Compatibility check: save model reproducibility companion json file (reproducibility.json)
+    git_commit = clf.metadata.get("git_commit", "unknown")
     reproducibility = {
         "trained_from_dataset": dataset_version,
         "dataset_hash": dataset_hash,
         "git_commit": git_commit,
-        "training_script_version": "1.1",
+        "training_script_version": "2.0-production-ml",
         "training_date": datetime.now().isoformat()
     }
 
@@ -131,6 +124,7 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     with open(repro_path, "w") as f:
         json.dump(reproducibility, f, indent=4)
     print(f"Saved model reproducibility registry to {repro_path}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

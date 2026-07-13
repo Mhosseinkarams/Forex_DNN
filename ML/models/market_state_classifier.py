@@ -1,82 +1,53 @@
-import os
-import joblib
 import numpy as np
-import pandas as pd
+from typing import Dict, List, Any, Union
 from lightgbm import LGBMClassifier
 from sklearn.ensemble import RandomForestClassifier
-from ML.feature_registry import FeatureRegistry
 
-class MarketStateClassifier:
-    """
-    Wrapper class for the Market State Classifier model.
-    Supports LightGBM and RandomForest backends, and handles feature registry integration.
-    """
-    def __init__(self, model_type: str = "lightgbm", random_state: int = 42):
-        self.model_type = model_type.lower()
-        self.random_state = random_state
-        self.registry = FeatureRegistry(load_defaults=True)
-        self._feature_names = None
+from ML.base_model import BaseTradingModel, MarketStatePrediction
 
+
+class MarketStateClassifier(BaseTradingModel):
+    """
+    Refactored Market State Classifier model wrapped inside the Production ML Framework.
+    Saves and loads correctly, integrates with YAML configs and the Feature Registry,
+    and returns rich MarketStatePrediction objects.
+    """
+    def build_model(self):
+        """
+        Instantiate the underlying LightGBM or RandomForest classifier.
+        """
         if self.model_type == "lightgbm":
             self.model = LGBMClassifier(
                 random_state=self.random_state,
-                n_estimators=100,
-                learning_rate=0.05,
-                max_depth=6,
-                num_leaves=31,
-                verbosity=-1
+                n_estimators=self.hyperparameters.get("n_estimators", 100),
+                learning_rate=self.hyperparameters.get("learning_rate", 0.05),
+                max_depth=self.hyperparameters.get("max_depth", 6),
+                num_leaves=self.hyperparameters.get("num_leaves", 31),
+                verbosity=self.hyperparameters.get("verbosity", -1)
             )
         elif self.model_type == "randomforest":
             self.model = RandomForestClassifier(
-                n_estimators=100,
-                max_depth=8,
+                n_estimators=self.hyperparameters.get("n_estimators", 100),
+                max_depth=self.hyperparameters.get("max_depth", 8),
                 random_state=self.random_state,
-                n_jobs=-1
+                n_jobs=self.hyperparameters.get("n_jobs", -1)
             )
         else:
-            raise ValueError(f"Unknown model_type: {model_type}. Choose 'lightgbm' or 'randomforest'.")
+            raise ValueError(f"Unknown model_type: {self.model_type}. Choose 'lightgbm' or 'randomforest'.")
 
-    def fit(self, X, y, feature_names=None):
+    def prediction_schema(self, probas: np.ndarray, raw_pred: np.ndarray) -> MarketStatePrediction:
         """
-        Fits the underlying classifier model.
+        Convert LightGBM/RandomForest output arrays to structured MarketStatePrediction.
+        Classes are: TREND=0, RANGE=1, TRANSITION=2
         """
-        if isinstance(X, pd.DataFrame):
-            self._feature_names = list(X.columns)
-        elif feature_names is not None:
-            self._feature_names = list(feature_names)
-
-        if self.model_type == "lightgbm" and self._feature_names is not None:
-            # Avoid passing feature_name if data format is numpy array and mismatch is possible
-            if isinstance(X, pd.DataFrame):
-                self.model.fit(X, y)
-            else:
-                self.model.fit(X, y, feature_name=self._feature_names)
-        else:
-            self.model.fit(X, y)
-        return self
-
-    def predict(self, X):
-        """
-        Predicts classes.
-        """
-        return self.model.predict(X)
-
-    def predict_proba(self, X):
-        """
-        Performs inference for a single row or features and returns a dictionary of
-        probabilities matching the classes ["TREND", "RANGE", "TRANSITION"] plus confidence.
-        """
-        # Obtain probability array from standard model
-        probas = self.model.predict_proba(X)
-
-        # If input has multiple rows, we return list of dicts or just the first row dict
-        # Since MMStrategy does it row by row, let's extract the first row
+        # Support batch prediction or single prediction
         if probas.ndim == 2:
             row_probas = probas[0]
+            pred_val = raw_pred[0]
         else:
             row_probas = probas
+            pred_val = raw_pred
 
-        # Classes are encoded as: TREND=0, RANGE=1, TRANSITION=2
         class_names = ["TREND", "RANGE", "TRANSITION"]
         prob_dict = {}
         for i, name in enumerate(class_names):
@@ -85,35 +56,45 @@ class MarketStateClassifier:
             else:
                 prob_dict[name] = 0.0
 
-        prob_dict["confidence"] = float(max(row_probas))
-        return prob_dict
+        # Mapping index back to label
+        regime = class_names[int(pred_val)] if int(pred_val) < len(class_names) else "TRANSITION"
 
-    def get_feature_importance(self):
-        """
-        Returns a dictionary mapping feature names to their importance values.
-        """
-        importances = self.model.feature_importances_
-        feature_names = None
-        if hasattr(self.model, "feature_name_"):
-            feature_names = self.model.feature_name_
-        elif self._feature_names is not None:
-            feature_names = self._feature_names
+        # Simple dynamic metrics from input data/predictions
+        # Since we're dealing with raw probabilities, confidence is the max of class probabilities
+        confidence = float(max(row_probas))
 
-        if feature_names is not None and len(feature_names) == len(importances):
-            return {name: float(imp) for name, imp in zip(feature_names, importances)}
+        return MarketStatePrediction(
+            regime=regime,
+            trend_probability=prob_dict["TREND"],
+            range_probability=prob_dict["RANGE"],
+            transition_probability=prob_dict["TRANSITION"],
+            confidence=confidence,
+            trend_strength=prob_dict["TREND"],  # For backward-compatibility or dynamic analysis
+            expected_volatility=0.0,
+            expected_persistence=confidence
+        )
+
+    def required_feature_groups(self) -> List[str]:
+        """
+        Market state classification uses indicator and trend/range/compression groups.
+        """
+        return ["Indicator", "Trend", "Volume", "SMC_Structural"]
+
+    def evaluation_metrics(self) -> List[str]:
+        return ["accuracy", "precision_weighted", "recall_weighted", "f1_weighted", "confusion_matrix"]
+
+    def default_hyperparameters(self) -> Dict[str, Any]:
+        if self.model_type == "lightgbm":
+            return {
+                "n_estimators": 100,
+                "learning_rate": 0.05,
+                "max_depth": 6,
+                "num_leaves": 31,
+                "verbosity": -1
+            }
         else:
-            return {f"feature_{i}": float(imp) for i, imp in enumerate(importances)}
-
-    def save(self, path: str):
-        """
-        Saves the complete model wrapper using joblib.
-        """
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        joblib.dump(self, path)
-
-    @staticmethod
-    def load(path: str):
-        """
-        Loads the complete model wrapper.
-        """
-        return joblib.load(path)
+            return {
+                "n_estimators": 100,
+                "max_depth": 8,
+                "n_jobs": -1
+            }
