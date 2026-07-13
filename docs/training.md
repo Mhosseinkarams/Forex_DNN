@@ -60,6 +60,18 @@ The training code is located in the `DNN/` and `RL_Approach/` directories.
 2.  **Inference**: In `MMStrategy`, load the model during `__init__`.
 3.  **Filter**: Before calling `SendOrder.execute()`, pass the current feature vector through `model.predict()`. If the confidence is low, discard the signal.
 
+## ML Research & Validation Workbench
+
+The framework includes a comprehensive research workbench notebook at `notebooks/ml_pipeline_research.ipynb` that acts as a development laboratory for prototyping the complete end-to-end ML training pipeline. It implements:
+- Configuration, loading, and robust data checks on raw historical datasets.
+- Interactive execution of the sequential `HistoricalDatasetBuilder` transformation pipeline.
+- Label engine processing and distribution reporting (with removal tracing).
+- Dataset validation, chronological train/validation/test splitting, and auto-flagging colinear/constant feature anomalies.
+- Advanced metrics plots (ROC, PR, and Calibration curves).
+- Custom **Random Sample Explorer** that visualizes historical candlestick sequences overlaid with indicators, BOS/CHOCH events, supply/demand zones, predictions, and confidence.
+
+This notebook is detailed inside `docs/ml_pipeline_research.md` and acts as the official research workbench preceding production migrations.
+
 ## Future Roadmap
 
 - **Feature Store**: Centralized repository for pre-calculated technical features.
