@@ -42,9 +42,10 @@ class DatasetVersionManager:
         engine_versions_json: Dict[str, Any],
         label_config_json: Dict[str, Any],
         statistics_json: Dict[str, Any],
-        manifest_json: Dict[str, Any]
+        manifest_json: Dict[str, Any],
+        quality_report_html: Optional[str] = None
     ) -> str:
-        """Saves all 8 required files for this dataset version."""
+        """Saves all required files for this dataset version."""
         version_dir = os.path.join(self.output_dir, version)
         os.makedirs(version_dir, exist_ok=True)
 
@@ -57,6 +58,7 @@ class DatasetVersionManager:
         label_path = os.path.join(version_dir, "label_config.json")
         stats_path = os.path.join(version_dir, "statistics.json")
         manifest_path = os.path.join(version_dir, "manifest.json")
+        html_path = os.path.join(version_dir, "dataset_quality_report.html")
 
         # Check if already exists to prevent overwriting
         if os.path.exists(parquet_path):
@@ -84,6 +86,11 @@ class DatasetVersionManager:
         save_json(stats_path, statistics_json)
         # 8. Save manifest.json
         save_json(manifest_path, manifest_json)
+
+        # 9. Save dataset_quality_report.html
+        if quality_report_html:
+            with open(html_path, "w") as f:
+                f.write(quality_report_html)
 
         logger.info(f"Successfully saved dataset version {version} in {version_dir}")
         return version_dir

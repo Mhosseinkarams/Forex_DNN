@@ -6,7 +6,9 @@ import logging
 import json
 import copy
 import psutil
-from datetime import datetime
+import hashlib
+import subprocess
+from datetime import datetime, timezone
 from typing import Dict, List, Tuple, Any, Optional, Union
 import pandas as pd
 import numpy as np
@@ -73,6 +75,14 @@ class HistoricalDatasetBuilder:
         self.window_stride = window_stride
         self.timeframe = timeframe
         self.version = version
+
+        # Ensure Directory Layout is cleanly initialized
+        for d in [
+            "raw_data", "processed_data", "cache", "datasets",
+            "models", "models/MarketState", "models/LevelBreak",
+            "experiments", "training_runs", "reports", "backtests"
+        ]:
+            os.makedirs(d, exist_ok=True)
 
         self.registry = registry or FeatureRegistry(load_defaults=True)
         self.ms_engine = ms_engine or MarketStructureEngine(lookback=3)
@@ -492,9 +502,38 @@ class HistoricalDatasetBuilder:
             symbol_dist = df_final["symbol"].value_counts().to_dict()
             symbol_dist = {str(k): int(v) for k, v in symbol_dist.items()}
 
-        # Construct snapshots & metadata
-        engine_versions = self._get_engine_versions()
+        # ----------------- DATASET FINGERPRINTING -----------------
+        # Compute SHA256 of df content deterministically
+        def compute_df_hash(df: pd.DataFrame) -> str:
+            try:
+                sorted_df = df.reindex(sorted(df.columns), axis=1)
+                m = hashlib.sha256()
+                for chunk in np.array_split(sorted_df.to_numpy().astype(str), max(1, len(sorted_df)//1000)):
+                    m.update(chunk.tobytes())
+                return m.hexdigest()
+            except Exception:
+                import pickle
+                return hashlib.sha256(pickle.dumps(df.to_dict("list"))).hexdigest()
 
+        dataset_hash = compute_df_hash(df_final)
+        feature_hash = self.registry.compute_hash()
+
+        # Compute Engine Hash
+        engine_versions = self._get_engine_versions()
+        engine_serialized = ",".join(f"{k}:{v}" for k, v in sorted(engine_versions.items()))
+        engine_hash = hashlib.sha256(engine_serialized.encode("utf-8")).hexdigest()
+
+        # Retrieve Git Commit Hash safely
+        git_commit = "unknown"
+        try:
+            git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+        except Exception:
+            pass
+
+        creation_time = datetime.now(timezone.utc).isoformat() if hasattr(datetime, "now") else datetime.utcnow().isoformat()
+        # ----------------------------------------------------------
+
+        # Construct snapshots & metadata
         feature_registry_snapshot = [f.to_dict() for f in self.registry.list_all()]
 
         label_config = {
@@ -528,6 +567,13 @@ class HistoricalDatasetBuilder:
             "symbol_distribution": symbol_dist,
             "created": datetime.now().strftime("%Y-%m-%d"),
             "generation_date": datetime.now().isoformat(),
+            "fingerprint": {
+                "dataset_hash": dataset_hash,
+                "feature_hash": feature_hash,
+                "engine_hash": engine_hash,
+                "git_commit": git_commit,
+                "creation_time": creation_time
+            },
             "validation": {
                 "is_valid": validation_report["is_valid"],
                 "errors": validation_report["errors"],
@@ -554,7 +600,14 @@ class HistoricalDatasetBuilder:
             "Average_Windows_Per_Sec": float(samples_per_sec),
             "Dataset_Size_Bytes": int(memory_usage_bytes),
             "Largest_Symbols": sorted(symbol_dist.items(), key=lambda x: x[1], reverse=True)[:5],
-            "Smallest_Symbols": sorted(symbol_dist.items(), key=lambda x: x[1])[:5]
+            "Smallest_Symbols": sorted(symbol_dist.items(), key=lambda x: x[1])[:5],
+            "Fingerprint": {
+                "dataset_hash": dataset_hash,
+                "feature_hash": feature_hash,
+                "engine_hash": engine_hash,
+                "git_commit": git_commit,
+                "creation_time": creation_time
+            }
         }
 
         manifest = {
@@ -567,8 +620,18 @@ class HistoricalDatasetBuilder:
             "number_of_samples": len(df_final),
             "feature_count": len(self.registry.list_enabled()),
             "builder_version": engine_versions["builder"],
-            "engine_versions": engine_versions
+            "engine_versions": engine_versions,
+            "fingerprint": {
+                "dataset_hash": dataset_hash,
+                "feature_hash": feature_hash,
+                "engine_hash": engine_hash,
+                "git_commit": git_commit,
+                "creation_time": creation_time
+            }
         }
+
+        # Generate HTML Quality Report (Step 3 implementation)
+        html_report = validator.generate_quality_report_html(df_final, metadata, statistics_json)
 
         # Save to Version Manager
         self.version_manager.save_version(
@@ -579,7 +642,8 @@ class HistoricalDatasetBuilder:
             engine_versions_json=engine_versions,
             label_config_json=label_config,
             statistics_json=statistics_json,
-            manifest_json=manifest
+            manifest_json=manifest,
+            quality_report_html=html_report
         )
 
         # Print beautiful quality report
