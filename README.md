@@ -433,18 +433,47 @@ To train robust classifiers, raw indicators and structures are processed through
 - **FeaturePipeline**: Point-by-point feature generator. It consumes the `MarketStructureGraph` and the indicator DataFrame to assemble unified vectors. Because features are resolved strictly at index $t$, **look-ahead bias is mathematically impossible**.
 
 ### 7.2 Building and Cleaning Training Datasets
-Run the dataset generator via the command line to construct machine learning ready files.
+The primary entrypoint and single source of truth for constructing machine learning datasets is the **`HistoricalDatasetBuilder`** (`Market_Data_Pipeline/historical_dataset_builder.py`). This production-grade offline pipeline converts raw historical OHLCV data into versioned, fully validated ML datasets across symbols in parallel, serving as the only authorized data generator for all models.
 
+For every bar, the builder:
+1. Generates a sliding window (default: 35 candles).
+2. Executes technical indicator calculations (`IndicatorEngine`).
+3. Runs structural engines (`MarketStructureEngine` and `SupplyDemandEngine`).
+4. Queries the central `FeatureRegistry` for all active features.
+5. Invokes the `LabelEngine` to determine the objective training label (e.g., `TREND`, `RANGE`, `TRANSITION` from `MarketStateLabeler`), dropping any indeterminate/unlabeled samples.
+6. Assembles one unified, scale-invariant feature vector along with raw OHLCV and EMAs inside metadata columns for research & plotting.
+
+#### Key Features
+- **Parallel Multi-Symbol Processing**: Built on `concurrent.futures`, enabling high-performance parallel generation across 30+ symbols.
+- **Robust Versioning Pattern**: Automatically names files sequentially (e.g., `dataset_v001.parquet`, `dataset_v001.csv`, `dataset_v001_metadata.json`) to prevent overwrites and guarantee 100% reproducibility.
+- **Data Quality and Integrity Auditing**: Detects and reports missing values, duplicate rows, duplicate timestamps, class/symbol imbalances, and constant features with zero variance.
+
+#### Command-Line and Programmatic Usage
+Verify the configurations of the Feature Registry first:
 ```bash
 # Verify the configuration of the Feature Registry
-python -m ML.test_feature_registry
+python -m unittest ML/test_feature_registry.py
 ```
 
-Once verified, the registry-driven builders will parse your downloaded CSV bars and structural graphs to construct structured training tables, normalize inputs, replace NaN values, and write optimized parquet/CSV files.
+To run the unified dataset generation, invoke the `HistoricalDatasetBuilder` programmatically or write a simple script:
 
-The generation scripts are executed in the modeling step detailed below, producing:
-- `output/market_state_dataset.csv`
-- `output/level_break_dataset.csv`
+```python
+from Market_Data_Pipeline.historical_dataset_builder import HistoricalDatasetBuilder
+
+builder = HistoricalDatasetBuilder(
+    input_dir="HistoricalData",
+    output_dir="output",
+    window_size=35,
+    window_stride=1,
+    timeframe="M5"
+)
+df, metadata = builder.build_dataset(max_workers=4)
+```
+
+This generates and saves optimized training artifacts under `output/`:
+- `output/dataset_v001.parquet` (compressed training samples)
+- `output/dataset_v001.csv` (CSV copy for manual inspection)
+- `output/dataset_v001_metadata.json` (comprehensive manifest containing class distribution, feature variance, constant columns, elapsed time, and and model config hash verification)
 
 ---
 
