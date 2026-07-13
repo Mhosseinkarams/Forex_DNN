@@ -10,24 +10,30 @@ Instead of hardcoding a sequential series of executions, the pipeline is fully d
 
 ```
 Historical Data
-      ↓
+      │
+      ▼
    Pipeline()
-      ↓
-.register(IndicatorEngine())
-      ↓
-.register(MarketStructureEngine())
-      ↓
-.register(SupplyDemandEngine())
-      ↓
-.register(LiquidityEngine()) [Plug-In Ready]
-      ↓
-.register(OrderBlockEngine()) [Plug-In Ready]
-      ↓
-.register(FeatureRegistry())
-      ↓
-.register(LabelEngine())
-      ↓
-Unified ML Dataset
+      │
+      ├── .register(IndicatorEngine())
+      ├── .register(MarketStructureEngine())
+      ├── .register(SupplyDemandEngine())
+      ├── .register(LiquidityEngine()) [Plug-In Ready]
+      └── .register(OrderBlockEngine()) [Plug-In Ready]
+      │
+      ▼
+   FeatureRegistry Snapshots
+      │
+      ▼
+   LabelEngine Classification
+      │
+      ▼
+   Dataset Versioning & Quality Reports
+      │
+      ▼
+   Trained Models Registry (with traceability)
+      │
+      ▼
+   Backtesting & Execution
 ```
 
 The pipeline executes these registered stages sequentially, transforming the raw data and producing strongly-typed result containers:
@@ -67,28 +73,82 @@ This guarantees exact reproducibility and makes error tracing or auditing highly
 
 ---
 
-## 3. Directory Structure
+## 3. Directory Layout Structure
 
-Versioned outputs and snapshots are organized under the `datasets/` directory:
+The project directory structure is formalized to cleanly isolate raw data, processed outputs, cache, models, reports, and experiments:
 
 ```
-datasets/
-├── v001/
-│   ├── dataset.parquet
-│   ├── dataset.csv
-│   ├── metadata.json
-│   ├── feature_registry.json
-│   ├── engine_versions.json
-│   ├── label_config.json
-│   ├── statistics.json
-│   └── manifest.json
-├── v002/
-│   └── ...
+Forex_DNN/
+├── raw_data/                 # Raw data feeds
+├── processed_data/           # Cleaned/processed bar sequences
+├── cache/                    # Intermediate cache Parquet files
+├── datasets/                 # Labeled training dataset versions
+│   └── v001/
+│       ├── dataset.parquet
+│       ├── dataset.csv
+│       ├── metadata.json
+│       ├── feature_registry.json
+│       ├── engine_versions.json
+│       ├── label_config.json
+│       ├── statistics.json
+│       ├── manifest.json
+│       └── dataset_quality_report.html
+├── models/                   # Registry for trained model wrappers
+│   ├── MarketState/
+│   │   └── v001/
+│   │       ├── model.joblib
+│   │       └── reproducibility.json
+│   └── LevelBreak/
+│       └── v001/
+├── experiments/              # Research workbenches and temporary notes
+├── training_runs/            # Artifacts from training script executions
+├── reports/                  # Validation reports and feature registry maps
+└── backtests/                # Performance logs of historical tests
 ```
 
 ---
 
-## 4. Dataset Version Manager
+## 4. Dataset Fingerprinting
+
+To guarantee complete dataset traceability and safety, every dataset version contains a unique **fingerprint** inside `metadata.json`, `manifest.json`, and `statistics.json`:
+
+- `dataset_hash`: Deterministic SHA-256 hash of compiled DataFrame content.
+- `feature_hash`: Unique hash representing the registered/enabled FeatureRegistry configuration.
+- `engine_hash`: Deterministic hash of all pipeline engine version combinations.
+- `git_commit`: Traceable git commit hash at compilation time.
+- `creation_time`: ISO-8601 UTC timestamp.
+
+---
+
+## 5. Model Reproducibility and Registry
+
+When training models using scripts like `train_market_state.py`, the registry saves companion metadata `reproducibility.json` alongside model wrappers (e.g. `model.joblib`), registering:
+
+- `trained_from_dataset`: Version of dataset directory used (e.g. `v001`).
+- `dataset_hash`: Fingerprint of the exact training dataset.
+- `git_commit`: Active code version at training time.
+- `training_script_version`: training run script tracking identifier.
+
+This guarantees that any trained model can be traced back directly through the pipeline to its exact training dataset version and codebase commit.
+
+---
+
+## 6. Premium Interactive HTML Quality Reports
+
+During generation, the builder automatically compiles `dataset_quality_report.html` under the dataset version directory. It features responsive styling via Tailwind CSS and interactive animations via Chart.js, providing:
+
+- **Metadata Profile**: Version, Row/Column/Feature counts, and dataset hashes.
+- **Label Distributions**: Interactive doughnut charts representing classes.
+- **Symbol Distributions**: Interactive bar charts of symbol sample sizes.
+- **Temporal Horizon Range**: Datetime start/end dates and chronological monotonic checks.
+- **Duplicate & Missing Values Profile**: Missing cells count and duplicates percentage.
+- **Multi-collinearity Warning Check**: Identifies and reports highly correlated features (Pearson $r > 0.98$).
+- **Data Leakage Scans**: Automatically alerts of future leakage columns.
+- **Feature Importance Preview**: Horizontal bar charts displaying a quick RandomForest-based top 10 feature importance preview.
+
+---
+
+## 7. Dataset Version Manager
 
 The `DatasetVersionManager` coordinates:
 1. **Auto-Increment**: Finds the next available version (e.g. `v001` -> `v002`) and initializes the folder.
@@ -97,7 +157,7 @@ The `DatasetVersionManager` coordinates:
 
 ---
 
-## 5. Cache & Resume System
+## 8. Cache & Resume System
 
 Intermediate results are cached per symbol in the `cache/` directory:
 - Saved as `cache/{symbol}_{timeframe}_{version}_cache.parquet`
@@ -105,7 +165,7 @@ Intermediate results are cached per symbol in the `cache/` directory:
 
 ---
 
-## 6. Symbol-Level Parallelization
+## 9. Symbol-Level Parallelization
 
 To maintain chronological ordering and prevent race conditions:
 - We parallelize at the **symbol level**, not the window level.
@@ -114,55 +174,7 @@ To maintain chronological ordering and prevent race conditions:
 
 ---
 
-## 7. Progress Monitor
-
-We replace basic print logs with a premium, real-time `tqdm` monitor that displays:
-- **Current Symbol**
-- **Progress %**
-- **Windows/sec / symbols/sec**
-- **ETA**
-- **Memory Usage (via `psutil`)**
-- **Current Dataset Size (in samples)**
-
----
-
-## 8. Data Validation & Quality Reports
-
-The expanded `DatasetValidator` performs deep analytical tests:
-- **Null / Inf values**
-- **Duplicate rows / IDs / timestamps**
-- **Missing labels**
-- **Constant or low-variance columns**
-- **Class / Symbol imbalance**
-- **Feature correlation (Pearson r > 0.98)**
-- **Outlier detection (Z-score > 5.0)**
-- **Lookahead/Leakage detection**
-
-It automatically generates a complete `statistics.json` quality report inside each version directory, covering:
-```json
-{
-    "Rows": 150000,
-    "Columns": 76,
-    "Memory_MB": 12.45,
-    "Features": 50,
-    "Classes": 3,
-    "Label_Distribution": {
-        "RANGE": 85000,
-        "TRANSITION": 45000,
-        "TREND": 20000
-    },
-    "Missing_Percentage": 0.0,
-    "Generation_Time_Sec": 154.21,
-    "Average_Windows_Per_Sec": 972.1,
-    "Dataset_Size_Bytes": 13054800,
-    "Largest_Symbols": [["XAUUSD", 75000]],
-    "Smallest_Symbols": [["YM", 75000]]
-}
-```
-
----
-
-## 9. Future Extension Points & Plug-In Support
+## 10. Future Extension Points & Plug-In Support
 
 Adding a new technical or Smart Money Concept engine to the Forex_DNN framework requires **zero modifications** to `HistoricalDatasetBuilder`.
 

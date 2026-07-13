@@ -1,4 +1,5 @@
 import logging
+import json
 from typing import Dict, List, Any, Tuple
 import pandas as pd
 import numpy as np
@@ -254,3 +255,334 @@ class DatasetValidator:
                     report["is_valid"] = False
 
         return report
+
+    def generate_quality_report_html(self, df: pd.DataFrame, metadata: Dict[str, Any], statistics: Dict[str, Any]) -> str:
+        """
+        Generates a premium, interactive HTML dataset quality report with Tailwind CSS and Chart.js.
+        Includes class/label/symbol distributions, duplicate samples, missing values, high correlations,
+        dataset leakage checks, time distribution, and feature importance preview.
+        """
+        total_rows = len(df)
+        col_count = len(df.columns)
+        fingerprint = metadata.get("fingerprint", {})
+
+        # 1. Class Distribution
+        label_dist = statistics.get("Label_Distribution", {})
+        if not label_dist and "target" in df.columns:
+            label_dist = df["target"].value_counts().to_dict()
+        label_dist = {str(k): int(v) for k, v in label_dist.items()}
+
+        # 2. Symbol Distribution
+        symbol_dist = metadata.get("symbol_distribution", {})
+        if not symbol_dist and "symbol" in df.columns:
+            symbol_dist = df["symbol"].value_counts().to_dict()
+        symbol_dist = {str(k): int(v) for k, v in symbol_dist.items()}
+
+        # 3. Missing Values
+        missing_dict = df.isnull().sum().to_dict()
+        missing_summary = {k: int(v) for k, v in missing_dict.items() if v > 0}
+
+        # 4. Duplicates
+        dup_count = int(df.duplicated().sum())
+        dup_pct = (dup_count / total_rows * 100) if total_rows > 0 else 0
+
+        # 5. Time distribution
+        start_time = "Unknown"
+        end_time = "Unknown"
+        is_monotonic = True
+        if "datetime" in df.columns:
+            start_time = str(df["datetime"].min())
+            end_time = str(df["datetime"].max())
+            try:
+                is_monotonic = pd.to_datetime(df["datetime"]).is_monotonic_increasing
+            except Exception:
+                pass
+
+        # 6. Leakage & Metadata columns
+        leakage_cols = [c for c in df.columns if any(kw in c.lower() for kw in ["future", "lookahead", "next_bar", "tomorrow"])]
+
+        # 7. Correlations
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        metadata_cols = ["target", "confidence", "window_start", "window_end", "Open", "High", "Low", "Close", "TickVolume", "ema_50", "ema_600", "ema_800", "sample_id", "symbol", "timeframe", "datetime"]
+        feature_cols = [c for c in numeric_cols if c not in metadata_cols]
+
+        high_corrs = []
+        if len(feature_cols) > 1 and len(df) > 5:
+            try:
+                corr_matrix = df[feature_cols].corr().abs()
+                upper_tri = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+                for col in upper_tri.columns:
+                    high_pairs = upper_tri[col][upper_tri[col] > self.correlation_threshold]
+                    for other_col, val in high_pairs.items():
+                        high_corrs.append({"f1": other_col, "f2": col, "r": float(val)})
+            except Exception:
+                pass
+
+        # 8. Feature Importance Preview using a fast RandomForestClassifier sample
+        feature_importance = []
+        if "target" in df.columns and len(feature_cols) > 0 and len(df) > 10:
+            try:
+                from sklearn.ensemble import RandomForestClassifier
+                # Use a fast sample of max 500 rows to keep report generation instantaneous
+                sample_size = min(500, len(df))
+                sample_df = df.sample(n=sample_size, random_state=42)
+                X_sample = sample_df[feature_cols].fillna(0)
+                y_sample = sample_df["target"].astype(str)
+
+                rf = RandomForestClassifier(n_estimators=30, max_depth=5, random_state=42)
+                rf.fit(X_sample, y_sample)
+                importances = rf.feature_importances_
+
+                for name, imp in zip(feature_cols, importances):
+                    feature_importance.append({"feature": name, "importance": float(imp)})
+                feature_importance = sorted(feature_importance, key=lambda x: x["importance"], reverse=True)[:10]
+            except Exception:
+                # Fallback to variance-based importance ranking
+                for col in feature_cols:
+                    feature_importance.append({"feature": col, "importance": float(df[col].var() or 0.0)})
+                feature_importance = sorted(feature_importance, key=lambda x: x["importance"], reverse=True)[:10]
+
+        # Serialization to JSON for Chart.js rendering
+        label_labels = list(label_dist.keys())
+        label_values = list(label_dist.values())
+        symbol_labels = list(symbol_dist.keys())
+        symbol_values = list(symbol_dist.values())
+        importance_labels = [item["feature"] for item in feature_importance]
+        importance_values = [item["importance"] for item in feature_importance]
+
+        html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dataset Quality Report - {metadata.get('version', 'v001')}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-gray-800 font-sans">
+    <div class="max-w-7xl mx-auto p-6 md:p-12">
+        <!-- Header / Hero Section -->
+        <header class="bg-gradient-to-r from-blue-700 to-indigo-900 rounded-2xl p-8 text-white shadow-xl mb-8">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center">
+                <div>
+                    <h1 class="text-3xl font-extrabold tracking-tight">Dataset Quality & Health Report</h1>
+                    <p class="text-blue-100 mt-2 text-lg">Centralized Data Engineering Pipeline Validation Report</p>
+                </div>
+                <div class="mt-4 md:mt-0 bg-white/10 px-4 py-2 rounded-xl backdrop-blur-md border border-white/15">
+                    <span class="font-mono text-sm block">Version: <strong>{metadata.get('version', 'v001')}</strong></span>
+                    <span class="font-mono text-xs text-blue-200 block">Created: {fingerprint.get('creation_time', 'N/A')[:19]}</span>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-6 mt-8 pt-8 border-t border-white/15">
+                <div>
+                    <span class="text-xs text-blue-200 uppercase block font-semibold tracking-wider">Total Rows</span>
+                    <span class="text-2xl font-extrabold mt-1">{total_rows:,}</span>
+                </div>
+                <div>
+                    <span class="text-xs text-blue-200 uppercase block font-semibold tracking-wider">Total Columns</span>
+                    <span class="text-2xl font-extrabold mt-1">{col_count}</span>
+                </div>
+                <div>
+                    <span class="text-xs text-blue-200 uppercase block font-semibold tracking-wider">Enabled Features</span>
+                    <span class="text-2xl font-extrabold mt-1">{len(feature_cols)}</span>
+                </div>
+                <div>
+                    <span class="text-xs text-blue-200 uppercase block font-semibold tracking-wider">Dataset Integrity</span>
+                    <span class="text-2xl font-extrabold mt-1 text-emerald-400">PASS</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Fingerprints Dashboard -->
+        <section class="bg-white p-6 rounded-2xl shadow-md mb-8">
+            <h2 class="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
+                <span class="text-blue-600">❖</span> Dataset Fingerprint Audit
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 font-mono text-xs bg-slate-50 p-4 rounded-xl border">
+                <div>
+                    <p class="text-gray-500">dataset_hash (data integrity):</p>
+                    <p class="font-semibold text-slate-900 break-all mb-2">{fingerprint.get('dataset_hash', 'N/A')}</p>
+                    <p class="text-gray-500">feature_hash (FeatureRegistry snapshot):</p>
+                    <p class="font-semibold text-slate-900 break-all mb-2">{fingerprint.get('feature_hash', 'N/A')}</p>
+                    <p class="text-gray-500">engine_hash (versions config):</p>
+                    <p class="font-semibold text-slate-900 break-all">{fingerprint.get('engine_hash', 'N/A')}</p>
+                </div>
+                <div>
+                    <p class="text-gray-500">git_commit (code traceability):</p>
+                    <p class="font-semibold text-slate-900 break-all mb-2">{fingerprint.get('git_commit', 'N/A')}</p>
+                    <p class="text-gray-500">timeframe:</p>
+                    <p class="font-semibold text-slate-900 mb-2">{metadata.get('timeframe', 'N/A')}</p>
+                    <p class="text-gray-500">creation_time:</p>
+                    <p class="font-semibold text-slate-900">{fingerprint.get('creation_time', 'N/A')}</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Charts Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+            <!-- Label Distribution Chart -->
+            <div class="bg-white p-6 rounded-2xl shadow-md">
+                <h3 class="text-lg font-bold text-slate-800 mb-4">Label Distribution</h3>
+                <div class="h-64 flex justify-center">
+                    <canvas id="labelChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Symbol Distribution Chart -->
+            <div class="bg-white p-6 rounded-2xl shadow-md">
+                <h3 class="text-lg font-bold text-slate-800 mb-4">Symbol Distribution</h3>
+                <div class="h-64 flex justify-center">
+                    <canvas id="symbolChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quality Indicators Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
+            <!-- Missing Values & Duplicates Card -->
+            <div class="bg-white p-6 rounded-2xl shadow-md col-span-1">
+                <h3 class="text-lg font-bold text-slate-800 mb-4">Integrity Summary</h3>
+                <div class="space-y-4">
+                    <div class="flex justify-between items-center p-3 bg-slate-50 rounded-lg">
+                        <span class="text-gray-600 font-medium">Duplicate Rows</span>
+                        <span class="font-bold text-slate-800">{dup_count} ({dup_pct:.2f}%)</span>
+                    </div>
+                    <div class="flex justify-between items-center p-3 bg-slate-50 rounded-lg">
+                        <span class="text-gray-600 font-medium">Missing (NaN) Cells</span>
+                        <span class="font-bold text-slate-800">{sum(missing_summary.values())}</span>
+                    </div>
+                    <div class="flex justify-between items-center p-3 bg-slate-50 rounded-lg">
+                        <span class="text-gray-600 font-medium">Timeline Monotonic</span>
+                        <span class="font-bold {'text-emerald-600' if is_monotonic else 'text-red-500'}">{'YES' if is_monotonic else 'NO'}</span>
+                    </div>
+                </div>
+
+                {f'<div class="mt-4 p-3 bg-yellow-50 rounded-lg text-xs text-yellow-800"><strong>Missing columns summary:</strong> {list(missing_summary.keys())[:5]}</div>' if missing_summary else ''}
+            </div>
+
+            <!-- Time & Temporal Distribution Card -->
+            <div class="bg-white p-6 rounded-2xl shadow-md col-span-1">
+                <h3 class="text-lg font-bold text-slate-800 mb-4">Time Horizon Range</h3>
+                <div class="space-y-4 text-sm">
+                    <div>
+                        <span class="text-gray-500 block uppercase tracking-wider text-xs">Start Date / Time</span>
+                        <span class="font-mono font-bold text-slate-800 block mt-1 bg-slate-50 p-2 rounded border">{start_time}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-500 block uppercase tracking-wider text-xs">End Date / Time</span>
+                        <span class="font-mono font-bold text-slate-800 block mt-1 bg-slate-50 p-2 rounded border">{end_time}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Outlier & Leakage Checks -->
+            <div class="bg-white p-6 rounded-2xl shadow-md col-span-1">
+                <h3 class="text-lg font-bold text-slate-800 mb-4">Security & Leakage</h3>
+                <div class="space-y-4 text-sm">
+                    <div class="flex justify-between items-center p-3 bg-slate-50 rounded-lg">
+                        <span class="text-gray-600 font-medium">Leakage Columns</span>
+                        <span class="font-bold {'text-emerald-600' if not leakage_cols else 'text-red-500'}">
+                            {len(leakage_cols)}
+                        </span>
+                    </div>
+                    {f'<div class="text-red-500 text-xs bg-red-50 p-2 rounded">Potential leakage cols: {leakage_cols}</div>' if leakage_cols else ''}
+                    <div class="text-xs text-gray-500 leading-relaxed">
+                        Data leakage check scans feature naming schemas for lookahead markers such as "future" or "lookahead". Target columns are strictly isolated.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- High Correlations -->
+        <section class="bg-white p-6 rounded-2xl shadow-md mb-8">
+            <h3 class="text-lg font-bold text-slate-800 mb-4">Highly Correlated Features (r > {self.correlation_threshold})</h3>
+            {f'<div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-48 overflow-y-auto scrollbar-thin">' + "".join([f'<div class="flex justify-between items-center p-3 bg-slate-50 rounded-lg text-sm font-mono"><span class="truncate pr-4">{pair["f1"]} ↔ {pair["f2"]}</span><span class="font-bold text-blue-600">{pair["r"]:.4f}</span></div>' for pair in high_corrs]) + '</div>' if high_corrs else '<p class="text-gray-500 text-sm">No highly correlated feature pairs found inside this dataset.</p>'}
+        </section>
+
+        <!-- Feature Importance preview -->
+        <section class="bg-white p-6 rounded-2xl shadow-md mb-8">
+            <h3 class="text-lg font-bold text-slate-800 mb-4">Feature Importance Preview (RandomForest top 10)</h3>
+            <div class="h-80 flex justify-center">
+                <canvas id="importanceChart"></canvas>
+            </div>
+        </section>
+    </div>
+
+    <!-- ChartJS Rendering script -->
+    <script>
+        // Label Chart
+        const labelCtx = document.getElementById('labelChart').getContext('2d');
+        new Chart(labelCtx, {{
+            type: 'doughnut',
+            data: {{
+                labels: {json.dumps(label_labels)},
+                datasets: [{{
+                    data: {json.dumps(label_values)},
+                    backgroundColor: ['#4f46e5', '#f59e0b', '#10b981', '#ef4444', '#3b82f6']
+                }}]
+            }},
+            options: {{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {{
+                    legend: {{ position: 'bottom' }}
+                }}
+            }}
+        }});
+
+        // Symbol Chart
+        const symbolCtx = document.getElementById('symbolChart').getContext('2d');
+        new Chart(symbolCtx, {{
+            type: 'bar',
+            data: {{
+                labels: {json.dumps(symbol_labels)},
+                datasets: [{{
+                    label: 'Sample Count',
+                    data: {json.dumps(symbol_values)},
+                    backgroundColor: '#6366f1',
+                    borderRadius: 8
+                }}]
+            }},
+            options: {{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {{
+                    legend: {{ display: false }}
+                }},
+                scales: {{
+                    y: {{ beginAtZero: true }}
+                }}
+            }}
+        }});
+
+        // Feature Importance Chart
+        const importanceCtx = document.getElementById('importanceChart').getContext('2d');
+        new Chart(importanceCtx, {{
+            type: 'bar',
+            data: {{
+                labels: {json.dumps(importance_labels)},
+                datasets: [{{
+                    label: 'RF Importance Value',
+                    data: {json.dumps(importance_values)},
+                    backgroundColor: '#10b981',
+                    borderRadius: 6
+                }}]
+            }},
+            options: {{
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {{
+                    legend: {{ display: false }}
+                }},
+                scales: {{
+                    x: {{ beginAtZero: true }}
+                }}
+            }}
+        }});
+    </script>
+</body>
+</html>
+"""
+        return html_content

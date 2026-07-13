@@ -351,5 +351,61 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
             self.assertIn("Features", stats)
             self.assertIn("Generation_Time_Sec", stats)
 
+    def test_fingerprints_in_output(self):
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            version="v006",
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        _, metadata = builder.build_dataset(max_workers=1)
+
+        # Check that fingerprints exist
+        self.assertIn("fingerprint", metadata)
+        fingerprint = metadata["fingerprint"]
+        self.assertIn("dataset_hash", fingerprint)
+        self.assertIn("feature_hash", fingerprint)
+        self.assertIn("engine_hash", fingerprint)
+        self.assertIn("git_commit", fingerprint)
+        self.assertIn("creation_time", fingerprint)
+
+    def test_html_quality_report_saved(self):
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            version="v007",
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        builder.build_dataset(max_workers=1)
+
+        report_path = os.path.join(self.test_datasets_dir, "v007", "dataset_quality_report.html")
+        self.assertTrue(os.path.exists(report_path))
+        with open(report_path, "r") as f:
+            html = f.read()
+            self.assertIn("Dataset Quality & Health Report", html)
+            self.assertIn("dataset_hash", html)
+            self.assertIn("feature_hash", html)
+
+    def test_directory_layout_initialized(self):
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            timeframe=self.timeframe,
+            cache_dir=self.test_cache_dir,
+            datasets_dir=self.test_datasets_dir
+        )
+        for folder in [
+            "raw_data", "processed_data", "cache", "datasets",
+            "models", "models/MarketState", "models/LevelBreak",
+            "experiments", "training_runs", "reports", "backtests"
+        ]:
+            self.assertTrue(os.path.exists(folder))
+
 if __name__ == "__main__":
     unittest.main()
