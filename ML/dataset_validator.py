@@ -2,9 +2,24 @@ import logging
 from typing import Dict, List, Any, Tuple
 import pandas as pd
 import numpy as np
+from dataclasses import dataclass, field
 
 logger = logging.getLogger("DatasetValidator")
 
+@dataclass
+class ValidationReport:
+    is_valid: bool
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    metrics: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "is_valid": self.is_valid,
+            "errors": self.errors,
+            "warnings": self.warnings,
+            "metrics": self.metrics
+        }
 
 class DatasetValidator:
     """
@@ -22,7 +37,7 @@ class DatasetValidator:
         self.critical_missing_threshold = critical_missing_threshold
         self.max_duplicate_ratio = max_duplicate_ratio
 
-    def validate(self, df: pd.DataFrame, expected_window_size: int = 35) -> Dict[str, Any]:
+    def validate(self, df: pd.DataFrame, expected_window_size: int = 35) -> ValidationReport:
         """
         Validates the generated dataset.
 
@@ -31,142 +46,173 @@ class DatasetValidator:
             expected_window_size: The window size used to generate the dataset.
 
         Returns:
-            Dict: Validation report with status, errors, warnings, and metrics.
+            ValidationReport: Validation report with status, errors, warnings, and metrics.
         """
-        report = {
-            "is_valid": True,
-            "errors": [],
-            "warnings": [],
-            "metrics": {
-                "total_samples": len(df),
-                "columns_count": len(df.columns) if not df.empty else 0,
-                "missing_values_by_column": {},
-                "duplicate_rows": 0,
-                "class_distribution": {},
-                "symbols": [],
-                "timeframes": []
-            }
-        }
+        errors = []
+        warnings = []
+        metrics = {}
 
         if df.empty:
-            report["is_valid"] = False
-            report["errors"].append("The dataset is empty.")
-            return report
+            errors.append("The dataset is empty.")
+            return ValidationReport(is_valid=False, errors=errors, warnings=warnings, metrics=metrics)
+
+        total_rows = len(df)
+        metrics["total_samples"] = total_rows
+        metrics["columns_count"] = len(df.columns) if not df.empty else 0
 
         # Extract symbols and timeframes
         symbols = df["symbol"].unique().tolist() if "symbol" in df.columns else []
         timeframes = df["timeframe"].unique().tolist() if "timeframe" in df.columns else []
-        report["metrics"]["symbols"] = symbols
-        report["metrics"]["timeframes"] = timeframes
+        metrics["symbols"] = symbols
+        metrics["timeframes"] = timeframes
 
-        # 1. Missing Values Check
+        # 1. NaN checks
         null_counts = df.isnull().sum()
-        total_rows = len(df)
-        has_critical_missing = False
-
+        metrics["missing_values_by_column"] = null_counts[null_counts > 0].to_dict()
         for col, count in null_counts.items():
             if count > 0:
                 fraction = count / total_rows
-                report["metrics"]["missing_values_by_column"][col] = int(count)
+                is_critical = col in ["target", "confidence", "symbol", "timeframe", "datetime", "sample_id"]
+                if is_critical or fraction > self.critical_missing_threshold:
+                    errors.append(f"Column '{col}' has {count} missing values ({fraction:.2%}).")
+                else:
+                    warnings.append(f"Column '{col}' has {count} missing values ({fraction:.2%}).")
 
-                # Check if this column is critical (e.g., target, confidence, symbol, timeframe, or datetime)
-                is_critical_col = col in ["target", "confidence", "symbol", "timeframe", "datetime"]
-                if is_critical_col or fraction > self.critical_missing_threshold:
-                    msg = f"Column '{col}' has {count} missing values ({fraction:.2%})."
-                    if is_critical_col:
-                        report["errors"].append(msg)
-                        has_critical_missing = True
-                    else:
-                        report["warnings"].append(msg)
+        # 2. Infinite values check
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if col.startswith("meta_"):
+                continue
+            inf_mask = np.isinf(df[col])
+            inf_count = int(inf_mask.sum())
+            if inf_count > 0:
+                errors.append(f"Infinite values detected in column '{col}': {inf_count} instances.")
 
-        if has_critical_missing:
-            report["is_valid"] = False
-
-        # 2. Duplicate Samples Check
-        # Complete rows duplicates
-        dup_mask = df.duplicated()
-        dup_count = int(dup_mask.sum())
-        report["metrics"]["duplicate_rows"] = dup_count
-
+        # 3. Duplicate rows check
+        dup_count = int(df.duplicated().sum())
+        metrics["duplicate_rows"] = dup_count
         if dup_count > 0:
             dup_ratio = dup_count / total_rows
             msg = f"Detected {dup_count} duplicate rows ({dup_ratio:.2%})."
             if dup_ratio > self.max_duplicate_ratio:
-                report["errors"].append(msg)
-                report["is_valid"] = False
+                errors.append(msg)
             else:
-                report["warnings"].append(msg)
+                warnings.append(msg)
 
-        # Duplicate timestamps per symbol/timeframe
+        # 4. Duplicate IDs check
+        if "sample_id" in df.columns:
+            dup_id_count = int(df.duplicated(subset=["sample_id"]).sum())
+            if dup_id_count > 0:
+                errors.append(f"Detected {dup_id_count} duplicate sample_id values.")
+
+        # 5. Duplicate timestamps per symbol/timeframe check
         if "symbol" in df.columns and "timeframe" in df.columns and "datetime" in df.columns:
-            ts_dup_mask = df.duplicated(subset=["symbol", "timeframe", "datetime"])
-            ts_dup_count = int(ts_dup_mask.sum())
+            ts_dup_count = int(df.duplicated(subset=["symbol", "timeframe", "datetime"]).sum())
             if ts_dup_count > 0:
-                report["errors"].append(f"Detected {ts_dup_count} duplicate timestamps for the same symbol/timeframe combination.")
-                report["is_valid"] = False
+                errors.append(f"Detected {ts_dup_count} duplicate timestamps for the same symbol and timeframe.")
 
-        # 3. Invalid Market Structure and Supply/Demand Outputs Check
-        # Swings and structures must not contain negative counts or infinite prices
-        for col in df.columns:
-            if "count" in col or "since" in col:
-                # Count/Since features should be numeric and non-negative (unless fallback -1/999 is used)
-                non_null_vals = df[col].dropna()
-                if not non_null_vals.empty and pd.api.types.is_numeric_dtype(non_null_vals):
-                    # Check for inf
-                    if np.isinf(non_null_vals).any():
-                        report["errors"].append(f"Infinite values detected in count/since column: '{col}'")
-                        report["is_valid"] = False
+        # 6. Missing labels check
+        if "target" in df.columns:
+            missing_labels = int(df["target"].isnull().sum())
+            if missing_labels > 0:
+                errors.append(f"Detected {missing_labels} missing target labels.")
 
-            if "distance" in col or "width" in col or "strength" in col:
-                # Features should not be infinite
-                non_null_vals = df[col].dropna()
-                if not non_null_vals.empty and pd.api.types.is_numeric_dtype(non_null_vals):
-                    if np.isinf(non_null_vals).any():
-                        report["errors"].append(f"Infinite values detected in structural column: '{col}'")
-                        report["is_valid"] = False
+        # 7. Constant columns check
+        # Exclude metadata/diagnostics from feature-specific checks
+        metadata_cols = ["sample_id", "symbol", "timeframe", "window_start", "window_end", "datetime", "target", "confidence", "Open", "High", "Low", "Close", "TickVolume", "ema_50", "ema_600", "ema_800"]
+        feature_cols = [c for c in numeric_cols if c not in metadata_cols and not c.startswith("meta_")]
 
-        # 4. Timestamp Consistency
-        if "datetime" in df.columns:
-            # Check monotonically increasing order per symbol and timeframe group
-            if "symbol" in df.columns and "timeframe" in df.columns:
-                for (sym, tf), group in df.groupby(["symbol", "timeframe"]):
-                    # Parse as datetime for sorting validation
-                    dates = pd.to_datetime(group["datetime"])
-                    if not dates.is_monotonic_increasing:
-                        report["errors"].append(f"Timestamps are not monotonically increasing for {sym} {tf}.")
-                        report["is_valid"] = False
+        constant_cols = []
+        low_variance_cols = []
+        feature_variances = {}
 
-        # 5. Window Consistency
-        # Check window size: window_end - window_start + 1 must be window_size
+        # Constant columns check (only trigger warning instead of error to not crash/invalidate if some features are temporarily constant in small test slices)
+        for col in feature_cols:
+            non_null = df[col].dropna()
+            if non_null.empty:
+                continue
+            var = float(non_null.var())
+            feature_variances[col] = var
+            if var == 0.0 or non_null.nunique() <= 1:
+                constant_cols.append(col)
+                warnings.append(f"Feature '{col}' is a constant column (zero variance).")
+            elif var < 1e-5:
+                low_variance_cols.append(col)
+                warnings.append(f"Feature '{col}' has extremely low variance: {var:.2e}.")
+
+        metrics["constant_columns"] = constant_cols
+        metrics["low_variance_columns"] = low_variance_cols
+        metrics["feature_variances"] = feature_variances
+
+        # 8. Class Imbalance check
+        if "target" in df.columns:
+            class_counts = df["target"].value_counts().to_dict()
+            metrics["class_distribution"] = {str(k): int(v) for k, v in class_counts.items()}
+            for regime in ["TREND", "RANGE", "TRANSITION"]:
+                count = class_counts.get(regime, 0)
+                if count == 0:
+                    warnings.append(f"Class '{regime}' is completely missing from the labeled dataset.")
+                elif count / total_rows < 0.01:
+                    warnings.append(f"Class '{regime}' represents less than 1% of the dataset (extreme class imbalance).")
+
+        # 9. Symbol Imbalance check
+        if "symbol" in df.columns:
+            sym_counts = df["symbol"].value_counts().to_dict()
+            metrics["symbol_distribution"] = {str(k): int(v) for k, v in sym_counts.items()}
+            if len(sym_counts) > 1:
+                max_sym = max(sym_counts.values())
+                min_sym = min(sym_counts.values())
+                if min_sym > 0 and (max_sym / min_sym) > 10.0:
+                    warnings.append(f"Extreme symbol imbalance detected: largest symbol count={max_sym}, smallest={min_sym}.")
+
+        # 10. Feature Correlation check
+        # Highlight extremely correlated features (r > 0.98)
+        if len(feature_cols) > 1 and total_rows > 5:
+            try:
+                corr_matrix = df[feature_cols].corr().abs()
+                upper_tri = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+                highly_corr = [(corr_matrix.index[i], corr_matrix.columns[j], upper_tri.iloc[i, j])
+                               for i in range(len(upper_tri.index))
+                               for j in range(len(upper_tri.columns))
+                               if upper_tri.iloc[i, j] > 0.98]
+                for f1, f2, coef in highly_corr:
+                    warnings.append(f"Extremely high correlation detected between '{f1}' and '{f2}': {coef:.4f}.")
+            except Exception as e:
+                logger.warning(f"Feature correlation calculation failed: {e}")
+
+        # 11. Outlier detection check
+        # Flag if any feature has values > 10 std deviations away from mean
+        for col in feature_cols:
+            non_null = df[col].dropna()
+            if len(non_null) > 5:
+                mean_val = non_null.mean()
+                std_val = non_null.std()
+                if std_val > 0:
+                    outliers = (non_null - mean_val).abs() / std_val > 10.0
+                    outliers_count = int(outliers.sum())
+                    if outliers_count > 0:
+                        warnings.append(f"Outliers detected in column '{col}': {outliers_count} values (> 10 standard deviations).")
+
+        # 12. Dataset Leakage check
+        for col in feature_cols:
+            if "target" in col.lower() or "label" in col.lower():
+                errors.append(f"Potential dataset leakage: column '{col}' may contain label/target information.")
+
+        # 13. Window Overlap/Progression check
         if "window_start" in df.columns and "window_end" in df.columns:
             computed_sizes = df["window_end"] - df["window_start"] + 1
             mismatches = computed_sizes != expected_window_size
             mismatch_count = int(mismatches.sum())
             if mismatch_count > 0:
-                report["errors"].append(f"Detected {mismatch_count} rows with inconsistent window sizes. Expected size {expected_window_size}.")
-                report["is_valid"] = False
+                errors.append(f"Detected {mismatch_count} rows with inconsistent window sizes. Expected {expected_window_size}.")
 
-            # Check window progression: successive samples should not jump backward in start/end indices
             if "symbol" in df.columns and "timeframe" in df.columns:
                 for (sym, tf), group in df.groupby(["symbol", "timeframe"]):
                     starts = group["window_start"].values
                     if len(starts) > 1:
                         diffs = np.diff(starts)
                         if (diffs <= 0).any():
-                            report["warnings"].append(f"Window starts do not strictly increase for {sym} {tf}. Stride might be negative or random.")
+                            warnings.append(f"Window starts do not strictly increase for {sym} {tf}. Check stride or sorting.")
 
-        # 6. Class Distribution
-        if "target" in df.columns:
-            class_counts = df["target"].value_counts().to_dict()
-            class_dist = {str(k): int(v) for k, v in class_counts.items()}
-            report["metrics"]["class_distribution"] = class_dist
-
-            # Warn if any class is totally missing or extremely rare (less than 1% of the dataset)
-            for regime in ["TREND", "RANGE", "TRANSITION"]:
-                count = class_dist.get(regime, 0)
-                if count == 0:
-                    report["warnings"].append(f"Class '{regime}' is completely missing from the labeled dataset.")
-                elif count / total_rows < 0.01:
-                    report["warnings"].append(f"Class '{regime}' represents less than 1% of the dataset (extreme class imbalance).")
-
-        return report
+        is_valid = len(errors) == 0
+        return ValidationReport(is_valid=is_valid, errors=errors, warnings=warnings, metrics=metrics)

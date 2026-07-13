@@ -6,11 +6,15 @@ import numpy as np
 import json
 from datetime import datetime, timedelta, timezone
 import sys
+
 # Ensure project root is in path
 project_root = os.path.abspath(os.path.join(os.getcwd(), '..')) if os.path.basename(os.getcwd()) == 'examples' else os.getcwd()
-if project_root not in sys.path: sys.path.insert(0, project_root)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from ML.feature_registry import FeatureRegistry
-from Market_Data_Pipeline.historical_dataset_builder import HistoricalDatasetBuilder
+from ML.dataset_validator import ValidationReport
+from Market_Data_Pipeline.historical_dataset_builder import HistoricalDatasetBuilder, DatasetVersionManager
 
 class TestHistoricalDatasetBuilder(unittest.TestCase):
     def setUp(self):
@@ -19,6 +23,10 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         self.test_output_dir = "test_historical_outputs"
         os.makedirs(self.test_input_dir, exist_ok=True)
         os.makedirs(self.test_output_dir, exist_ok=True)
+
+        # Clean cache directory if exists
+        if os.path.exists("cache"):
+            shutil.rmtree("cache")
 
         # Generate some synthetic data for a couple of symbols
         self.symbols = ["XAUUSD", "YM"]
@@ -41,6 +49,10 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
             shutil.rmtree(self.test_input_dir)
         if os.path.exists(self.test_output_dir):
             shutil.rmtree(self.test_output_dir)
+        if os.path.exists("cache"):
+            shutil.rmtree("cache")
+        if os.path.exists("datasets"):
+            shutil.rmtree("datasets")
 
     def _generate_synthetic_candles(self, num_bars: int) -> pd.DataFrame:
         np.random.seed(42)
@@ -118,7 +130,6 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         self.assertEqual(len(files), 2)
 
     def test_generates_rolling_windows(self):
-        # We test that processing a single symbol runs windows and features correctly
         builder = HistoricalDatasetBuilder(
             input_dir=self.test_input_dir,
             output_dir=self.test_output_dir,
@@ -180,6 +191,7 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         )
         df_final, metadata = builder.build_dataset(max_workers=1)
 
+        # Compatibility files
         parquet_path = os.path.join(self.test_output_dir, "dataset_v002.parquet")
         csv_path = os.path.join(self.test_output_dir, "dataset_v002.csv")
 
@@ -208,6 +220,91 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         self.assertIn("nan_count", metadata["validation"])
         self.assertIn("duplicate_rows", metadata["validation"])
         self.assertIn("memory_usage_mb", metadata["validation"])
+
+    def test_cache_and_resume(self):
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            version="v004"
+        )
+        # Execute 1: Computes and caches
+        df1, meta1 = builder.build_dataset(max_workers=1)
+        cache_dir = builder._get_cache_dir()
+        self.assertTrue(os.path.exists(cache_dir))
+        self.assertTrue(os.path.exists(os.path.join(cache_dir, "XAUUSD_processed.parquet")))
+
+        # Execute 2: Should hit cache
+        df2, meta2 = builder.build_dataset(max_workers=1)
+        self.assertEqual(len(df1), len(df2))
+
+    def test_dataset_versioning_manager(self):
+        manager = DatasetVersionManager()
+        next_v = manager.resolve_next_version()
+        self.assertRegex(next_v, r"^v\d{3}$")
+
+        version_dir = manager.get_version_dir(next_v)
+        os.makedirs(version_dir, exist_ok=True)
+        # Resolved next version should increment now
+        next_v2 = manager.resolve_next_version()
+        self.assertNotEqual(next_v, next_v2)
+
+    def test_deterministic_sample_ids(self):
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            version="v005"
+        )
+        df, meta = builder.build_dataset(max_workers=1)
+        self.assertIn("sample_id", df.columns)
+        first_id = df["sample_id"].iloc[0]
+        # Should look like: XAUUSD_M5_2026-01-01T00-00_2026-01-01T02-50
+        self.assertRegex(first_id, r"^[A-Z0-9]+_M5_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}$")
+
+    def test_engine_registration_plugin(self):
+        class MockCustomEngine:
+            called = False
+            def process(self, df: pd.DataFrame) -> pd.DataFrame:
+                df = df.copy()
+                df["custom_plugin_column"] = 9.99
+                MockCustomEngine.called = True
+                return df
+
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            version="v006"
+        )
+        engine = MockCustomEngine()
+        builder.register_engine(engine)
+
+        # Verify it was inserted correctly into the pipeline steps
+        self.assertIn(engine, builder.pipeline.steps)
+        df, meta = builder.build_dataset(max_workers=1)
+        self.assertTrue(MockCustomEngine.called)
+        self.assertIn("custom_plugin_column", df.columns)
+
+    def test_feature_and_label_snapshots(self):
+        builder = HistoricalDatasetBuilder(
+            input_dir=self.test_input_dir,
+            output_dir=self.test_output_dir,
+            window_size=35,
+            timeframe=self.timeframe,
+            version="v007"
+        )
+        df, meta = builder.build_dataset(max_workers=1)
+
+        v_dir = os.path.join("datasets", "v007")
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "feature_registry.json")))
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "label_config.json")))
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "statistics.json")))
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "manifest.json")))
+        self.assertTrue(os.path.exists(os.path.join(v_dir, "engine_versions.json")))
 
 if __name__ == "__main__":
     unittest.main()
