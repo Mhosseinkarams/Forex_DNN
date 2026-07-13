@@ -24,7 +24,7 @@ from simulation.simulation_environment import env as mt5
 # CONFIGURATION
 # ==============================================================================
 MODE = os.getenv("TRADING_MODE", "live") # live, demo, validation, backtest
-SYMBOLS = ["EURUSD_o", "GBPUSD_o", "XAUUSD_o", "YM", "FDAX", "GBPJPY_o"]
+SYMBOLS = ["EURUSD_o", "XAUUSD_o", "YM", "FDAX"]
 TIMEFRAMES = ["M5", "M15"]
 MAGIC_UNITY = 100001
 MAGIC_MM = 100002
