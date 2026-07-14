@@ -1,95 +1,49 @@
-# Centralized ML Decision Architecture (Module 16)
+# Architecture Guide (Market-Driven Refactored)
 
-This document describes the high-performance, thread-safe Centralized Machine Learning Inference and Decision layer (`MLDecisionEngine`) introduced in Module 16 of the Forex_DNN trading framework.
+This document provides a deep dive into the internal architecture of the Forex Trading Framework, explaining how modules interact, the data flow pipelines, and the lifecycle of signals and positions.
 
----
+## High-Level Architecture
 
-## 1. Core Philosophy and Decoupled Design
+The framework is built using a decoupled, event-driven architecture. It transitions from a strategy-driven model to a centralized, deterministic, **market-driven pipeline**.
 
-To support future reinforcement learning, imitation learning, and Bayesian policies without disrupting standard execution loops or hardcoding strategies, Module 16 implements a fully decoupled **RL-Ready Architecture**:
+In this new pipeline, raw market data is consumed once, enriched through standard indicators and specialized deterministic structural engines, and organized into a unified, shared spatial representation: the `MarketStructureGraph`.
 
-- **Decoupled Inference**: Strategy files and MetaTrader 5 order execution are completely unaware of model backends, training data schemas, or raw probability arrays.
-- **centralized Layer**: `MLDecisionEngine` acts as a single, thread-safe inference hub. It aggregates models, runs raw/calibrated predictions, evaluates a target policy, and emits an immutable snapshot.
-- **Zero-Action Principle**: `MLDecisionEngine` never executes orders, manages risk margins, or modifies open positions. It is strictly passive and strategy-agnostic. Strategies consume recommendations and make the final transaction decisions.
+### Component Layers
 
----
+1.  **Environment Layer**: The bottom layer provides a unified interface (`SimulationEnvironment`) to either the live MetaTrader 5 API or the internal backtesting broker.
+2.  **Data & Pipeline Layer**: Handles raw data retrieval (`DataFeed`), indicator calculation (`IndicatorEngine`), and structural intelligence (`MarketStructureEngine`, `SupplyDemandEngine`, `MarketStateEngine`, `FeaturePipeline`).
+3.  **Central Market Representation**: Holds the populated `MarketStructureGraph` instances.
+4.  **Centralized ML Inference & Decision Layer (Module 16)**: Houses `MLDecisionEngine`, `ModelRegistry`, `BaseCalibrator` variants, and `BasePolicy` implementations which aggregate multi-model predictions into an immutable, thread-safe `DecisionContext`.
+5.  **Strategy & Trade Location Layer**: Lightweight strategies query the `MarketStructureGraph`, consume `DecisionContext` predictions, and leverage `TradeLocationEngine` to resolve structural boundaries.
+6.  **Execution & Management Layer**: Contains the core execution engines, including `PositionTracker`, `DrawdownManager`, `ExitManager`, `SendOrder`, and `PositionSizer`.
 
-## 2. Component Hierarchy & Flow
+## Module Responsibilities
 
-```
-+------------------------------------------------------------+
-|                       Trading Strategy                     |
-|  (consumes DecisionContext and executes trades via broker)  |
-+-----------------------------+------------------------------+
-                              |
-                              | 1. evaluate(...)
-                              v
-+-----------------------------+------------------------------+
-|                     MLDecisionEngine                       |
-|   (orchestrates validation, inference, and policy evaluation)|
-+--+--------------------+---------------------+------------+-+
-   |                    |                     |            |
-   | 2. Align Features  | 3. Query            | 4. Calibrate| 5. Policy
-   v                    v                     v            v
-+--+-------------+ +----+-------------+ +-----+-----+ +----+--------+
-| FeatureRegistry| |  ModelRegistry   | |Calibrators| | RulePolicy  |
-| (Type Coercion)| |  (Lazy / Cache)  | |(Platt/Iso)| | (Action, RR)|
-+----------------+ +------------------+ +-----------+ +-------------+
-                              |
-                              | 6. Return immutable DecisionContext
-                              v
-+-----------------------------+------------------------------+
-|                      DecisionContext                       |
-|  (Strongly-typed, thread-safe, immutable snapshot)         |
-+------------------------------------------------------------+
-```
+### Data Acquisition & Processing
+- **MT5DataFeed**: Handles the lifecycle of the MT5 connection. It monitors feed health and provides OHLCV data.
+- **IndicatorEngine**: A stateless calculator that takes raw OHLCV DataFrames and appends technical indicators and metadata (EMA slopes, candle body ratios).
 
----
+### Market Intelligence (New)
+- **MarketStructureEngine**: Detects swing highs/lows, BOS, CHOCH, and protected levels.
+- **SupplyDemandEngine**: Tracks institutional supply and demand zones, zone touch counts, mitigations, and freshness.
+- **MarketStructureGraph**: Central, shared data container representing the point-in-time structural graph of the market.
+- **MarketStateEngine**: Classifies current market state regimes (Trending, Ranging, Transition, Expansion, Compression).
+- **FeaturePipeline**: Formats graph coordinates into ML-ready numerical vectors.
 
-## 3. Class Specifications
+### Centralized ML Inference & Decision Layer (New)
+- **MLDecisionEngine**: Aggregates models, validates feature vectors via `FeatureRegistry`, runs calibrated inference, executes policy recommendations, and builds the immutable `DecisionContext`.
+- **ModelRegistry**: Lazy-loads, caches, and tracks registered model assets (such as `MarketStateClassifier`, `LevelBreakProbabilityModel`, and `TradeQualityModel`), gracefully ignoring missing optional models.
+- **Confidence Calibration**: Platt scaling, Isotonic regression, and Identity calibration layers decouple raw probabilities from production confidence outputs.
+- **Policy Layer**: Sizing, risk-scaling, and breakout/rejection-based target setting recommended by `RuleBasedPolicy`.
 
-### 3.1 DecisionContext & PolicyRecommendation
-An immutable dataclass (`@dataclass(frozen=True)`) containing:
-- **Metadata**: `symbol`, `timeframe`, `timestamp`.
-- **Market State Classifier**: `predicted_state`, `state_probabilities`, `state_confidence`.
-- **Level Break Model**: `break_probability`, `rejection_probability`.
-- **Trade Quality Model**: `trade_quality_score`, `confidence_score`.
-- **Policy Recommendation**: `allow_trade`, `suggested_risk_multiplier`, `suggested_position_scale`, `suggested_tp_mode`, `suggested_sl_adjustment`.
-- **Diagnostics**: `model_versions`, `inference_time_ms`, `missing_features`, `warnings`.
+### Trade Location & Sizing
+- **TradeLocationEngine**: Computes candidate entries, stop-loss, take-profit, and invalidation levels based strictly on structural information.
+- **PositionSizer**: Calculates the exact lot size based on account balance, risk percentage, and stop-loss distance.
+- **SendOrder**: The gatekeeper for new positions. It validates entries against drawdown limits, symbol conflicts, and risk caps.
 
-### 3.2 ModelRegistry Extensions
-- **Lazy Loading**: Loaded models are only deserialized from disk on the first evaluate request.
-- **Caching**: Fully thread-safe model caching using internal threading locks ensures subsequent queries incur zero serialization overhead.
-- **Tolerance**: Missing optional models log warnings into the registry but do not crash inference.
+## Object Relationships
 
----
-
-## 4. Execution Sequence Diagram
-
-```
-Strategy                MLDecisionEngine          ModelRegistry         Calibrators         RulePolicy
-   |                            |                       |                    |                  |
-   |---- evaluate(vector) ----->|                       |                    |                  |
-   |                            |-- validate features ->|                    |                  |
-   |                            |                       |                    |                  |
-   |                            |-- load models (lazy) ->|                   |                  |
-   |                            |<-- return instances --|                    |                  |
-   |                            |                       |                    |                  |
-   |                            |--------- run raw inference --------------->|                  |
-   |                            |                                            |                  |
-   |                            |--------- calibrate raw probabilities ----->|                  |
-   |                            |<-------- return calibrated scores ---------|                  |
-   |                            |                                                               |
-   |                            |------------------------- evaluate policy -------------------->|
-   |                            |<------------------------ return actions ----------------------|
-   |                            |
-   |<- return DecisionContext --|
-```
-
----
-
-## 5. Caching and Thread-Safety
-
-To support live high-frequency streams and thousands of evaluations per hour across dozens of concurrent pairs:
-- **Threading Locks**: Caching registers and load mechanisms utilize python `threading.Lock` coordinates to guarantee thread-safe memory allocations.
-- **Pre-mapped Features**: Enabled feature listings are cached inside the decision engine at startup to avoid re-evaluating the registry map on every candle tick.
+- `MMStrategy` depends on `DataFeed`, `MarketStructureGraph`, `TradeLocationEngine`, and `SendOrder`.
+- `TradeLocationEngine` depends on `MarketStructureGraph`.
+- `SendOrder` depends on `PositionManager`, `PositionTracker`, `DrawdownManager`, `PositionSizer`, and `ExitManager`.
+- `ExitManager` depends on `PositionTracker` and `PositionManager`.
