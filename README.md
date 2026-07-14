@@ -576,6 +576,34 @@ For complete details on using the workbench and migrating notebook prototypes to
 
 ---
 
+### 8.4 Production-Grade Large-Scale Training Pipeline
+
+For large-scale, enterprise-ready model development, we provide a centralized, highly-optimized production training pipeline in `train_production_pipeline.py`.
+
+This pipeline processes multiple historical symbol datasets individually to minimize memory (RAM) usage, aggregates them into a consolidated master dataset, executes thorough pre-training diagnostics, performs chronological splits (70% Train, 15% Val, 15% Test), trains calibrated LightGBM/RandomForest models, evaluates multi-market cross-generalization, and packages all logs, statistics, metrics, and figures into timestamped experiment directories.
+
+#### Features & Diagnostics:
+- **Memory-Efficient Caching**: Processes symbols one-by-one and caches intermediate results as Parquet files under `cache/` for instant resuming and crash-recovery.
+- **Thorough Diagnostics**: Scans for label balance, constant features, collinearity, duplicate samples, temporal ordering, and look-ahead leakage. It automatically aborts training if critical errors are found.
+- **Cross-Market Generalization**: Evaluates model performance separately on each symbol's test set to guarantee that models learn genuine, cross-market rules rather than overfitting a single currency pair.
+- **Experiment Archiving**: Creates timestamped folders under `output/experiments/` containing configurations, logs, metric reports, classification metrics, feature importances, and standard diagnostic curves (Confusion Matrix, ROC, Precision-Recall, Calibration, SHAP).
+
+#### Usage Examples:
+```bash
+# Train MarketStateClassifier on all available M5 symbols using LightGBM
+python train_production_pipeline.py --model-name MarketStateClassifier --timeframe M5
+
+# Train LevelBreakProbabilityModel using RandomForest on EURUSD and GBPUSD on M15 data
+python train_production_pipeline.py --model-name LevelBreakProbabilityModel --symbol EURUSD,GBPUSD --timeframe M15 --model-type randomforest
+
+# Run a quick high-stride test execution to verify pipeline end-to-end
+python train_production_pipeline.py --model-name MarketStateClassifier --window-stride 50 --force
+```
+
+For complete details on the production training workflow, metrics interpretation, and troubleshooting guidelines, see the [Production Training Pipeline Guide](docs/production_training_pipeline.md).
+
+---
+
 ## 9. Run Backtesting
 
 The framework contains a high-fidelity, event-driven backtesting engine (`simulation/`) that mocks MT5 tick data and execution behavior.
