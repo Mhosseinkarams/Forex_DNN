@@ -36,6 +36,32 @@ from ML.trade_feature_recorder import TradeFeatureRecorder
 logger = logging.getLogger("MMStrategy")
 
 class MMStrategy:
+    """
+    Purpose:
+        Market Maker (MM) Strategy class implementing rule-based entry setups,
+        support/resistance-based take profit (TP) and stop loss (SL), and
+        flexible risk management.
+
+    Thread Safety:
+        The strategy runs on a background polling thread. All accesses and
+        mutations to the shared attributes (e.g., `signal_history`,
+        `_bar_counters`, and `last_bar_time`) are synchronized using a
+        re-entrant lock `self._lock` to avoid race conditions.
+
+    First Bar Behavior:
+        On the very first bar of a session or strategy restart, the method
+        `_is_new_bar` will initialize the `last_bar_time` tracker and return
+        `False`. No signals will be evaluated or submitted for the first bar
+        to ensure indicators are synchronized and stable.
+
+    Shadow Mode and ML Filtering:
+        - SHADOW_MODE (default True): Candidate signal evaluations and features
+          are recorded to runtime logs for shadow verification, but live order
+          submission is solely governed by rule-based constraints.
+        - ML_FILTERING (default False): When enabled outside of shadow mode,
+          active machine learning model predictions will filter/override rule
+          based candidates.
+    """
     def __init__(
         self,
         data_feed,                    # DataFeed instance
@@ -61,7 +87,15 @@ class MMStrategy:
         signal_evaluator: Optional[SignalEvaluator] = None,
         recorder: Optional[TradeFeatureRecorder] = None,
         shadow_mode: bool = True,
-        ml_filtering: bool = False
+        ml_filtering: bool = False,
+        hr_body_pct: float = 0.70,
+        hr_body_vs_avg: float = 1.2,
+        std_body_pct: float = 0.60,
+        std_body_vs_avg: float = 1.0,
+        rev_body_pct: float = 0.80,
+        rev_body_vs_avg: float = 1.5,
+        m5_ema_periods: list[int] = [50, 600],
+        m15_ema_periods: list[int] = [50, 800]
     ):
         self.data_feed = data_feed
         self.send_order = send_order
@@ -85,21 +119,37 @@ class MMStrategy:
         self.shadow_mode = shadow_mode
         self.ml_filtering = ml_filtering
 
+        # Strategy Threshold Parameters
+        self.hr_body_pct = hr_body_pct
+        self.hr_body_vs_avg = hr_body_vs_avg
+        self.std_body_pct = std_body_pct
+        self.std_body_vs_avg = std_body_vs_avg
+        self.rev_body_pct = rev_body_pct
+        self.rev_body_vs_avg = rev_body_vs_avg
+        self.m5_ema_periods = m5_ema_periods
+        self.m15_ema_periods = m15_ema_periods
+
         # Initialize injected or default ML services
         self.feature_pipeline = feature_pipeline or FeaturePipeline()
         self.decision_engine = decision_engine or MLDecisionEngine()
         self.signal_evaluator = signal_evaluator or SignalEvaluator(shadow_mode=self.shadow_mode, ml_filtering=self.ml_filtering)
         self.recorder = recorder or TradeFeatureRecorder()
 
-        # Connect recorder to the TradingJournal so outcomes are recorded automatically
+        # Connect recorder to the TradingJournal
         if self.trading_journal is not None:
             self.trading_journal.recorder = self.recorder
 
         # Set up runtime logger handlers
         self._setup_runtime_loggers()
 
-        self.engine_m5 = IndicatorEngine(ema_periods=[50, 600], slope_period=32)
-        self.engine_m15 = IndicatorEngine(ema_periods=[50, 800], slope_period=32)
+        self.engine_m5 = IndicatorEngine(
+            ema_periods=self.m5_ema_periods,
+            slope_period=32
+        )
+        self.engine_m15 = IndicatorEngine(
+            ema_periods=self.m15_ema_periods,
+            slope_period=32
+        )
 
         # Re-use analytical engines
         self.struct_engine = MarketStructureEngine(lookback=3)
@@ -107,7 +157,7 @@ class MMStrategy:
         self.state_engine = MarketStateEngine()
         self.location_engine = location_engine or TradeLocationEngine()
 
-        self.last_bar_time = {} # symbol -> timeframe -> timestamp
+        self.last_bar_time = {}  # symbol -> timeframe -> timestamp
         self.signal_history = {s: {"M5": [], "M15": []} for s in symbols}
         self._bar_counters = {s: {"M5": 0, "M15": 0} for s in symbols}
 
@@ -147,8 +197,9 @@ class MMStrategy:
             return
         
         # Reset signal history on start
-        self.signal_history = {s: {"M5": [], "M15": []} for s in self.symbols}
-        self._bar_counters = {s: {"M5": 0, "M15": 0} for s in self.symbols}
+        with self._lock:
+            self.signal_history = {s: {"M5": [], "M15": []} for s in self.symbols}
+            self._bar_counters = {s: {"M5": 0, "M15": 0} for s in self.symbols}
         
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
@@ -195,7 +246,8 @@ class MMStrategy:
                     continue
                 
                 # New bar detected
-                self._bar_counters[symbol][timeframe] += 1
+                with self._lock:
+                    self._bar_counters[symbol][timeframe] += 1
                 logger.info(f"New bar detected for {symbol} {timeframe}: {df.iloc[-1]['Datetime']}")
                 
                 # Active chart annotation
@@ -243,7 +295,12 @@ class MMStrategy:
 
     def _setup_runtime_loggers(self):
         """Configure specialized handlers for runtime logging."""
-        def get_or_setup_logger(name, filename):
+        # Use an absolute directory relative to the repository / module location
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        logs_dir = os.path.join(base_dir, "Logs")
+
+        def get_or_setup_logger(name, filename_rel):
+            filename = os.path.join(logs_dir, filename_rel)
             os.makedirs(os.path.dirname(filename), exist_ok=True)
             logger_obj = logging.getLogger(name)
             logger_obj.setLevel(logging.INFO)
@@ -254,10 +311,10 @@ class MMStrategy:
             logger_obj.propagate = False
             return logger_obj
 
-        self.features_logger = get_or_setup_logger("runtime_features", "Logs/runtime_features.log")
-        self.decision_logger = get_or_setup_logger("decision_engine", "Logs/decision_engine.log")
-        self.shadow_logger = get_or_setup_logger("shadow_mode", "Logs/shadow_mode.log")
-        self.evaluator_logger = get_or_setup_logger("signal_evaluator", "Logs/signal_evaluator.log")
+        self.features_logger = get_or_setup_logger("runtime_features", "runtime_features.log")
+        self.decision_logger = get_or_setup_logger("decision_engine", "decision_engine.log")
+        self.shadow_logger = get_or_setup_logger("shadow_mode", "shadow_mode.log")
+        self.evaluator_logger = get_or_setup_logger("signal_evaluator", "signal_evaluator.log")
 
     def _is_new_bar(self, symbol, timeframe, df):
         current_bar_time = str(df.iloc[-1]["Datetime"])
@@ -286,13 +343,17 @@ class MMStrategy:
         last_row = df_sd.iloc[-1]
         dt = pd.to_datetime(last_row["Datetime"]) if "Datetime" in df_sd.columns else datetime.now(timezone.utc)
 
+        # Pre-filter swing levels to avoid assigning duplicates initially
+        swing_highs_list = [s for s in self.struct_engine.swings if s.level_type == 'SwingHigh']
+        swing_lows_list = [s for s in self.struct_engine.swings if s.level_type == 'SwingLow']
+
         # Create MarketStructureGraph instance
         graph = MarketStructureGraph(
             symbol=symbol,
             timeframe=timeframe,
             timestamp=dt,
-            swing_highs=list(self.struct_engine.swings),
-            swing_lows=list(self.struct_engine.swings), # Swings list has both High and Low
+            swing_highs=swing_highs_list,
+            swing_lows=swing_lows_list,
             protected_high=self.struct_engine.protected_high,
             protected_low=self.struct_engine.protected_low,
             bos=list(self.struct_engine.bos_list),
@@ -303,9 +364,6 @@ class MMStrategy:
             atr=float(last_row.get("atr_14", 0.0001)),
             volatility=float(last_row.get("atr_14", 0.0001) * 10000.0) # Relative scaling
         )
-        # Separate swings properly
-        graph.swing_highs = [s for s in self.struct_engine.swings if s.level_type == 'SwingHigh']
-        graph.swing_lows = [s for s in self.struct_engine.swings if s.level_type == 'SwingLow']
 
         return graph
 
@@ -349,27 +407,40 @@ class MMStrategy:
             self._process_signal(symbol, timeframe, "reversal", rev_dir, df, trend_context)
             return
 
+    def _evaluate_ema_cross_alignment(self, cross_fast_val, trend_direction, expect_opposite=False):
+        """
+        Helper method to refactor duplicated EMA-cross checks.
+        Ensures cross_fast_val matches/opposes trend_direction correctly.
+        """
+        if cross_fast_val == 0:
+            return None
+        if not expect_opposite:
+            if cross_fast_val == 1 and trend_direction == "Bull":
+                return 1
+            elif cross_fast_val == -1 and trend_direction == "Bear":
+                return -1
+        else:
+            if cross_fast_val == 1 and trend_direction == "Bear":
+                return 1
+            elif cross_fast_val == -1 and trend_direction == "Bull":
+                return -1
+        return None
+
     def _evaluate_high_risk(self, bar_closed, trend_context):
         # 1. Previous candle crosses through fast EMA
         cross_fast_val = bar_closed.get("cross_ema_50", 0)
-        if cross_fast_val == 0:
-            return None
         
         # 2. Cross direction aligns with slow EMA trend (Trend Direction Context)
-        direction = 0
-        if cross_fast_val == 1 and trend_context.trend_direction == "Bull":
-            direction = 1
-        elif cross_fast_val == -1 and trend_context.trend_direction == "Bear":
-            direction = -1
-        else:
+        direction = self._evaluate_ema_cross_alignment(cross_fast_val, trend_context.trend_direction)
+        if direction is None:
             return None
         
         # 3. Previous candle body percentage
-        if bar_closed["body_pct"] < 0.70:
+        if bar_closed["body_pct"] < self.hr_body_pct:
             return None
         
         # 4. Previous candle size vs average
-        if bar_closed["body_vs_avg"] < 1.2:
+        if bar_closed["body_vs_avg"] < self.hr_body_vs_avg:
             return None
         
         # 5. Slow EMA slope
@@ -381,18 +452,12 @@ class MMStrategy:
 
     def _evaluate_standard(self, bar_closed, trend_context, dist_fast_val=None):
         cross_fast_val = bar_closed.get("cross_ema_50", 0)
-        if cross_fast_val == 0:
-            return None
 
         # 1. EMA alignment (Trend Context)
-        direction = 0
-        if trend_context.trend_direction == "Bull":
-            direction = 1
-        elif trend_context.trend_direction == "Bear":
-            direction = -1
-        else:
+        direction = self._evaluate_ema_cross_alignment(cross_fast_val, trend_context.trend_direction)
+        if direction is None:
             return None
-            
+
         # 2. Candle crossing EMA50 in trend direction (Entry Trigger)
         if cross_fast_val != direction:
             return None
@@ -408,11 +473,11 @@ class MMStrategy:
             return None
         
         # 5. Previous candle body percentage
-        if bar_closed["body_pct"] < 0.60:
+        if bar_closed["body_pct"] < self.std_body_pct:
             return None
         
         # 6. Previous candle size vs average
-        if bar_closed["body_vs_avg"] <= 1.0:
+        if bar_closed["body_vs_avg"] <= self.std_body_vs_avg:
             return None
         
         # 7. Slow EMA slope
@@ -433,24 +498,18 @@ class MMStrategy:
         
         # 2. Previous candle crosses through fast EMA (Entry Trigger)
         cross_fast_val = bar_closed.get("cross_ema_50", 0)
-        if cross_fast_val == 0:
-            return None
         
         # 3. Cross direction is OPPOSITE to slow EMA trend (Trend Direction Context)
-        direction = 0
-        if cross_fast_val == 1 and trend_context.trend_direction == "Bear":
-            direction = 1
-        elif cross_fast_val == -1 and trend_context.trend_direction == "Bull":
-            direction = -1
-        else:
+        direction = self._evaluate_ema_cross_alignment(cross_fast_val, trend_context.trend_direction, expect_opposite=True)
+        if direction is None:
             return None
             
         # 4. Previous candle body percentage
-        if bar_closed["body_pct"] < 0.80:
+        if bar_closed["body_pct"] < self.rev_body_pct:
             return None
         
         # 5. Previous candle size vs average
-        if bar_closed["body_vs_avg"] < 1.5:
+        if bar_closed["body_vs_avg"] < self.rev_body_vs_avg:
             return None
         
         return direction
