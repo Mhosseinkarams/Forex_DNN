@@ -447,6 +447,8 @@ def run_pipeline():
                         help="Window size for sliding iterations.")
     parser.add_argument("--window-stride", type=int, default=1,
                         help="Stride for sliding iterations.")
+    parser.add_argument("--max-bars", type=int, default=0,
+                        help="Use only the most recent N bars per symbol (0 keeps all bars).")
     parser.add_argument("--cache-dir", type=str, default="cache",
                         help="Folder containing cached processed symbol datasets.")
     parser.add_argument("--output-dir", type=str, default="output",
@@ -455,6 +457,8 @@ def run_pipeline():
                         help="Random seed.")
     parser.add_argument("--force", action="store_true",
                         help="Force training even if critical diagnostics warnings exist.")
+    parser.add_argument("--register-production", action="store_true",
+                        help="Register the trained model as production after evaluation. Disabled by default.")
 
     args = parser.parse_args()
 
@@ -510,11 +514,17 @@ def run_pipeline():
 
         # Create localized cache path
         # Cache unique key matches symbol, timeframe, window configs, and model target
-        cache_filename = f"processed_{sym}_{args.timeframe}_w{args.window_size}_s{args.window_stride}_{args.model_name}.parquet"
+        # Bump this whenever feature/label causality changes.  Old caches can
+        # otherwise preserve features computed with a later version of the
+        # structural pipeline.
+        cache_filename = f"causal_v3_{sym}_{args.timeframe}_w{args.window_size}_s{args.window_stride}_{args.model_name}.parquet"
         cache_path = os.path.join(args.cache_dir, cache_filename)
 
         df_sym_cleaned = None
         df_sym_raw = load_raw_file(filepath)
+        if args.max_bars > 0 and len(df_sym_raw) > args.max_bars:
+            df_sym_raw = df_sym_raw.tail(args.max_bars).reset_index(drop=True)
+            logger.info(f"Limited {sym} to its most recent {len(df_sym_raw)} bars.")
         df_sym_labeled = None
 
         unlabeled_count = 0
@@ -579,6 +589,7 @@ def run_pipeline():
                 # Keep original string representations to prevent DataCleaner from encoding them to category codes
                 orig_symbol = df_sym_labeled["symbol"].copy() if "symbol" in df_sym_labeled.columns else None
                 orig_timeframe = df_sym_labeled["timeframe"].copy() if "timeframe" in df_sym_labeled.columns else None
+                orig_datetime = df_sym_labeled["datetime"].copy() if "datetime" in df_sym_labeled.columns else None
 
                 df_sym_cleaned = cleaner.clean(df_sym_labeled, label_col=target_col_name)
 
@@ -587,6 +598,10 @@ def run_pipeline():
                     df_sym_cleaned["symbol"] = orig_symbol
                 if orig_timeframe is not None:
                     df_sym_cleaned["timeframe"] = orig_timeframe
+                if orig_datetime is not None:
+                    # Keep real event time for the global chronological split;
+                    # DataCleaner may numerically encode object columns.
+                    df_sym_cleaned["datetime"] = orig_datetime
 
                 discarded_count = len(df_sym_labeled) - len(df_sym_cleaned)
             else:
@@ -649,7 +664,8 @@ def run_pipeline():
     # Exclude metadata and raw price/EMA columns to compute Feature Count
     metadata_cols = [
         "target", "confidence", "window_start", "window_end", "Open", "High", "Low", "Close",
-        "TickVolume", "ema_50", "ema_600", "ema_800", "sample_id", "symbol", "timeframe", "datetime", "zone_type"
+        "TickVolume", "ema_50", "ema_600", "ema_800", "sample_id", "symbol", "timeframe", "datetime", "zone_type",
+        "label_version", "engine_version"
     ]
     feature_cols = [c for c in master_df.columns if c not in metadata_cols and not c.startswith("meta_labeler_")]
     feature_count = len(feature_cols)
@@ -983,7 +999,8 @@ def run_pipeline():
     model.save(model_save_path)
     logger.info(f"Saved production model wrapper to {model_save_path}")
 
-    # Register in central registry if desired
+    # Register in central registry only when explicitly approved.  A completed
+    # experiment is not evidence that a model is safe for trading.
     trainer_reg = Trainer(random_seed=args.seed)
     # Register the model wrapper path
     trainer_reg.registry.register_model(
@@ -995,8 +1012,10 @@ def run_pipeline():
         dataset_hash=diag_report["metrics"].get("dataset_hash", "unknown"),
         feature_registry_version=registry.compute_hash(),
         model_type=args.model_type,
-        is_production=True
+        is_production=args.register_production
     )
+    if not args.register_production:
+        logger.info("Model was registered as non-production; promote only after out-of-sample backtesting.")
 
     # 14. Generate and save diagnostic curves/plots
     logger.info("Generating standard performance diagnostic plots...")

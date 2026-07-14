@@ -247,28 +247,25 @@ class FeaturePipeline:
         row = df.iloc[idx]
         close = row["Close"]
         atr = row.get("atr_14", 0.0001)
-        if msg.protected_high and msg.protected_high.index <= idx:
-            return float((msg.protected_high.price - close) / atr)
+        highs = [s.price for s in msg.swing_highs if s.confirmation_candle <= idx]
+        if highs:
+            return float((max(highs) - close) / atr)
         return -1.0
 
     def _extract_protected_low_distance(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
         row = df.iloc[idx]
         close = row["Close"]
         atr = row.get("atr_14", 0.0001)
-        if msg.protected_low and msg.protected_low.index <= idx:
-            return float((close - msg.protected_low.price) / atr)
+        lows = [s.price for s in msg.swing_lows if s.confirmation_candle <= idx]
+        if lows:
+            return float((close - min(lows)) / atr)
         return -1.0
 
     def _extract_supply_distance(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
         row = df.iloc[idx]
-        close = row["Close"]
+        distance = row.get("nearest_supply_distance", np.nan)
         atr = row.get("atr_14", 0.0001)
-        active_supplies = [z for z in msg.supply_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
-        valid_supplies = [z for z in active_supplies if z.lower > close]
-        if valid_supplies:
-            nearest = min(valid_supplies, key=lambda z: z.lower)
-            return float((nearest.lower - close) / atr)
-        return -1.0
+        return float(distance / atr) if pd.notna(distance) else -1.0
 
     def _extract_supply_width(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
         row = df.iloc[idx]
@@ -281,45 +278,19 @@ class FeaturePipeline:
         return 0.0
 
     def _extract_supply_strength(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
-        close = row["Close"]
-        active_supplies = [z for z in msg.supply_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
-        valid_supplies = [z for z in active_supplies if z.lower > close]
-        if valid_supplies:
-            nearest = min(valid_supplies, key=lambda z: z.lower)
-            return float(nearest.strength_score)
-        return 0.0
+        return float(df.iloc[idx].get("supply_strength", 0.0))
 
     def _extract_supply_freshness(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        row = df.iloc[idx]
-        close = row["Close"]
-        active_supplies = [z for z in msg.supply_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
-        valid_supplies = [z for z in active_supplies if z.lower > close]
-        if valid_supplies:
-            nearest = min(valid_supplies, key=lambda z: z.lower)
-            return 1 if nearest.freshness else 0
-        return 0
+        return int(df.iloc[idx].get("supply_freshness", 0))
 
     def _extract_supply_touch_count(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        row = df.iloc[idx]
-        close = row["Close"]
-        active_supplies = [z for z in msg.supply_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
-        valid_supplies = [z for z in active_supplies if z.lower > close]
-        if valid_supplies:
-            nearest = min(valid_supplies, key=lambda z: z.lower)
-            return int(nearest.touch_count)
-        return 0
+        return int(df.iloc[idx].get("supply_touch_count", 0))
 
     def _extract_demand_distance(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
         row = df.iloc[idx]
-        close = row["Close"]
+        distance = row.get("nearest_demand_distance", np.nan)
         atr = row.get("atr_14", 0.0001)
-        active_demands = [z for z in msg.demand_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
-        valid_demands = [z for z in active_demands if z.upper < close]
-        if valid_demands:
-            nearest = max(valid_demands, key=lambda z: z.upper)
-            return float((close - nearest.upper) / atr)
-        return -1.0
+        return float(distance / atr) if pd.notna(distance) else -1.0
 
     def _extract_demand_width(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
         row = df.iloc[idx]
@@ -332,34 +303,13 @@ class FeaturePipeline:
         return 0.0
 
     def _extract_demand_strength(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
-        close = row["Close"]
-        active_demands = [z for z in msg.demand_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
-        valid_demands = [z for z in active_demands if z.upper < close]
-        if valid_demands:
-            nearest = max(valid_demands, key=lambda z: z.upper)
-            return float(nearest.strength_score)
-        return 0.0
+        return float(df.iloc[idx].get("demand_strength", 0.0))
 
     def _extract_demand_freshness(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        row = df.iloc[idx]
-        close = row["Close"]
-        active_demands = [z for z in msg.demand_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
-        valid_demands = [z for z in active_demands if z.upper < close]
-        if valid_demands:
-            nearest = max(valid_demands, key=lambda z: z.upper)
-            return 1 if nearest.freshness else 0
-        return 0
+        return int(df.iloc[idx].get("demand_freshness", 0))
 
     def _extract_demand_touch_count(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        row = df.iloc[idx]
-        close = row["Close"]
-        active_demands = [z for z in msg.demand_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
-        valid_demands = [z for z in active_demands if z.upper < close]
-        if valid_demands:
-            nearest = max(valid_demands, key=lambda z: z.upper)
-            return int(nearest.touch_count)
-        return 0
+        return int(df.iloc[idx].get("demand_touch_count", 0))
 
     def _extract_candle_range(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
         row = df.iloc[idx]
@@ -464,7 +414,7 @@ class FeaturePipeline:
         row = df.iloc[idx]
         close = row["Close"]
         atr = row.get("atr_14", 0.0001)
-        highs = [s.price for s in msg.swing_highs if s.index <= idx]
+        highs = [s.price for s in msg.swing_highs if s.confirmation_candle <= idx]
         if highs:
             nearest = min(highs, key=lambda h: abs(h - close))
             return float(abs(nearest - close) / atr)
@@ -474,7 +424,7 @@ class FeaturePipeline:
         row = df.iloc[idx]
         close = row["Close"]
         atr = row.get("atr_14", 0.0001)
-        lows = [s.price for s in msg.swing_lows if s.index <= idx]
+        lows = [s.price for s in msg.swing_lows if s.confirmation_candle <= idx]
         if lows:
             nearest = min(lows, key=lambda l: abs(l - close))
             return float(abs(nearest - close) / atr)
@@ -495,7 +445,7 @@ class FeaturePipeline:
         row = df.iloc[idx]
         close = row["Close"]
         atr = row.get("atr_14", 0.0001)
-        lows = [s.price for s in msg.swing_lows if s.index <= idx]
+        lows = [s.price for s in msg.swing_lows if s.confirmation_candle <= idx]
         if lows:
             last_low = lows[-1]
             return float(abs(close - last_low) / atr)

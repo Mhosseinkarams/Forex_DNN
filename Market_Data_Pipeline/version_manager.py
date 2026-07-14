@@ -71,7 +71,7 @@ class DatasetVersionManager:
 
         # Helper to save JSON
         def save_json(path: str, data: Dict[str, Any]):
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
 
         # 3. Save metadata
@@ -89,7 +89,9 @@ class DatasetVersionManager:
 
         # 9. Save dataset_quality_report.html
         if quality_report_html:
-            with open(html_path, "w") as f:
+            # Reports contain Unicode symbols; relying on the Windows active
+            # code page makes dataset generation fail on many locales.
+            with open(html_path, "w", encoding="utf-8") as f:
                 f.write(quality_report_html)
 
         logger.info(f"Successfully saved dataset version {version} in {version_dir}")

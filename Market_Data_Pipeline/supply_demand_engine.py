@@ -43,6 +43,10 @@ class SupplyDemandEngine:
         in_d = np.zeros(len(df))
         s_st = np.zeros(len(df))
         d_st = np.zeros(len(df))
+        s_fresh = np.zeros(len(df))
+        d_fresh = np.zeros(len(df))
+        s_touches = np.zeros(len(df))
+        d_touches = np.zeros(len(df))
         bs_s = np.full(len(df), -1)
         bs_d = np.full(len(df), -1)
 
@@ -134,6 +138,15 @@ class SupplyDemandEngine:
             still_active = []
 
             for z in active_zones:
+                # A zone is created from the preceding base candle because of
+                # the move on ``origin_candle``.  That same impulse is its
+                # departure, not a later retest/mitigation or invalidation.
+                # Counting it as an interaction makes newly-created zones
+                # appear stale before price has ever returned to them.
+                if i <= z.origin_candle:
+                    still_active.append(z)
+                    continue
+
                 # Calculate Departure Speed (first 3 bars)
                 if 0 < i - z.origin_candle <= 3:
                     move_away = closes[i] - closes[i-1]
@@ -215,6 +228,8 @@ class SupplyDemandEngine:
                 nz = min(supplies, key=lambda z: z.lower)
                 ns_dist[i] = nz.lower - curr_close
                 s_st[i] = nz.strength_score
+                s_fresh[i] = float(nz.freshness)
+                s_touches[i] = nz.touch_count
                 bs_s[i] = i - nz.created_idx
             if any(curr_high >= z.lower and curr_low <= z.upper for z in active_zones if z.type == 'Supply'):
                 in_s[i] = 1
@@ -223,6 +238,8 @@ class SupplyDemandEngine:
                 nz = max(demands, key=lambda z: z.upper)
                 nd_dist[i] = curr_close - nz.upper
                 d_st[i] = nz.strength_score
+                d_fresh[i] = float(nz.freshness)
+                d_touches[i] = nz.touch_count
                 bs_d[i] = i - nz.created_idx
             if any(curr_low <= z.upper and curr_high >= z.lower for z in active_zones if z.type == 'Demand'):
                 in_d[i] = 1
@@ -233,6 +250,10 @@ class SupplyDemandEngine:
         df['inside_demand'] = in_d
         df['supply_strength'] = s_st
         df['demand_strength'] = d_st
+        df['supply_freshness'] = s_fresh
+        df['demand_freshness'] = d_fresh
+        df['supply_touch_count'] = s_touches
+        df['demand_touch_count'] = d_touches
         df['bars_since_supply'] = bs_s
         df['bars_since_demand'] = bs_d
 

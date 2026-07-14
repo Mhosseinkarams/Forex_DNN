@@ -654,7 +654,7 @@ class HistoricalDatasetBuilder:
         os.makedirs(self.output_dir, exist_ok=True)
         df_final.to_parquet(os.path.join(self.output_dir, f"dataset_{version_str}.parquet"), index=False)
         df_final.to_csv(os.path.join(self.output_dir, f"dataset_{version_str}.csv"), index=False)
-        with open(os.path.join(self.output_dir, f"dataset_{version_str}_metadata.json"), "w") as f:
+        with open(os.path.join(self.output_dir, f"dataset_{version_str}_metadata.json"), "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=4)
 
         return df_final, metadata

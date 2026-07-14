@@ -142,18 +142,10 @@ class MarketStateLabeler(BaseLabeler):
         inside_demand_count = int(window_df.get("inside_demand", pd.Series(0, index=window_df.index)).sum())
         total_zone_touches = inside_supply_count + inside_demand_count
 
-        # Also let's look at the actual zone objects confirmed up to window_end
-        zone_retests = 0
-        all_zones = msg.supply_zones + msg.demand_zones
-        for z in all_zones:
-            # Did a touch event occur strictly inside this window?
-            if z.mitigated and z.mitigated_idx is not None and window_start <= z.mitigated_idx <= window_end:
-                zone_retests += 1
-            if z.touch_count > 0:
-                # Count touches that happened in the window
-                # If z.created_idx is inside window, count its touches
-                if window_start <= z.created_idx <= window_end:
-                    zone_retests += z.touch_count
+        # The per-bar interaction columns are the point-in-time record.  Zone
+        # objects are intentionally not used here because their final
+        # touch_count/mitigation state includes future candles.
+        zone_retests = total_zone_touches
 
         # 5. Volatility & ATR Ratio
         # Is the volatility expanding or contracting relative to historical average?
