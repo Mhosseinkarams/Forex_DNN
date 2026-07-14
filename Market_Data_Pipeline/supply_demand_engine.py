@@ -23,7 +23,7 @@ class SupplyDemandEngine:
 
     def process(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        self.zones = [] # Reset stateless call
+        self.zones = []  # Reset stateless call
 
         closes = df['Close'].values
         opens = df['Open'].values
@@ -33,7 +33,11 @@ class SupplyDemandEngine:
 
         # Pre-calculate ATR
         prev_close = df['Close'].shift(1)
-        tr = pd.concat([df['High'] - df['Low'], (df['High'] - prev_close).abs(), (df['Low'] - prev_close).abs()], axis=1).max(axis=1)
+        tr = pd.concat([
+            df['High'] - df['Low'],
+            (df['High'] - prev_close).abs(),
+            (df['Low'] - prev_close).abs()
+        ], axis=1).max(axis=1)
         atr = tr.rolling(window=self.atr_period).mean().values
 
         # Output arrays
@@ -162,21 +166,35 @@ class SupplyDemandEngine:
                             z.mitigated_idx = i
                             z.freshness = False
 
-                        # Retest details tracking (only count distinct reactions if previous bar was outside)
+                        # Retest details tracking (distinct reactions)
                         if lows[i-1] >= z.upper:
                             z.touch_count += 1
                             z.number_of_reactions += 1
                             # Penalize freshness score
-                            z.freshness_score = float(max(0.0, z.freshness_score - 0.25))
-                            z.strength_score = float(max(0.0, z.strength_score - 0.5))
+                            z.freshness_score = float(
+                                max(0.0, z.freshness_score - 0.25)
+                            )
+                            z.strength_score = float(
+                                max(0.0, z.strength_score - 0.5)
+                            )
 
                             # Penetration depth
-                            penetration = float((z.upper - curr_low) / z.width) if z.width > 0 else 0.0
-                            z.average_penetration = (z.average_penetration * (z.touch_count - 1) + penetration) / z.touch_count
+                            penetration = float(
+                                (z.upper - curr_low) / z.width
+                            ) if z.width > 0 else 0.0
+                            z.average_penetration = (
+                                z.average_penetration * (z.touch_count - 1)
+                                + penetration
+                            ) / z.touch_count
 
                             # Rejection reaction size (from low to close)
-                            rejection = float((curr_close - curr_low) / curr_atr)
-                            z.average_rejection = (z.average_rejection * (z.touch_count - 1) + rejection) / z.touch_count
+                            rejection = float(
+                                (curr_close - curr_low) / curr_atr
+                            )
+                            z.average_rejection = (
+                                z.average_rejection * (z.touch_count - 1)
+                                + rejection
+                            ) / z.touch_count
 
                     # Breakage / Invalidation Check
                     if curr_close < z.lower:
@@ -188,7 +206,7 @@ class SupplyDemandEngine:
                     else:
                         still_active.append(z)
 
-                else: # Supply
+                else:  # Supply
                     # Touch/Retest/Mitigation check
                     if curr_high > z.lower:
                         if not z.mitigated:
@@ -199,14 +217,28 @@ class SupplyDemandEngine:
                         if highs[i-1] <= z.lower:
                             z.touch_count += 1
                             z.number_of_reactions += 1
-                            z.freshness_score = float(max(0.0, z.freshness_score - 0.25))
-                            z.strength_score = float(max(0.0, z.strength_score - 0.5))
+                            z.freshness_score = float(
+                                max(0.0, z.freshness_score - 0.25)
+                            )
+                            z.strength_score = float(
+                                max(0.0, z.strength_score - 0.5)
+                            )
 
-                            penetration = float((curr_high - z.lower) / z.width) if z.width > 0 else 0.0
-                            z.average_penetration = (z.average_penetration * (z.touch_count - 1) + penetration) / z.touch_count
+                            penetration = float(
+                                (curr_high - z.lower) / z.width
+                            ) if z.width > 0 else 0.0
+                            z.average_penetration = (
+                                z.average_penetration * (z.touch_count - 1)
+                                + penetration
+                            ) / z.touch_count
 
-                            rejection = float((curr_high - curr_close) / curr_atr)
-                            z.average_rejection = (z.average_rejection * (z.touch_count - 1) + rejection) / z.touch_count
+                            rejection = float(
+                                (curr_high - curr_close) / curr_atr
+                            )
+                            z.average_rejection = (
+                                z.average_rejection * (z.touch_count - 1)
+                                + rejection
+                            ) / z.touch_count
 
                     # Breakage / Invalidation Check
                     if curr_close > z.upper:
