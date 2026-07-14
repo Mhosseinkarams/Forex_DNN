@@ -1,24 +1,28 @@
 import os
 import json
 import logging
+import threading
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Union, Type
 from ML.base_model import BaseTradingModel
 from ML.models.market_state_classifier import MarketStateClassifier
 from ML.models.level_break_probability import LevelBreakProbabilityModel
+from ML.models.trade_quality_model import TradeQualityModel
 
 logger = logging.getLogger("ModelRegistry")
 
 
 class ModelRegistry:
     """
-    Centralized model registry to register, version, track, and load ML models.
+    Centralized model registry to register, version, track, load, and cache ML models.
     Saves metadata in 'models/model_registry.json' and allows easy retrieval
-    of the latest production models.
+    and caching of production models. Fully thread-safe.
     """
     def __init__(self, registry_path: str = "models/model_registry.json"):
         self.registry_path = registry_path
         self.registry_data: Dict[str, Any] = {"models": []}
+        self._lock = threading.Lock()
+        self._model_cache: Dict[str, BaseTradingModel] = {}
         self._load_registry()
 
     def _load_registry(self):
@@ -62,74 +66,115 @@ class ModelRegistry:
         """
         Register a new trained model run in the registry.
         """
-        # If setting this run to production, demote previous production runs of the same model_name
-        if is_production:
-            for m in self.registry_data["models"]:
-                if m["model_name"] == model_name:
-                    m["is_production"] = False
+        with self._lock:
+            # If setting this run to production, demote previous production runs of the same model_name
+            if is_production:
+                for m in self.registry_data["models"]:
+                    if m["model_name"] == model_name:
+                        m["is_production"] = False
 
-        record = {
-            "model_name": model_name,
-            "version": version,
-            "model_path": model_path,
-            "metrics": metrics,
-            "dataset_version": dataset_version,
-            "dataset_hash": dataset_hash,
-            "feature_registry_version": feature_registry_version,
-            "model_type": model_type,
-            "is_production": is_production,
-            "registered_at": datetime.now().isoformat()
-        }
-        self.registry_data["models"].append(record)
-        self._save_registry()
-        logger.info(f"Successfully registered model '{model_name}' version '{version}' at '{model_path}'")
+            record = {
+                "model_name": model_name,
+                "version": version,
+                "model_path": model_path,
+                "metrics": metrics,
+                "dataset_version": dataset_version,
+                "dataset_hash": dataset_hash,
+                "feature_registry_version": feature_registry_version,
+                "model_type": model_type,
+                "is_production": is_production,
+                "registered_at": datetime.now().isoformat()
+            }
+            self.registry_data["models"].append(record)
+            self._save_registry()
+
+            # Clear cache for this model to pick up the new registration if loaded later
+            if model_name in self._model_cache:
+                del self._model_cache[model_name]
+
+            logger.info(f"Successfully registered model '{model_name}' version '{version}' at '{model_path}'")
 
     def get_latest_version(self, model_name: str) -> Optional[str]:
         """
         Helper to find the latest version string registered for a model.
         """
-        versions = [
-            m["version"] for m in self.registry_data["models"] if m["model_name"] == model_name
-        ]
-        if not versions:
-            return None
-        # Sort version strings or use registration order (latest registered is last)
-        return versions[-1]
+        with self._lock:
+            versions = [
+                m["version"] for m in self.registry_data["models"] if m["model_name"] == model_name
+            ]
+            if not versions:
+                return None
+            return versions[-1]
+
+    def get_model_metadata(self, model_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve registration metadata for the latest production (or falling back to latest) model of a given type.
+        """
+        with self._lock:
+            candidates = [
+                m for m in self.registry_data["models"] if m["model_name"] == model_name and m.get("is_production", False)
+            ]
+            if not candidates:
+                candidates = [m for m in self.registry_data["models"] if m["model_name"] == model_name]
+            if not candidates:
+                return None
+            return candidates[-1]
 
     def load_latest_production(self, model_name: str) -> Optional[BaseTradingModel]:
         """
         Load the latest marked 'production' model of a given type.
         If no production model is explicitly flagged, fallback to the latest registered model.
+        Utilizes caching and thread-safe lazy loading. Gracefully registers warnings and ignores
+        unavailable models.
         """
-        candidates = [
-            m for m in self.registry_data["models"] if m["model_name"] == model_name and m.get("is_production", False)
-        ]
+        # 1. Thread-safe cached retrieval
+        with self._lock:
+            if model_name in self._model_cache:
+                return self._model_cache[model_name]
 
-        if not candidates:
-            # Fallback to any model under that name
-            candidates = [m for m in self.registry_data["models"] if m["model_name"] == model_name]
+            candidates = [
+                m for m in self.registry_data["models"] if m["model_name"] == model_name and m.get("is_production", False)
+            ]
 
-        if not candidates:
-            logger.warning(f"No registered models found for model_name: '{model_name}'")
-            return None
+            if not candidates:
+                # Fallback to any model under that name
+                candidates = [m for m in self.registry_data["models"] if m["model_name"] == model_name]
 
-        # Pick the latest candidate by registration time / order
-        selected_record = candidates[-1]
-        model_path = selected_record["model_path"]
+            if not candidates:
+                logger.warning(f"No registered models found for model_name: '{model_name}'")
+                return None
 
-        # Infer class by name
-        if "MarketStateClassifier" in model_name:
-            cls: Type[BaseTradingModel] = MarketStateClassifier
-        elif "LevelBreakProbability" in model_name:
-            cls = LevelBreakProbabilityModel
-        else:
-            raise ValueError(f"Unknown model class name: '{model_name}'. Cannot load from registry.")
+            # Pick the latest candidate by registration time / order
+            selected_record = candidates[-1]
+            model_path = selected_record["model_path"]
 
-        logger.info(f"Loading '{model_name}' from path: {model_path}")
-        return cls.load(model_path)
+            # Infer class by name
+            if "MarketStateClassifier" in model_name:
+                cls: Type[BaseTradingModel] = MarketStateClassifier
+            elif "LevelBreakProbability" in model_name:
+                cls = LevelBreakProbabilityModel
+            elif "TradeQuality" in model_name:
+                cls = TradeQualityModel
+            else:
+                logger.warning(f"Unknown model class name: '{model_name}'. Ignoring.")
+                return None
+
+            logger.info(f"Loading '{model_name}' from path: {model_path}")
+            if not os.path.exists(model_path):
+                logger.warning(f"Model file for '{model_name}' at '{model_path}' does not exist on disk.")
+                return None
+
+            try:
+                model_instance = cls.load(model_path)
+                self._model_cache[model_name] = model_instance
+                return model_instance
+            except Exception as e:
+                logger.warning(f"Failed to load model '{model_name}' from '{model_path}': {e}")
+                return None
 
     def list_models(self) -> List[Dict[str, Any]]:
         """
         List all registered models.
         """
-        return self.registry_data["models"]
+        with self._lock:
+            return list(self.registry_data["models"])

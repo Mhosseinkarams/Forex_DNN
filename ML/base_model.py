@@ -54,6 +54,20 @@ class LevelBreakPrediction:
         return asdict(self)
 
 
+@dataclass
+class TradeQualityPrediction:
+    """
+    Structured, typed prediction result for Trade Quality Model.
+    """
+    quality_score: float
+    expected_win_rate: float
+    confidence: float
+    expected_risk_reward: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
 class BaseTradingModel(ABC):
     """
     Abstract Parent Class of every ML model in the Forex_DNN framework.
@@ -306,6 +320,10 @@ class BaseTradingModel(ABC):
         elif isinstance(pred, LevelBreakPrediction):
             res["BREAK"] = pred.break_probability
             res["REJECT"] = pred.reject_probability
+            res["confidence"] = pred.confidence
+        elif isinstance(pred, TradeQualityPrediction):
+            res["QUALITY_SCORE"] = pred.quality_score
+            res["EXPECTED_WIN_RATE"] = pred.expected_win_rate
             res["confidence"] = pred.confidence
         return res
 

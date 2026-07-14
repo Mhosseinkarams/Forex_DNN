@@ -878,23 +878,29 @@ To modify log levels, edit the `setup_logging` call in `main.py` or configuratio
 
 ---
 
-## 19. Machine Learning Roadmap
+## 19. Machine Learning Roadmap & RL-Ready Architecture (Module 16)
 
-The framework is designed to evolve into a fully automated, machine learning driven platform.
+The framework is designed to evolve into a fully automated, machine learning and reinforcement learning driven platform. Module 16 implements the centralized **MLDecisionEngine** which aggregates multi-model inferences into a unified, immutable `DecisionContext`.
 
 ```text
-[Current Classifiers]                       [Planned Modules]
- - MarketStateClassifier (Regime)            - TradeQualityModel (Signal Filtering)
- - LevelBreakProbabilityModel (Break probability) - SL/TP Optimization (ATR-Adjuster)
-                                             - Multi-Strategy Portfolio Manager
+[Inference Layer]                    [Calibration]          [Policy Execution]
+ - MarketStateClassifier    ------>  - Platt Scaling   -->  - RuleBasedPolicy
+ - LevelBreakProbability    ------>  - Isotonic Reg.   -->  - RLPolicy (Future)
+ - TradeQualityModel        ------>  - Identity        -->  - BayesianPolicy (Future)
 ```
 
-### Current Status
+### Centralized ML Inference Layer (Operational)
+- **MLDecisionEngine**: Completely strategy-agnostic centralized decision engine. Standardizes feature mapping, runs multi-model inferences, calibrates raw probabilities, executes active policy layers, and returns thread-safe, immutable `DecisionContext` snapshots.
+- **ModelRegistry**: Fully lazy-loading, caching, thread-safe production model registry that manages model life cycles and ignores missing optional models with warnings.
+- **Confidence Calibrator**: Calibrates classifier probabilities via Platt scaling, Isotonic regression, or Identity calibration to convert raw scores into robust confidence weights.
+- **Policy Layer**: Implements standard `RuleBasedPolicy` as well as hooks/skeletons for `RLPolicy`, `ImitationLearningPolicy`, and `BayesianPolicy`.
+
+### Active Models
 - **MarketStateClassifier**: Fully operational. Classifies `TREND`, `RANGE`, and `TRANSITION` states.
 - **LevelBreakProbabilityModel**: Fully operational. Evaluates whether a supply/demand level is likely to break.
+- **TradeQualityModel**: Fully operational. Predicts expected trade quality scores and win rates before order execution.
 
 ### Future Modules
-- **TradeQualityModel**: Predicts expected trade returns before order execution.
 - **SL/TP Optimizer**: Dynamically adjusts trailing exits based on real-time volatility.
 - **Position Scaling Model**: Scales position sizing based on model prediction confidence.
 - **Execution Timing Model**: Optimizes trade entry to minimize slippage.
