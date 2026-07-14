@@ -25,7 +25,7 @@ from simulation.simulation_environment import env as mt5
 # ==============================================================================
 # Starting a process with no mode must never connect to a live broker.  Historical
 # runs use SimulationRunner directly; this bootstrap is for demo/live operation.
-MODE = os.getenv("TRADING_MODE", "backtest").strip().lower()
+MODE = os.getenv("TRADING_MODE", "live").strip().lower()
 SYMBOLS = ["EURUSD_o", "XAUUSD_o", "YM", "FDAX"]
 TIMEFRAMES = ["M5", "M15"]
 MAGIC_UNITY = 100001
