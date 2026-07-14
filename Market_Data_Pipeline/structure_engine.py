@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import logging
 from typing import List, Optional, Dict, Any
-from datetime import datetime
 
 from Market_Data_Pipeline.structure_graph import StructureLevel, BOS, CHOCH
 
@@ -38,7 +37,19 @@ class MarketStructureEngine:
         self.last_bos_idx: int = -1
         self.last_choch_idx: int = -1
 
-    def _detect_swings(self, df: pd.DataFrame):
+    def _calculate_atr(self, df: pd.DataFrame, window: int = 14) -> np.ndarray:
+        """
+        Calculate Average True Range (ATR) dynamically based on True Range rolling mean.
+        """
+        prev_close = df['Close'].shift(1)
+        tr = pd.concat([
+            df['High'] - df['Low'],
+            (df['High'] - prev_close).abs(),
+            (df['Low'] - prev_close).abs()
+        ], axis=1).max(axis=1)
+        return tr.rolling(window=window).mean().values
+
+    def _detect_swings(self, df: pd.DataFrame, atr: np.ndarray):
         """
         Detect Swing Highs and Swing Lows based on Major, Minor, and Internal lookbacks.
         Ensures nested structure tagging and full metadata tracking.
@@ -46,12 +57,6 @@ class MarketStructureEngine:
         highs = df['High'].values
         lows = df['Low'].values
         times = df['Datetime'].values if 'Datetime' in df.columns else [None] * len(df)
-
-        # Pre-calculate rolling ATR for dynamic strength metrics
-        atr_period = 14
-        prev_close = df['Close'].shift(1)
-        tr = pd.concat([df['High'] - df['Low'], (df['High'] - prev_close).abs(), (df['Low'] - prev_close).abs()], axis=1).max(axis=1)
-        atr = tr.rolling(window=atr_period).mean().values
 
         n_bars = len(df)
 
@@ -142,13 +147,21 @@ class MarketStructureEngine:
         # Track last swing high and last swing low for summary compatibility
         sh_majors = [s for s in self.swings if s.level_type == 'SwingHigh' and s.structure_type == 'Major']
         sl_majors = [s for s in self.swings if s.level_type == 'SwingLow' and s.structure_type == 'Major']
-        if sh_majors: self.last_swing_high = sh_majors[-1]
-        elif [s for s in self.swings if s.level_type == 'SwingHigh']: self.last_swing_high = [s for s in self.swings if s.level_type == 'SwingHigh'][-1]
 
-        if sl_majors: self.last_swing_low = sl_majors[-1]
-        elif [s for s in self.swings if s.level_type == 'SwingLow']: self.last_swing_low = [s for s in self.swings if s.level_type == 'SwingLow'][-1]
+        all_swing_highs = [s for s in self.swings if s.level_type == 'SwingHigh']
+        all_swing_lows = [s for s in self.swings if s.level_type == 'SwingLow']
 
-    def _detect_structure_breaks(self, df: pd.DataFrame):
+        if sh_majors:
+            self.last_swing_high = sh_majors[-1]
+        elif all_swing_highs:
+            self.last_swing_high = all_swing_highs[-1]
+
+        if sl_majors:
+            self.last_swing_low = sl_majors[-1]
+        elif all_swing_lows:
+            self.last_swing_low = all_swing_lows[-1]
+
+    def _detect_structure_breaks(self, df: pd.DataFrame, atr: np.ndarray):
         """
         Detect BOS and CHOCH precisely using confirmed swings.
         Determines and tracks protected swing levels dynamically.
@@ -157,8 +170,6 @@ class MarketStructureEngine:
             return
 
         closes = df['Close'].values
-        highs = df['High'].values
-        lows = df['Low'].values
         volumes = df['TickVolume'].values if 'TickVolume' in df.columns else np.zeros(len(df))
         times = df['Datetime'].values if 'Datetime' in df.columns else [None] * len(df)
 
@@ -188,10 +199,7 @@ class MarketStructureEngine:
             curr_high_swing = latest_highs[-1]
             curr_low_swing = latest_lows[-1]
 
-            # Update bars since confirmation
-            for s in self.swings:
-                if s.index + s.confirmation_delay <= i:
-                    s.bars_since_confirmation = i - (s.index + s.confirmation_delay)
+            # Removed redundant O(N) loop here. bars_since_confirmation will be vectorized/calculated below.
 
             # Check Bullish BOS / Bullish CHOCH
             if closes[i] > curr_high_swing.price and curr_high_swing.index not in broken_swings:
@@ -344,20 +352,44 @@ class MarketStructureEngine:
     def process(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         # Reset state
-        self.swings = []; self.bos_list = []; self.choch_list = []
-        self.bos_count = 0; self.choch_count = 0; self.current_trend = 0
-        self.last_bos_idx = -1; self.last_choch_idx = -1
-        self.last_swing_high = None; self.last_swing_low = None
-        self.protected_high = None; self.protected_low = None
+        self.swings = []
+        self.bos_list = []
+        self.choch_list = []
+        self.bos_count = 0
+        self.choch_count = 0
+        self.current_trend = 0
+        self.last_bos_idx = -1
+        self.last_choch_idx = -1
+        self.last_swing_high = None
+        self.last_swing_low = None
+        self.protected_high = None
+        self.protected_low = None
 
-        self._detect_swings(df)
-        self._detect_structure_breaks(df)
+        # Calculate ATR once for reuse
+        atr = self._calculate_atr(df, window=14)
+
+        self._detect_swings(df, atr)
+        self._detect_structure_breaks(df, atr)
+
+        # Vectorized / single-pass calculation of bars_since_confirmation for all swings at end of process
+        n_bars = len(df)
+        for s in self.swings:
+            confirmation_idx = s.index + s.confirmation_delay
+            if confirmation_idx < n_bars:
+                s.bars_since_confirmation = n_bars - 1 - confirmation_idx
+            else:
+                s.bars_since_confirmation = -1
 
         # Columns mapping for DataFrame enrichment (SMC outputs)
-        trend_arr = np.zeros(len(df)); bos_arr = np.zeros(len(df)); choch_arr = np.zeros(len(df))
-        bos_cnt_arr = np.zeros(len(df)); choch_cnt_arr = np.zeros(len(df))
-        last_bos_dir_arr = np.zeros(len(df)); last_choch_dir_arr = np.zeros(len(df))
-        sh_arr = np.full(len(df), np.nan); sl_arr = np.full(len(df), np.nan)
+        trend_arr = np.zeros(len(df))
+        bos_arr = np.zeros(len(df))
+        choch_arr = np.zeros(len(df))
+        bos_cnt_arr = np.zeros(len(df))
+        choch_cnt_arr = np.zeros(len(df))
+        last_bos_dir_arr = np.zeros(len(df))
+        last_choch_dir_arr = np.zeros(len(df))
+        sh_arr = np.full(len(df), np.nan)
+        sl_arr = np.full(len(df), np.nan)
 
         # Swings
         for s in self.swings:
@@ -367,7 +399,8 @@ class MarketStructureEngine:
                 sl_arr[s.index + s.confirmation_delay:] = s.price
 
         # BOS
-        curr_bos_cnt = 0; last_bos_dir = 0
+        curr_bos_cnt = 0
+        last_bos_dir = 0
         for b in self.bos_list:
             bos_arr[b.index] = b.direction
             curr_bos_cnt += 1
@@ -376,7 +409,8 @@ class MarketStructureEngine:
             last_bos_dir_arr[b.index:] = last_bos_dir
 
         # CHOCH
-        curr_choch_cnt = 0; last_choch_dir = 0
+        curr_choch_cnt = 0
+        last_choch_dir = 0
         for c in self.choch_list:
             choch_arr[c.index] = c.new_trend
             curr_choch_cnt += 1
@@ -385,8 +419,11 @@ class MarketStructureEngine:
             last_choch_dir_arr[c.index:] = last_choch_dir
 
         # Trend and Bars Since
-        curr_tr = 0; last_b = -1; last_c = -1
-        bs_b = np.full(len(df), -1); bs_c = np.full(len(df), -1)
+        curr_tr = 0
+        last_b = -1
+        last_c = -1
+        bs_b = np.full(len(df), -1)
+        bs_c = np.full(len(df), -1)
 
         for i in range(len(df)):
             if bos_arr[i] != 0:
