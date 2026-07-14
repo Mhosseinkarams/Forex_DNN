@@ -13,8 +13,9 @@ In this new pipeline, raw market data is consumed once, enriched through standar
 1.  **Environment Layer**: The bottom layer provides a unified interface (`SimulationEnvironment`) to either the live MetaTrader 5 API or the internal backtesting broker.
 2.  **Data & Pipeline Layer**: Handles raw data retrieval (`DataFeed`), indicator calculation (`IndicatorEngine`), and structural intelligence (`MarketStructureEngine`, `SupplyDemandEngine`, `MarketStateEngine`, `FeaturePipeline`).
 3.  **Central Market Representation**: Holds the populated `MarketStructureGraph` instances.
-4.  **Strategy & Trade Location Layer**: Lightweight strategies query the `MarketStructureGraph` and leverage `TradeLocationEngine` to resolve structural boundaries.
-5.  **Execution & Management Layer**: Contains the core execution engines, including `PositionTracker`, `DrawdownManager`, `ExitManager`, `SendOrder`, and `PositionSizer`.
+4.  **Centralized ML Inference & Decision Layer (Module 16)**: Houses `MLDecisionEngine`, `ModelRegistry`, `BaseCalibrator` variants, and `BasePolicy` implementations which aggregate multi-model predictions into an immutable, thread-safe `DecisionContext`.
+5.  **Strategy & Trade Location Layer**: Lightweight strategies query the `MarketStructureGraph`, consume `DecisionContext` predictions, and leverage `TradeLocationEngine` to resolve structural boundaries.
+6.  **Execution & Management Layer**: Contains the core execution engines, including `PositionTracker`, `DrawdownManager`, `ExitManager`, `SendOrder`, and `PositionSizer`.
 
 ## Module Responsibilities
 
@@ -28,6 +29,12 @@ In this new pipeline, raw market data is consumed once, enriched through standar
 - **MarketStructureGraph**: Central, shared data container representing the point-in-time structural graph of the market.
 - **MarketStateEngine**: Classifies current market state regimes (Trending, Ranging, Transition, Expansion, Compression).
 - **FeaturePipeline**: Formats graph coordinates into ML-ready numerical vectors.
+
+### Centralized ML Inference & Decision Layer (New)
+- **MLDecisionEngine**: Aggregates models, validates feature vectors via `FeatureRegistry`, runs calibrated inference, executes policy recommendations, and builds the immutable `DecisionContext`.
+- **ModelRegistry**: Lazy-loads, caches, and tracks registered model assets (such as `MarketStateClassifier`, `LevelBreakProbabilityModel`, and `TradeQualityModel`), gracefully ignoring missing optional models.
+- **Confidence Calibration**: Platt scaling, Isotonic regression, and Identity calibration layers decouple raw probabilities from production confidence outputs.
+- **Policy Layer**: Sizing, risk-scaling, and breakout/rejection-based target setting recommended by `RuleBasedPolicy`.
 
 ### Trade Location & Sizing
 - **TradeLocationEngine**: Computes candidate entries, stop-loss, take-profit, and invalidation levels based strictly on structural information.
