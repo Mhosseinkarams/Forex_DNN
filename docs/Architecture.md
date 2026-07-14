@@ -47,3 +47,55 @@ In this new pipeline, raw market data is consumed once, enriched through standar
 - `TradeLocationEngine` depends on `MarketStructureGraph`.
 - `SendOrder` depends on `PositionManager`, `PositionTracker`, `DrawdownManager`, `PositionSizer`, and `ExitManager`.
 - `ExitManager` depends on `PositionTracker` and `PositionManager`.
+
+## Runtime ML Integration Layer (Milestone 5)
+
+Milestone 5 implements the runtime ML integration framework, guaranteeing that live inference and offline training operate under a single, unified source of truth without feature drift, look-ahead bias, or circular strategy dependencies.
+
+### 1. Unified Execution Flow
+
+The framework follows a strict, unidirectional hierarchical pipeline:
+
+```
+Indicators (IndicatorEngine)
+       │
+       ▼
+MarketStructureGraph (MarketStructureEngine + SupplyDemandEngine)
+       │
+       ▼
+FeaturePipeline (Extracts, standardizes, and validates feature vectors)
+       │
+       ▼
+MLDecisionEngine (Loads models, runs calibrated inference, recommends policy)
+       │
+       ▼
+SignalEvaluator (Evaluates MM Strategy technical rules and ML Diagnostics)
+       │
+       ▼
+MMStrategy (Owns final decision, manages trades, runs in Shadow Mode)
+       │
+       ▼
+TradeFeatureRecorder (Logs candidates and trade outcomes for future retraining)
+```
+
+The strategy always owns the final decision; ML never directly executes, manages, or closes positions on its own.
+
+### 2. Runtime Feature Pipeline (Module 17)
+The `FeaturePipeline` under `ML/feature_pipeline.py` consumes current OHLC dataframes, indicator dataframes, the active `MarketStructureGraph`, and execution contexts. It extracts and standardizes features dynamically according to the active `FeatureRegistry` order.
+- **Strict Validation**: The pipeline proactively detects missing values, NaNs, infinites, and type mismatches. Any discrepancy triggers a log failure and falls back to the registry-defined default value.
+- **Runtime Performance**: Reusable calculations are cached to avoid redundant computation of indicator and mathematical operations.
+
+### 3. Shadow Mode MM Strategy Integration (Module 18)
+In Version 1, ML does not influence or filter trading execution. The strategy operates in **Shadow Mode** (`SHADOW_MODE = True`, `ML_FILTERING = False`), where the complete ML pipeline is evaluated on every candidate signal, but trading continues to obey technical rules.
+- **Specialized Loggers**: Every candidate signal writes detailed diagnostics across specialized logger files:
+  - `Logs/runtime_features.log`
+  - `Logs/decision_engine.log`
+  - `Logs/shadow_mode.log`
+  - `Logs/signal_evaluator.log`
+
+### 4. Trade Feature Recorder (Module 19)
+The `TradeFeatureRecorder` under `ML/trade_feature_recorder.py` logs candidates and final outcomes in thread-safe, daily rolling files (supporting CSV and Parquet).
+- **Tabular RETRAINING Compatibility**: When a candidate is evaluated, a flat record is written. When a trade is eventually completed (logged via `TradingJournal.log_lifecycle`), the recorder loads the daily file, updates the row matching the master `signal_id` with exit prices, duration, profit, R-multiple, drawdowns, and result labels, and overwrites it.
+
+### 5. Unified Signal Evaluator (Module 20)
+The `SignalEvaluator` under `Strategies/signal_evaluator.py` provides a single, unified, strategy-agnostic interface to decide if a signal is accepted, rejected, its confidence, and priorities, separating strategies completely from ML internal states.

@@ -154,3 +154,89 @@ self.decision_engine = MLDecisionEngine(
 ```
 
 **Because the Strategy only consumes the resulting standard `DecisionContext`, the entire backend can be updated from deterministic rules to advanced neural reinforcement policies with zero downstream code changes.**
+
+---
+
+## 5. Runtime ML Integration and Shadow Mode (Milestone 5)
+
+Milestone 5 introduces the runtime ML integration layer, linking analytical engines, ML decisions, and strategy rules under a single, unified execution flow.
+
+### Feature Pipeline Execution (`extract_runtime`)
+To generate equivalent feature vectors during live trading, backtesting, or notebooks:
+```python
+from ML.feature_pipeline import FeaturePipeline
+from ML.feature_registry import FeatureRegistry
+
+# 1. Initialize Registry and Pipeline
+registry = FeatureRegistry(load_defaults=True)
+pipeline = FeaturePipeline(registry)
+
+# 2. Extract features relative to the point-in-time MarketStructureGraph
+feature_vector = pipeline.extract_runtime(
+    df=df_final,
+    msg=graph,
+    idx=-2,  # Closed bar to protect against look-ahead bias
+    account_session_context={"session": "Asian", "spread": 2.0},
+    strategy_context={"signal_direction": 1, "signal_type": "standard"}
+)
+
+# feature_vector is a FeatureVector object containing:
+# - feature_vector.features: Dict[str, Any]
+# - feature_vector.vector: 1D numpy array
+# - feature_vector.metadata: dict of extraction statistics and failures
+```
+
+### Signal Evaluation (`SignalEvaluator`)
+To decouple strategies from ML diagnostics, use the unified `SignalEvaluator` interface:
+```python
+from Strategies.signal_evaluator import SignalEvaluator
+
+# Initialize the evaluator (Shadow Mode is True, ML Filtering is False)
+evaluator = SignalEvaluator(shadow_mode=True, ml_filtering=False)
+
+candidate_signal = {
+    "symbol": "EURUSD",
+    "timeframe": "M5",
+    "direction": 1,
+    "signal_type": "standard",
+    "technical_rules_satisfied": True
+}
+
+evaluation = evaluator.evaluate(
+    strategy_name="MMStrategy",
+    signal_candidate=candidate_signal,
+    feature_vector=feature_vector.features,
+    decision_context=decision_context,
+    market_structure=graph,
+    risk_state={"trading_allowed": True}
+)
+
+if evaluation.accepted:
+    print(f"Trade Approved. Priority: {evaluation.priority}. Reasons: {evaluation.reasons}")
+```
+
+### Tabular Trade Feature Recording (`TradeFeatureRecorder`)
+To write training datasets dynamically during operations:
+```python
+from ML.trade_feature_recorder import TradeFeatureRecorder
+
+# Initialize the recorder (writes daily rolling CSV and Parquet files)
+recorder = TradeFeatureRecorder(storage_dir="ML/recorded_features", file_format="both")
+
+# 1. Log Candidate Signal
+recorder.record_candidate(
+    signal_id=signal_id,
+    timestamp="2026-07-10T12:00:00Z",
+    strategy="mm",
+    symbol="EURUSD",
+    timeframe="M5",
+    direction="BUY",
+    features=feature_vector.features,
+    decision_context=decision_context,
+    accepted=evaluation.accepted,
+    reason="Candidate met technical criteria"
+)
+
+# 2. Log Trade Outcome (called automatically inside TradingJournal.log_lifecycle)
+# recorder.record_outcome(signal_id=signal_id, lifecycle=lifecycle_instance)
+```

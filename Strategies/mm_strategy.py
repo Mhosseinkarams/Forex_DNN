@@ -27,6 +27,12 @@ from Market_Data_Pipeline.supply_demand_engine import SupplyDemandEngine
 from Market_Data_Pipeline.state_engine import MarketStateEngine, StateContext
 from Trade_Execution.location_engine import TradeLocationEngine
 
+# Runtime ML and Evaluator Integration
+from ML.feature_pipeline import FeaturePipeline
+from ML.ml_decision_engine import MLDecisionEngine
+from Strategies.signal_evaluator import SignalEvaluator, SignalEvaluation
+from ML.trade_feature_recorder import TradeFeatureRecorder
+
 logger = logging.getLogger("MMStrategy")
 
 class MMStrategy:
@@ -49,7 +55,13 @@ class MMStrategy:
         location_engine: Optional[TradeLocationEngine] = None,
         annotator: Optional[Any] = None,
         market_state_model: Optional[Any] = None,
-        level_break_model: Optional[Any] = None
+        level_break_model: Optional[Any] = None,
+        decision_engine: Optional[MLDecisionEngine] = None,
+        feature_pipeline: Optional[FeaturePipeline] = None,
+        signal_evaluator: Optional[SignalEvaluator] = None,
+        recorder: Optional[TradeFeatureRecorder] = None,
+        shadow_mode: bool = True,
+        ml_filtering: bool = False
     ):
         self.data_feed = data_feed
         self.send_order = send_order
@@ -68,6 +80,23 @@ class MMStrategy:
         self.annotator = annotator
         self.market_state_model = market_state_model
         self.level_break_model = level_break_model
+
+        # Config Toggles
+        self.shadow_mode = shadow_mode
+        self.ml_filtering = ml_filtering
+
+        # Initialize injected or default ML services
+        self.feature_pipeline = feature_pipeline or FeaturePipeline()
+        self.decision_engine = decision_engine or MLDecisionEngine()
+        self.signal_evaluator = signal_evaluator or SignalEvaluator(shadow_mode=self.shadow_mode, ml_filtering=self.ml_filtering)
+        self.recorder = recorder or TradeFeatureRecorder()
+
+        # Connect recorder to the TradingJournal so outcomes are recorded automatically
+        if self.trading_journal is not None:
+            self.trading_journal.recorder = self.recorder
+
+        # Set up runtime logger handlers
+        self._setup_runtime_loggers()
 
         self.engine_m5 = IndicatorEngine(ema_periods=[50, 600], slope_period=32)
         self.engine_m15 = IndicatorEngine(ema_periods=[50, 800], slope_period=32)
@@ -211,6 +240,24 @@ class MMStrategy:
 
                 self._check_and_submit_signal(symbol, timeframe, df, fast_p, slow_p)
                 self._save_state()
+
+    def _setup_runtime_loggers(self):
+        """Configure specialized handlers for runtime logging."""
+        def get_or_setup_logger(name, filename):
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+            logger_obj = logging.getLogger(name)
+            logger_obj.setLevel(logging.INFO)
+            if not logger_obj.handlers:
+                handler = logging.FileHandler(filename)
+                handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+                logger_obj.addHandler(handler)
+            logger_obj.propagate = False
+            return logger_obj
+
+        self.features_logger = get_or_setup_logger("runtime_features", "Logs/runtime_features.log")
+        self.decision_logger = get_or_setup_logger("decision_engine", "Logs/decision_engine.log")
+        self.shadow_logger = get_or_setup_logger("shadow_mode", "Logs/shadow_mode.log")
+        self.evaluator_logger = get_or_setup_logger("signal_evaluator", "Logs/signal_evaluator.log")
 
     def _is_new_bar(self, symbol, timeframe, df):
         current_bar_time = str(df.iloc[-1]["Datetime"])
@@ -433,15 +480,117 @@ class MMStrategy:
             return
         entry_price = float(tick.ask if direction == 1 else tick.bid)
 
+        # --- RUNTIME FEATURE PIPELINE AND INFERENCE FLOW ---
+        msg = self._build_market_structure_graph(symbol, timeframe, df)
+
+        session_val = str(msg.session) if hasattr(msg, "session") else "Asian"
+        spread_val = float(df.iloc[-2].get("Spread", 0.0))
+        account_session_ctx = {
+            "session": session_val,
+            "spread": spread_val
+        }
+        strategy_ctx = {
+            "signal_direction": direction,
+            "signal_type": signal_type
+        }
+
+        # 1. Extract exactly the same features used during training
+        features_fv = self.feature_pipeline.extract_runtime(
+            df=df,
+            msg=msg,
+            idx=-2,
+            account_session_context=account_session_ctx,
+            strategy_context=strategy_ctx
+        )
+
+        # Log runtime feature vector
+        self.features_logger.info(f"Features for candidate signal {bar_timestamp}: {features_fv.features}")
+
+        # 2. Query MLDecisionEngine
+        decision_ctx = None
+        if self.decision_engine:
+            try:
+                decision_ctx = self.decision_engine.evaluate(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    feature_vector=features_fv.features,
+                    strategy_name="MMStrategy",
+                    timestamp=bar_timestamp
+                )
+                self.decision_logger.info(
+                    f"Decision Engine output: State={decision_ctx.predicted_state}, "
+                    f"BreakProb={decision_ctx.break_probability:.4f}, "
+                    f"QualityScore={decision_ctx.trade_quality_score:.4f}"
+                )
+            except Exception as e:
+                logger.error(f"MLDecisionEngine inference failure: {e}", exc_info=True)
+
+        # 3. Retrieve risk/drawdown state
+        trading_allowed = self.drawdown_manager.trading_allowed()
+        risk_state = {
+            "trading_allowed": trading_allowed,
+            "drawdown_limit_reached": not trading_allowed
+        }
+
+        # 4. Invoke unified SignalEvaluator
+        candidate_dict = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "direction": direction,
+            "signal_type": signal_type,
+            "technical_rules_satisfied": True
+        }
+
+        evaluation = self.signal_evaluator.evaluate(
+            strategy_name="MMStrategy",
+            signal_candidate=candidate_dict,
+            feature_vector=features_fv.features,
+            decision_context=decision_ctx,
+            market_structure=msg,
+            supply_demand=None,
+            risk_state=risk_state
+        )
+
+        # Log to signal evaluator
+        self.evaluator_logger.info(
+            f"Evaluation result: Accepted={evaluation.accepted}, Priority={evaluation.priority}, "
+            f"Reasons={evaluation.reasons}, Warnings={evaluation.warnings}"
+        )
+
+        # Log candidate details in Shadow Mode format
+        pred_state = decision_ctx.predicted_state if decision_ctx else "TRANSITION"
+        state_conf = decision_ctx.state_confidence if decision_ctx else 0.5
+        break_prob = decision_ctx.break_probability if decision_ctx else 0.5
+        trade_qual = decision_ctx.trade_quality_score if decision_ctx else 0.5
+        policy_rec = str(decision_ctx.policy_recommendation) if decision_ctx else "None"
+
+        shadow_log_msg = (
+            f"SHADOW_MODE_CANDIDATE | Time: {bar_timestamp} | Symbol: {symbol} | Timeframe: {timeframe} | "
+            f"Direction: {'BUY' if direction == 1 else 'SELL'} | MarketStatePred: {pred_state} ({state_conf:.4f}) | "
+            f"BreakProb: {break_prob:.4f} | TradeQuality: {trade_qual:.4f} | "
+            f"PolicyRec: {policy_rec} | FinalDecision: {'Accepted' if evaluation.accepted else 'Rejected'}"
+        )
+        self.shadow_logger.info(shadow_log_msg)
+
         # Active chart annotation for signal levels
+        ml_render_data = {}
+        if decision_ctx:
+            ml_render_data = {
+                "trend_prob": decision_ctx.state_probabilities.get("TREND", 0.0),
+                "range_prob": decision_ctx.state_probabilities.get("RANGE", 0.0),
+                "transition_prob": decision_ctx.state_probabilities.get("TRANSITION", 0.0),
+                "break_prob": decision_ctx.break_probability,
+                "reject_prob": decision_ctx.rejection_probability,
+                "confidence": decision_ctx.confidence_score
+            }
+
         if self.annotator:
             try:
-                msg = self._build_market_structure_graph(symbol, timeframe, df)
                 state_ctx = self.state_engine.evaluate(msg)
 
                 decision_dict = {
                     "direction": direction,
-                    "accepted": True,
+                    "accepted": evaluation.accepted,
                     "reason": signal_type,
                     "signal_type": signal_type,
                     "strategy": "mm"
@@ -458,7 +607,7 @@ class MMStrategy:
             except Exception as ex:
                 logger.error(f"Failed to passively annotate signal: {ex}")
         
-        # Distance metrics for ML
+        # Distance/technical metrics for ML
         extra_fields = self._get_signal_distances(symbol, timeframe, signal_type, direction)
         
         # Add indicator and trend context values to extra_fields
@@ -484,52 +633,6 @@ class MMStrategy:
             "risk_pct_default": risk_pct_default,
         })
 
-        # Run ML inference if models are loaded
-        ml_render_data = {}
-        if self.market_state_model is not None:
-            try:
-                msg = self._build_market_structure_graph(symbol, timeframe, df)
-                from ML.feature_pipeline import FeaturePipeline
-                fp_pipeline = FeaturePipeline(self.market_state_model.registry)
-                feats = fp_pipeline.extract_all(df, msg, idx=idx_closed)
-                features_df = pd.DataFrame([feats])
-
-                state_probas = self.market_state_model.predict_proba(features_df)
-                extra_fields["ml_trend_prob"] = state_probas.get("TREND", 0.0)
-                extra_fields["ml_range_prob"] = state_probas.get("RANGE", 0.0)
-                extra_fields["ml_transition_prob"] = state_probas.get("TRANSITION", 0.0)
-                extra_fields["ml_state_confidence"] = state_probas.get("confidence", 0.0)
-
-                ml_render_data["trend_prob"] = state_probas.get("TREND", 0.0)
-                ml_render_data["range_prob"] = state_probas.get("RANGE", 0.0)
-                ml_render_data["transition_prob"] = state_probas.get("TRANSITION", 0.0)
-
-                logger.info(f"ML Market State (Trend: {state_probas.get('TREND', 0.0)*100:.1f}%, Range: {state_probas.get('RANGE', 0.0)*100:.1f}%, Transition: {state_probas.get('TRANSITION', 0.0)*100:.1f}%)")
-            except Exception as ml_ex:
-                logger.warning(f"Failed to run ML market state inference: {ml_ex}")
-
-        if self.level_break_model is not None:
-            try:
-                msg = self._build_market_structure_graph(symbol, timeframe, df)
-                from ML.feature_pipeline import FeaturePipeline
-                fp_pipeline = FeaturePipeline(self.level_break_model.registry)
-                feats = fp_pipeline.extract_all(df, msg, idx=idx_closed)
-                features_df = pd.DataFrame([feats])
-
-                break_probas = self.level_break_model.predict_proba(features_df)
-                extra_fields["ml_break_prob"] = break_probas.get("BREAK", 0.0)
-                extra_fields["ml_reject_prob"] = break_probas.get("REJECT", 0.0)
-                extra_fields["ml_break_confidence"] = break_probas.get("confidence", 0.0)
-
-                ml_render_data["break_prob"] = break_probas.get("BREAK", 0.0)
-                ml_render_data["reject_prob"] = break_probas.get("REJECT", 0.0)
-                ml_render_data["confidence"] = break_probas.get("confidence", 0.0)
-
-                logger.info(f"ML Level Break (Break: {break_probas.get('BREAK', 0.0)*100:.1f}%, Reject: {break_probas.get('REJECT', 0.0)*100:.1f}%)")
-            except Exception as ml_ex:
-                logger.warning(f"Failed to run ML level break inference: {ml_ex}")
-        
-        trading_allowed = self.drawdown_manager.trading_allowed()
         if not trading_allowed:
             extra_fields["blocked_by_drawdown"] = True
             logger.info(f"Signal {signal_type} {direction} for {symbol} BLOCKED by drawdown")
@@ -548,7 +651,7 @@ class MMStrategy:
         )
         logger.info(snapshot)
 
-        # Log to journal
+        # Log to journal (Layer 1 Event)
         signal_id = self.trading_journal.log_signal(
             signal_type=signal_type,
             symbol=symbol,
@@ -563,9 +666,29 @@ class MMStrategy:
             extra_fields=extra_fields
         )
         
+        # Log to TradeFeatureRecorder if registered
+        if self.recorder:
+            try:
+                self.recorder.record_candidate(
+                    signal_id=signal_id,
+                    timestamp=bar_timestamp,
+                    strategy="mm",
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    direction="BUY" if direction == 1 else "SELL",
+                    features=features_fv.features,
+                    decision_context=decision_ctx,
+                    accepted=evaluation.accepted,
+                    reason=", ".join(evaluation.reasons)
+                )
+            except Exception as rec_ex:
+                logger.error(f"TradeFeatureRecorder record_candidate failed: {rec_ex}")
+
         # Update history
         self._update_signal_history(symbol, timeframe, signal_type, direction)
         
+        # Continue using existing MM rules (ML-Filtering has no trade execution influence in Shadow Mode)
+        # We obey technical_rules and trading_allowed
         if trading_allowed:
             logger.info(f"Submitting {signal_type} {direction} for {symbol} {timeframe}")
             res = self.send_order.execute(
