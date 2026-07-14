@@ -51,11 +51,14 @@ Forex_DNN/
 │   ├── feature_registry.py # Centralized registry for feature schemas, versioning, and hashing
 │   ├── feature_definition.py# Base abstract definition class for features
 │   ├── feature_groups.py   # Implementations of technical, structural, and state features
+│   ├── feature_pipeline.py # Point-in-time lookup, caching, and validation feature pipeline
 │   ├── dataset_builder.py  # Constructs clean Market State and Level Break datasets
-│   └── data_cleaner.py     # Normalizes values, handles missing rows, generates quality reports
+│   ├── data_cleaner.py     # Normalizes values, handles missing rows, generates quality reports
+│   └── trade_feature_recorder.py# Tabular daily rolling signal and outcome recorder (CSV/Parquet)
 │
 ├── Strategies/             # Quant Strategy Implementations
-│   └── mm_strategy.py      # MMStrategy (Standard, High-Risk, Reversal intraday Forex signals)
+│   ├── mm_strategy.py      # MMStrategy (Standard, High-Risk, Reversal intraday Forex signals)
+│   └── signal_evaluator.py # Unified SignalEvaluator decoupling strategy rules from ML diagnostics
 │
 ├── Trade_Execution/        # Decoupled Execution, Tracking, and Risk Systems
 │   ├── drawdown.py         # DrawdownManager enforcing daily/total absolute risk budgets

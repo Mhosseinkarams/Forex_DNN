@@ -3,7 +3,7 @@ import json
 import uuid
 import logging
 import threading
-from typing import Optional
+from typing import Optional, Any
 import pandas as pd
 from datetime import datetime, timezone
 from Collecting_Data.position_lifecycle import PositionLifecycle
@@ -15,6 +15,7 @@ class TradingJournal:
         self,
         journal_root: str,
         mode: str = "live",
+        recorder: Optional[Any] = None,
     ):
         self.journal_root = journal_root
         self.mode = mode
@@ -22,6 +23,7 @@ class TradingJournal:
         self._locks_lock = threading.Lock()
         self._signal_cache = {}
         self._cache_lock = threading.Lock()
+        self.recorder = recorder
 
         try:
             if not os.path.exists(self.journal_root):
@@ -484,6 +486,13 @@ class TradingJournal:
             logger.info(f"Logged lifecycle JSON for {lifecycle.signal.signal_id} in {jsonl_path}")
         except Exception as e:
             logger.error(f"Failed to log lifecycle JSON to {jsonl_path}: {e}")
+
+        # Integrate with TradeFeatureRecorder if registered
+        if self.recorder is not None:
+            try:
+                self.recorder.record_outcome(lifecycle.signal.signal_id, lifecycle)
+            except Exception as e:
+                logger.error(f"Failed to record trade outcome in TradeFeatureRecorder: {e}", exc_info=True)
 
 if __name__ == "__main__":
     import shutil

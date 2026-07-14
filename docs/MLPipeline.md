@@ -81,4 +81,29 @@ engine = MLDecisionEngine(
         )
     }
 )
+
+---
+
+## 4. Milestone 5: Runtime ML Integration Layers
+
+Milestone 5 extends the centralized ML pipeline into the active trading runtimes (live trading, simulation, and backtesting notebooks), ensuring 100% equivalence in feature calculation, schema tracking, and transaction safety.
+
+### 4.1 Runtime Feature Pipeline (Module 17)
+The `FeaturePipeline` (`ML/feature_pipeline.py`) performs the crucial task of generating the exact same features used during training.
+- **Strict Verification**: Every runtime feature vector is checked for missing attributes, NaN values, infinites, and wrong types. Anomalies are logged as warnings and replaced with registry-defined default values.
+- **Cache Acceleration**: In-memory caching avoids redundant calculations (such as rolling ATR ratio or linear regressions) within the same index loop.
+
+### 4.2 Trade Feature Recorder (Module 19)
+The `TradeFeatureRecorder` (`ML/trade_feature_recorder.py`) handles continuous dataset collection for future retraining cycles.
+- **Step 1: record_candidate**: When a signal is checked by the strategy, the recorder flattens all metrics—including metadata, all registry-driven features, and ML DecisionContext predictions—into a single tabular CSV/Parquet row.
+- **Step 2: record_outcome**: When the position is eventually closed, the `TradingJournal` automatically invokes the recorder using the unique `signal_id`. The recorder updates the matched row with full outcome metrics (pips, realized profit, maximum drawdown, duration, exit reason).
+
+### 4.3 Signal Evaluator (Module 20)
+The `SignalEvaluator` (`Strategies/signal_evaluator.py`) decouples the strategy's core logic from ML internals.
+- **Agnostic Interface**: Strategies submit signal candidates, the computed feature dictionary, and active `DecisionContext` to the evaluator.
+- **Policy Decoupling**: In Shadow Mode, the evaluator ensures that technical rules drive executions, but logs full ML metrics and policy recommended multi-target adjustments under custom loggers:
+  - `Logs/runtime_features.log`
+  - `Logs/decision_engine.log`
+  - `Logs/shadow_mode.log`
+  - `Logs/signal_evaluator.log`
 ```

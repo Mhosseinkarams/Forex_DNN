@@ -99,6 +99,31 @@ extra = {"sentiment_score": 0.85, "news_event": "NFP"}
 journal.log_signal(..., extra_fields=extra)
 ```
 
+## How to Extend Runtime ML and Signal Evaluations (Milestone 5)
+
+Milestone 5 establishes a decoupled, registry-driven runtime ML integration layer.
+
+### 1. Registering new features in the Runtime Feature Pipeline
+All features must be registered in the `FeatureRegistry` (`ML/feature_registry.py`).
+To add a new runtime feature extractor:
+1.  **Define Feature**: Add a `FeatureDefinition` inside `ML/feature_groups.py`.
+2.  **Bind Extractor**: In `ML/feature_pipeline.py`'s `_setup_extractors` method, register your feature name mapped to a new private extraction method:
+    ```python
+    self._extractors["my_new_feature"] = self._extract_my_new_feature
+    ```
+3.  **Implement Extractor**: Implement the private method (taking `df`, `msg`, `idx` arguments):
+    ```python
+    def _extract_my_new_feature(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
+        # Avoid direct indicator calculations; pull from df/msg
+        return float(df.iloc[idx].get("my_new_indicator", 0.0))
+    ```
+
+### 2. Modifying Signal Evaluations
+The unified `SignalEvaluator` (`Strategies/signal_evaluator.py`) is strategy-agnostic.
+- To add a new risk check, insert the evaluation block inside `evaluate(...)` and update `SignalEvaluation.risk_diagnostics`.
+- To adjust priority rules or ML confidence rules, customize the mappings in the priority and confidence resolution sections.
+- Since we are in **Shadow Mode** (`SHADOW_MODE = True`, `ML_FILTERING = False`), make sure that any new ML rule doesn't reject trades mechanically unless explicitly authorized by enabling `ml_filtering`.
+
 ## How to Add a New PositionLifecycle Metric
 
 Metrics are defined in `Collecting_Data/position_lifecycle.py`.
