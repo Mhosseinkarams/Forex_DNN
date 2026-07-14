@@ -19,7 +19,7 @@ The main loop that drives the backtest. It iterates through the historical data,
 
 ## Public API (SimulationRunner)
 
-### `SimulationRunner(symbol, timeframes, data_files, initial_balance, ...)`
+### `SimulationRunner(symbols, timeframes, data_files, initial_balance, ...)`
 - **data_files** (dict): Mapping of `(symbol, timeframe)` to CSV paths.
 
 ### `run()`

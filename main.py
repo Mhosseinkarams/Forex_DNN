@@ -23,7 +23,9 @@ from simulation.simulation_environment import env as mt5
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
-MODE = os.getenv("TRADING_MODE", "live") # live, demo, validation, backtest
+# Starting a process with no mode must never connect to a live broker.  Historical
+# runs use SimulationRunner directly; this bootstrap is for demo/live operation.
+MODE = os.getenv("TRADING_MODE", "backtest").strip().lower()
 SYMBOLS = ["EURUSD_o", "XAUUSD_o", "YM", "FDAX"]
 TIMEFRAMES = ["M5", "M15"]
 MAGIC_UNITY = 100001
@@ -69,18 +71,10 @@ class TradingApplication:
 
         # 2. Initialize MT5
         if MODE == "backtest":
-            # For main.py, we default to SimulationBroker if in backtest mode
-            # However, SimulationRunner is the preferred way for full backtests.
-            # This allows main.py to potentially run a 'live-sim' if needed.
-            from simulation.simulation_clock import SimulationClock
-            from simulation.simulation_account import SimulationAccount
-            from simulation.simulation_broker import SimulationBroker
-
-            clock = SimulationClock(datetime.now(timezone.utc))
-            account = SimulationAccount(INITIAL_BALANCE)
-            broker = SimulationBroker(account, clock)
-            mt5.set_backtest_mode(broker, clock, account)
-            logger.info("Simulation Environment Initialized.")
+            raise RuntimeError(
+                "main.py does not accept historical data. Run a backtest with "
+                "simulation.simulation_runner.SimulationRunner (see docs/backtesting.md)."
+            )
         else:
             creds = load_credentials(path="credentials.json")
             if not mt5.initialize(login=creds["login"], password=creds["password"], server=creds["server"]):

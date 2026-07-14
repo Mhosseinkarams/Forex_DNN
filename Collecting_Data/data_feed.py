@@ -81,10 +81,20 @@ class MT5DataFeed:
     """
 
     def __init__(self, login: int = None, password: str = None, server: str = None):
-        creds = load_credentials(path="credentials.json")
-        self.login    = creds["login"]
-        self.password =  creds["password"]
-        self.server   =  creds["server"]
+        """Create a feed using explicit credentials or the configured defaults.
+
+        Explicit arguments take precedence.  This matters for tests and for
+        callers that connect to a terminal with credentials supplied by a
+        secrets manager instead of the repository-local credentials file.
+        """
+        if login is None or password is None or server is None:
+            creds = load_credentials(path="credentials.json")
+        else:
+            creds = {}
+
+        self.login = login if login is not None else creds.get("login")
+        self.password = password if password is not None else creds.get("password")
+        self.server = server if server is not None else creds.get("server")
 
         self._health  = FeedHealth.DISCONNECTED
         self._connected = False
@@ -109,6 +119,15 @@ class MT5DataFeed:
             >>> if feed.connect():
             ...     print("Ready to trade")
         """
+        if not all((self.login, self.password, self.server)):
+            logger.error(
+                "MT5 credentials are incomplete. Provide login, password, and "
+                "server explicitly or configure credentials.json/.env."
+            )
+            self._health = FeedHealth.DISCONNECTED
+            self._connected = False
+            return False
+
         if not mt5.initialize(login=self.login, password=self.password, server=self.server):
             logger.error(f"MT5 init failed: {mt5.last_error()}")
             self._health = FeedHealth.DISCONNECTED

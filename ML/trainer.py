@@ -68,12 +68,26 @@ class Trainer:
         X = df[feature_cols]
         y = df[target_col]
 
-        # Convert categories to integers if categoricals are present in target
+        # Convert categorical targets to stable, domain-defined class IDs.  The
+        # prediction schemas use these IDs, so alphabetical encoding would
+        # silently map RANGE/TRANSITION probabilities to the wrong regimes.
         if y.dtype == object or isinstance(y.dtype, pd.CategoricalDtype) or pd.api.types.is_string_dtype(y):
-            unique_classes = sorted(list(y.dropna().unique()))
-            # Map values
-            class_to_idx = {val: i for i, val in enumerate(unique_classes)}
+            observed_classes = set(y.dropna().unique())
+            if model.__class__.__name__ == "MarketStateClassifier":
+                class_to_idx = {"TREND": 0, "RANGE": 1, "TRANSITION": 2}
+            elif model.__class__.__name__ == "LevelBreakProbabilityModel":
+                class_to_idx = {"REJECT": 0, "BREAK": 1}
+            else:
+                class_to_idx = {
+                    value: index for index, value in enumerate(sorted(observed_classes))
+                }
+
+            unknown_classes = observed_classes - set(class_to_idx)
+            if unknown_classes:
+                raise ValueError(f"Unsupported target classes: {sorted(unknown_classes)}")
+
             y = y.map(class_to_idx)
+            unique_classes = sorted(y.dropna().unique())
             logger.info(f"Encoded class target mapping: {class_to_idx}")
         else:
             unique_classes = sorted(list(pd.Series(y).dropna().unique()))

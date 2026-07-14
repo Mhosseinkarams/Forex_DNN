@@ -169,7 +169,7 @@ To utilize the framework's full capabilities, operations must follow a strict ch
     |                   BACKTESTING, OPTIMIZATION & RUN            |
     +--------------------------------------------------------------+
                                    |
-                                   v (python main.py --mode backtest)
+                                   v (SimulationRunner with historical CSV data)
                            [SimulationRunner]
                                    |
                     +--------------+--------------+
@@ -627,8 +627,8 @@ The framework contains a high-fidelity, event-driven backtesting engine (`simula
 ### 9.1 Backtest Execution
 Execute a chronological, multi-symbol backtest using the runner script:
 ```bash
-# In backtest mode, SimulationRunner clears State/ files to ensure time-determinism
-python main.py
+# SimulationRunner clears its journal State/ directory to ensure time determinism.
+# See docs/backtesting.md for a complete runnable example with CSV data paths.
 ```
 *(Alternatively, you can run and modify custom backtest parameters using the Jupyter notebook `examples/backtest_eurusd_last_year.ipynb`).*
 
@@ -653,7 +653,14 @@ Create a script `optimize.py` inside the root to perform a grid search:
 import numpy as np
 from simulation.simulation_runner import SimulationRunner
 
-runner = SimulationRunner(symbols=["EURUSD_o"], start_date="2024-01-01", end_date="2024-06-01")
+runner = SimulationRunner(
+    symbols=["EURUSD_o"],
+    timeframes=["M5", "M15"],
+    data_files={
+        ("EURUSD_o", "M5"): "Data/EURUSD_M5.csv",
+        ("EURUSD_o", "M15"): "Data/EURUSD_M15.csv",
+    },
+)
 
 best_f1 = 0
 best_params = {}
@@ -663,8 +670,8 @@ for swing_strength in [3, 5, 8]:
     for atr_mult in [1.5, 2.0, 2.5]:
         print(f"Testing Swing Strength: {swing_strength} | ATR Mult: {atr_mult}")
         # Inject configurations, run backtest
-        stats = runner.run(config_overrides={"swing_strength": swing_strength, "atr_mult": atr_mult})
-        print(f"Profit Factor: {stats.profit_factor:.2f}")
+        runner.run()
+        # Read the generated backtest report before comparing parameter sets.
         if stats.profit_factor > best_f1:
             best_f1 = stats.profit_factor
             best_params = {"swing_strength": swing_strength, "atr_mult": atr_mult}

@@ -49,7 +49,7 @@ data_files = {
 
 # Initialize runner
 runner = SimulationRunner(
-    symbol="EURUSD_o",
+    symbols="EURUSD_o",
     timeframes=["M5", "M15"],
     data_files=data_files,
     initial_balance=10000.0,

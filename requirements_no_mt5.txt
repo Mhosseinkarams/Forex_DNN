@@ -1,6 +1,9 @@
 pandas
 numpy
 scikit-learn
+lightgbm
+joblib
+PyYAML
 tensorflow
 matplotlib
 seaborn
@@ -11,3 +14,4 @@ yfinance
 mplfinance
 scipy
 jupyter
+pytest

@@ -90,6 +90,14 @@ hyperparameters:
         self.assertTrue(0.0 <= pred.trend_probability <= 1.0)
         self.assertTrue(0.0 <= pred.confidence <= 1.0)
 
+        # Probabilities must be assigned by the fitted class IDs, not by
+        # alphabetical target-encoding order.
+        expected = loaded.model.predict_proba(pd.DataFrame([single_row]))[0]
+        expected_by_class = dict(zip(loaded.model.classes_, expected))
+        self.assertAlmostEqual(pred.trend_probability, expected_by_class.get(0, 0.0))
+        self.assertAlmostEqual(pred.range_probability, expected_by_class.get(1, 0.0))
+        self.assertAlmostEqual(pred.transition_probability, expected_by_class.get(2, 0.0))
+
         # Check predict_proba
         proba_dict = loaded.predict_proba(single_row)
         self.assertIn("TREND", proba_dict)

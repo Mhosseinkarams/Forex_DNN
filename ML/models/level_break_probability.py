@@ -46,12 +46,12 @@ class LevelBreakProbabilityModel(BaseTradingModel):
             row_probas = probas
 
         class_names = ["REJECT", "BREAK"]
-        prob_dict = {}
-        for i, name in enumerate(class_names):
-            if i < len(row_probas):
-                prob_dict[name] = float(row_probas[i])
-            else:
-                prob_dict[name] = 0.0
+        inference_engine = self.calibrated_model or self.model
+        class_ids = getattr(inference_engine, "classes_", range(len(row_probas)))
+        prob_dict = {name: 0.0 for name in class_names}
+        for class_id, probability in zip(class_ids, row_probas):
+            if 0 <= int(class_id) < len(class_names):
+                prob_dict[class_names[int(class_id)]] = float(probability)
 
         confidence = float(max(row_probas))
 
