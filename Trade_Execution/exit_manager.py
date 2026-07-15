@@ -4,6 +4,7 @@ import logging
 import threading
 import math
 from datetime import datetime, timezone
+from typing import Optional
 from simulation.simulation_environment import env as mt5
 from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE, EXIT_PROFILES
 
@@ -412,6 +413,7 @@ class ExitManager:
         direction: int,       # 1 = buy, -1 = sell
         exit_profile: str,
         signal_id: str = None,
+        tp_price: Optional[float] = None,
     ) -> None:
         """
         Purpose:
@@ -425,6 +427,7 @@ class ExitManager:
             direction (int): 1 for BUY, -1 for SELL.
             exit_profile (str): The name of the management profile (e.g., "standard", "single").
             signal_id (str): The UUID of the original strategy signal.
+            tp_price (float): Optional custom take profit price.
 
         Side Effects:
             - Adds the ticket to self.tracked_tickets.
@@ -452,10 +455,16 @@ class ExitManager:
             # TP price ladder calculation
             R = abs(entry_price - sl_price)
             sign = 1 if direction == 1 else -1
-            tp_prices = {
-                i: float(entry_price + sign * i * R)
-                for i in range(1, final_tp + 1)
-            }
+            if tp_price is not None:
+                tp_prices = {
+                    i: float(tp_price) if i == final_tp else float(entry_price + sign * i * R)
+                    for i in range(1, final_tp + 1)
+                }
+            else:
+                tp_prices = {
+                    i: float(entry_price + sign * i * R)
+                    for i in range(1, final_tp + 1)
+                }
 
             self.tracked_tickets[ticket] = {
                 "signal_id": signal_id,
