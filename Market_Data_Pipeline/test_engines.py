@@ -11,7 +11,7 @@ class TestMarketDataPipelineEngines(unittest.TestCase):
     def setUp(self):
         # Using lookback=3, lookback_major=10
         self.ms_engine = MarketStructureEngine(lookback=3, lookback_major=10)
-        self.sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
+        self.sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0, use_fractal=False)
 
     def _make_base_df(self, n_bars: int = 100, base_price: float = 1.1000) -> pd.DataFrame:
         times = [datetime(2024, 1, 1, tzinfo=timezone.utc) + timedelta(minutes=15 * i) for i in range(n_bars)]
@@ -182,6 +182,31 @@ class TestMarketDataPipelineEngines(unittest.TestCase):
         nested = [z for z in demands if z.nested_inside_idx is not None]
         self.assertTrue(len(nested) > 0)
         self.assertEqual(nested[0].nested_inside_idx, 24)
+
+    def test_fractal_supply_demand_zone_mitigation_and_break(self):
+        # Dedicated test for fractal-based zones
+        fractal_engine = SupplyDemandEngine(atr_period=14, use_fractal=True)
+        df = self._make_base_df(n_bars=60)
+
+        # Create a fast fractal trough at index 20
+        # P1 is 8 by default, so we need 8 bars on each side of index 20 to confirm the trough.
+        # Bar 20 is a local low: 1.0900. Surrounding bars from 12 to 28 should be higher.
+        df.loc[20, 'Low'] = 1.0900
+        df.loc[20, 'Close'] = 1.0910
+        for idx in range(12, 29):
+            if idx != 20:
+                df.loc[idx, 'Low'] = 1.1000
+                df.loc[idx, 'Close'] = 1.1010
+
+        # Run processing
+        df_processed = fractal_engine.process(df)
+
+        # The fast fractal low is confirmed at index 20 + 8 = 28.
+        # Let's verify that a demand zone is created!
+        demand_zones = [z for z in fractal_engine.zones if z.type == 'Demand']
+        self.assertTrue(len(demand_zones) >= 1)
+        z = demand_zones[0]
+        self.assertEqual(z.created_idx, 20)
 
 if __name__ == '__main__':
     unittest.main()

@@ -87,7 +87,7 @@ class LabelEngine:
 
         # Engines
         m_engine = ms_engine or MarketStructureEngine(lookback=3)
-        s_engine = sd_engine or SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
+        s_engine = sd_engine or SupplyDemandEngine(atr_period=14, impulse_threshold=2.0, use_fractal=False)
 
         for (sym, tf), df_ohlcv in df_dict.items():
             logger.info(f"LabelEngine processing {sym} {tf} with {len(df_ohlcv)} bars...")
