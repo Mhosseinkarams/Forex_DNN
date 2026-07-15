@@ -2,6 +2,7 @@ import os
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
+import pandas as pd
 
 # Optional MT5 import
 try:
