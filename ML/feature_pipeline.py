@@ -8,6 +8,10 @@ from ML.feature_registry import FeatureRegistry
 from Market_Data_Pipeline.structure_graph import MarketStructureGraph, StructureLevel, Zone, BOS, CHOCH
 from Market_Data_Pipeline.dataset_types import FeatureVector
 
+# New Engine Dependencies
+from Market_Data_Pipeline.strong_candle_engine import StrongCandleEngine
+from Market_Data_Pipeline.refusal_candle_engine import RefusalCandleEngine
+
 logger = logging.getLogger("FeaturePipeline")
 
 class FeaturePipeline:
@@ -21,6 +25,8 @@ class FeaturePipeline:
     """
     def __init__(self, registry: Optional[FeatureRegistry] = None):
         self.registry = registry or FeatureRegistry()
+        self.strong_candle_engine = StrongCandleEngine()
+        self.refusal_engine = RefusalCandleEngine()
         self._setup_extractors()
         # Initialize an instance-level cache to prevent redundant re-computation of features
         self._cache = {}
@@ -81,6 +87,10 @@ class FeaturePipeline:
             "risk_reward_estimate": self._extract_risk_reward_estimate,
             "ema50_distance_v1": self._extract_ema50_distance_v1,
             "ema50_distance_v2": self._extract_ema50_distance_v2,
+            "strong_candle_score": self._extract_strong_candle_score,
+            "strong_candle_confidence": self._extract_strong_candle_confidence,
+            "refusal_candle_score": self._extract_refusal_candle_score,
+            "refusal_candle_confidence": self._extract_refusal_candle_confidence,
         }
 
     def clear_cache(self) -> None:
@@ -625,3 +635,19 @@ class FeaturePipeline:
         if "ema_50" in row and "atr_14" in row:
             return float((row["Close"] - row["ema_50"]) / (row["atr_14"] + 1e-9))
         return 0.0
+
+    def _extract_strong_candle_score(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
+        res = self.strong_candle_engine.evaluate(df, idx, msg)
+        return float(res.quality_score)
+
+    def _extract_strong_candle_confidence(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
+        res = self.strong_candle_engine.evaluate(df, idx, msg)
+        return float(res.confidence)
+
+    def _extract_refusal_candle_score(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
+        res = self.refusal_engine.evaluate_rejection(df, idx, None, msg)
+        return float(res.quality_score)
+
+    def _extract_refusal_candle_confidence(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
+        res = self.refusal_engine.evaluate_rejection(df, idx, None, msg)
+        return float(res.confidence)

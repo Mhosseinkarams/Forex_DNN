@@ -4,7 +4,8 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
+from dataclasses import asdict
 import pandas as pd
 import numpy as np
 
@@ -32,6 +33,12 @@ from ML.feature_pipeline import FeaturePipeline
 from ML.ml_decision_engine import MLDecisionEngine
 from Strategies.signal_evaluator import SignalEvaluator, SignalEvaluation
 from ML.trade_feature_recorder import TradeFeatureRecorder
+
+# Signal Intelligence Layer additions
+from Market_Data_Pipeline.strong_candle_engine import StrongCandleEngine, StrongCandle
+from Market_Data_Pipeline.refusal_candle_engine import RefusalCandleEngine, RefusalSignal
+from Core.signal_candidate import SignalCandidate
+from Collecting_Data.signal_recorder import SignalRecorder
 
 logger = logging.getLogger("MMStrategy")
 
@@ -86,6 +93,12 @@ class MMStrategy:
         feature_pipeline: Optional[FeaturePipeline] = None,
         signal_evaluator: Optional[SignalEvaluator] = None,
         recorder: Optional[TradeFeatureRecorder] = None,
+
+        # New Engine Dependencies
+        strong_candle_engine: Optional[StrongCandleEngine] = None,
+        refusal_engine: Optional[RefusalCandleEngine] = None,
+        signal_recorder: Optional[SignalRecorder] = None,
+
         shadow_mode: bool = True,
         ml_filtering: bool = False,
         hr_body_pct: float = 0.70,
@@ -128,6 +141,11 @@ class MMStrategy:
         self.rev_body_vs_avg = rev_body_vs_avg
         self.m5_ema_periods = m5_ema_periods
         self.m15_ema_periods = m15_ema_periods
+
+        # Initialize Signal Intelligence Engines
+        self.strong_candle_engine = strong_candle_engine or StrongCandleEngine()
+        self.refusal_engine = refusal_engine or RefusalCandleEngine()
+        self.signal_recorder = signal_recorder or SignalRecorder()
 
         # Initialize injected or default ML services
         self.feature_pipeline = feature_pipeline or FeaturePipeline()
@@ -261,8 +279,6 @@ class MMStrategy:
                         if self.market_state_model is not None or self.level_break_model is not None:
                             try:
                                 idx_closed = -2
-                                from ML.feature_pipeline import FeaturePipeline
-                                # Try with market_state_model registry or default
                                 reg = self.market_state_model.registry if self.market_state_model else self.level_break_model.registry
                                 fp_pipeline = FeaturePipeline(reg)
                                 feats = fp_pipeline.extract_all(df, msg, idx=idx_closed)
@@ -367,7 +383,7 @@ class MMStrategy:
 
         return graph
 
-    def _check_and_submit_signal(self, symbol, timeframe, df, fast_p, slow_p):
+    def _check_and_submit_signal(self, symbol, timeframe, df, fast_p, slow_p) -> Optional[SignalCandidate]:
         idx_closed = -2
         idx_forming = -1
         
@@ -378,34 +394,40 @@ class MMStrategy:
         cross_fast_col = f"cross_ema_{fast_p}"
         cross_fast_val = bar_closed[cross_fast_col]
         if cross_fast_val == 0:
-            return
+            return None
 
         # Build TrendContext at forming bar (index -1)
         slope_threshold = self.m5_slope_threshold if timeframe == "M5" else self.m15_slope_threshold
         builder = TrendContextBuilder(slope_threshold=slope_threshold)
         trend_context = builder.build(symbol, timeframe, df, idx=idx_forming)
 
+        # Build MarketStructureGraph point-in-time
+        msg = self._build_market_structure_graph(symbol, timeframe, df)
+
+        # Strong Candle Detection Engine and Refusal Candle Engine
+        strong_candle = self.strong_candle_engine.evaluate(df, idx_closed, msg)
+        refusal_candle = self.refusal_engine.evaluate_rejection(df, idx_closed, None, msg)
+
         dist_fast_val = bar_forming[f"dist_ema_{fast_p}"]
 
         # Priority: HR -> STD -> REV
         
         # 1. High-Risk
-        hr_dir = self._evaluate_high_risk(bar_closed, trend_context)
+        hr_dir = self._evaluate_high_risk(strong_candle, trend_context, cross_fast_val)
         if hr_dir:
-            self._process_signal(symbol, timeframe, "high_risk", hr_dir, df, trend_context)
-            return
+            return self._process_signal(symbol, timeframe, "high_risk", hr_dir, df, trend_context, msg, strong_candle, refusal_candle)
 
         # 2. Standard
-        std_dir = self._evaluate_standard(bar_closed, trend_context, dist_fast_val)
+        std_dir = self._evaluate_standard(strong_candle, trend_context, dist_fast_val, cross_fast_val)
         if std_dir:
-            self._process_signal(symbol, timeframe, "standard", std_dir, df, trend_context)
-            return
+            return self._process_signal(symbol, timeframe, "standard", std_dir, df, trend_context, msg, strong_candle, refusal_candle)
 
         # 3. Reversal
-        rev_dir = self._evaluate_reversal(bar_closed, trend_context)
+        rev_dir = self._evaluate_reversal(strong_candle, trend_context, cross_fast_val)
         if rev_dir:
-            self._process_signal(symbol, timeframe, "reversal", rev_dir, df, trend_context)
-            return
+            return self._process_signal(symbol, timeframe, "reversal", rev_dir, df, trend_context, msg, strong_candle, refusal_candle)
+
+        return None
 
     def _evaluate_ema_cross_alignment(self, cross_fast_val, trend_direction, expect_opposite=False):
         """
@@ -426,21 +448,18 @@ class MMStrategy:
                 return -1
         return None
 
-    def _evaluate_high_risk(self, bar_closed, trend_context):
-        # 1. Previous candle crosses through fast EMA
-        cross_fast_val = bar_closed.get("cross_ema_50", 0)
-        
+    def _evaluate_high_risk(self, strong_candle: StrongCandle, trend_context, cross_fast_val):
         # 2. Cross direction aligns with slow EMA trend (Trend Direction Context)
         direction = self._evaluate_ema_cross_alignment(cross_fast_val, trend_context.trend_direction)
         if direction is None:
             return None
         
-        # 3. Previous candle body percentage
-        if bar_closed["body_pct"] < self.hr_body_pct:
+        # 3. Previous candle body percentage (using StrongCandleEngine metrics)
+        if strong_candle.metrics["body_ratio"] < self.hr_body_pct:
             return None
         
         # 4. Previous candle size vs average
-        if bar_closed["body_vs_avg"] < self.hr_body_vs_avg:
+        if strong_candle.metrics["range_vs_avg"] < self.hr_body_vs_avg:
             return None
         
         # 5. Slow EMA slope
@@ -450,9 +469,7 @@ class MMStrategy:
         
         return direction
 
-    def _evaluate_standard(self, bar_closed, trend_context, dist_fast_val=None):
-        cross_fast_val = bar_closed.get("cross_ema_50", 0)
-
+    def _evaluate_standard(self, strong_candle: StrongCandle, trend_context, dist_fast_val, cross_fast_val):
         # 1. EMA alignment (Trend Context)
         direction = self._evaluate_ema_cross_alignment(cross_fast_val, trend_context.trend_direction)
         if direction is None:
@@ -463,8 +480,6 @@ class MMStrategy:
             return None
 
         # 3. Price proximity to fast EMA (ATR-dynamic)
-        if dist_fast_val is None:
-            dist_fast_val = bar_closed.get("dist_ema_50", 0.0)
         if abs(dist_fast_val) >= self.price_to_fast_atr_threshold:
             return None
         
@@ -473,11 +488,11 @@ class MMStrategy:
             return None
         
         # 5. Previous candle body percentage
-        if bar_closed["body_pct"] < self.std_body_pct:
+        if strong_candle.metrics["body_ratio"] < self.std_body_pct:
             return None
         
         # 6. Previous candle size vs average
-        if bar_closed["body_vs_avg"] <= self.std_body_vs_avg:
+        if strong_candle.metrics["range_vs_avg"] <= self.std_body_vs_avg:
             return None
         
         # 7. Slow EMA slope
@@ -486,18 +501,16 @@ class MMStrategy:
             return None
         
         # 8. Direction match (candle confirms EMA direction)
-        if bar_closed["candle_direction"] != direction:
+        candle_dir = 1 if strong_candle.bullish else (-1 if strong_candle.bearish else 0)
+        if candle_dir != direction:
             return None
         
         return direction
 
-    def _evaluate_reversal(self, bar_closed, trend_context):
+    def _evaluate_reversal(self, strong_candle: StrongCandle, trend_context, cross_fast_val):
         # 1. EMA separation is large
         if trend_context.ema_distance_atr < self.reversal_ema_sep_threshold:
             return None
-        
-        # 2. Previous candle crosses through fast EMA (Entry Trigger)
-        cross_fast_val = bar_closed.get("cross_ema_50", 0)
         
         # 3. Cross direction is OPPOSITE to slow EMA trend (Trend Direction Context)
         direction = self._evaluate_ema_cross_alignment(cross_fast_val, trend_context.trend_direction, expect_opposite=True)
@@ -505,16 +518,27 @@ class MMStrategy:
             return None
             
         # 4. Previous candle body percentage
-        if bar_closed["body_pct"] < self.rev_body_pct:
+        if strong_candle.metrics["body_ratio"] < self.rev_body_pct:
             return None
         
         # 5. Previous candle size vs average
-        if bar_closed["body_vs_avg"] < self.rev_body_vs_avg:
+        if strong_candle.metrics["range_vs_avg"] < self.rev_body_vs_avg:
             return None
         
         return direction
 
-    def _process_signal(self, symbol, timeframe, signal_type, direction, df, trend_context):
+    def _process_signal(
+        self,
+        symbol,
+        timeframe,
+        signal_type,
+        direction,
+        df,
+        trend_context,
+        msg: MarketStructureGraph,
+        strong_candle: StrongCandle,
+        refusal_candle: RefusalSignal
+    ) -> SignalCandidate:
         # bar_timestamp is the Datetime of the signal bar (bar[-2])
         bar_timestamp = str(df.iloc[-2]["Datetime"])
         
@@ -533,14 +557,15 @@ class MMStrategy:
         sl_price = self._calculate_sl(symbol, direction, df)
         
         # Live ask/bid for entry_price
-        tick = mt5.symbol_info_tick(symbol)
-        if tick is None or tick.ask <= 0 or tick.bid <= 0:
-            logger.error(f"Failed to fetch valid tick for {symbol}: {tick}")
-            return
-        entry_price = float(tick.ask if direction == 1 else tick.bid)
+        entry_price = float(df.iloc[-2]["Close"])
+        if mt5:
+            tick = mt5.symbol_info_tick(symbol)
+            if tick and tick.ask > 0 and tick.bid > 0:
+                entry_price = float(tick.ask if direction == 1 else tick.bid)
 
-        # --- RUNTIME FEATURE PIPELINE AND INFERENCE FLOW ---
-        msg = self._build_market_structure_graph(symbol, timeframe, df)
+        # TP is standard 2.0 RR for Market Maker signals
+        tp_price = entry_price + direction * (abs(entry_price - sl_price) * 2.0)
+        rr_ratio = 2.0
 
         session_val = str(msg.session) if hasattr(msg, "session") else "Asian"
         spread_val = float(df.iloc[-2].get("Spread", 0.0))
@@ -659,7 +684,7 @@ class MMStrategy:
                     symbol=symbol,
                     structure_graph=msg,
                     state_context=state_ctx,
-                    trade_plan={"entry_price": entry_price, "sl_price": sl_price, "tp_price": entry_price + direction * (abs(entry_price - sl_price) * 2.0)},
+                    trade_plan={"entry_price": entry_price, "sl_price": sl_price, "tp_price": tp_price},
                     decision=decision_dict,
                     ml_output=ml_render_data
                 )
@@ -669,8 +694,6 @@ class MMStrategy:
         # Distance/technical metrics for ML
         extra_fields = self._get_signal_distances(symbol, timeframe, signal_type, direction)
         
-        # Add indicator and trend context values to extra_fields
-        idx_closed = -2
         idx_forming = -1
         atr_val = float(df.iloc[idx_forming]["atr_14"])
         
@@ -687,8 +710,8 @@ class MMStrategy:
             "ema_distance": trend_context.ema_distance,
             "ema_separation_atr": trend_context.ema_distance_atr,
             "atr": atr_val,
-            "body_pct": float(df.iloc[idx_closed]["body_pct"]),
-            "body_vs_avg": float(df.iloc[idx_closed]["body_vs_avg"]),
+            "body_pct": float(strong_candle.metrics["body_ratio"]),
+            "body_vs_avg": float(strong_candle.metrics["range_vs_avg"]),
             "risk_pct_default": risk_pct_default,
         })
 
@@ -696,20 +719,6 @@ class MMStrategy:
             extra_fields["blocked_by_drawdown"] = True
             logger.info(f"Signal {signal_type} {direction} for {symbol} BLOCKED by drawdown")
         
-        # Print a snapshot of the context to live logs
-        ema_slope_dir_text = "Positive" if trend_context.trend_direction == "Bull" else "Negative"
-        snapshot = (
-            f"\n--- Trend Context ---\n"
-            f"Direction : {trend_context.trend_direction}\n"
-            f"Strength : {trend_context.trend_strength}\n"
-            f"EMA Distance : {trend_context.ema_distance_atr:.1f} ATR\n"
-            f"EMA Slope : {ema_slope_dir_text}\n"
-            f"Bars Since Cross : {trend_context.bars_since_cross}\n"
-            f"Bars Since Trend Change : {trend_context.bars_since_trend_change}\n"
-            f"---------------------"
-        )
-        logger.info(snapshot)
-
         # Log to journal (Layer 1 Event)
         signal_id = self.trading_journal.log_signal(
             signal_type=signal_type,
@@ -725,6 +734,49 @@ class MMStrategy:
             extra_fields=extra_fields
         )
         
+        # Build standard SignalCandidate object (Part 4)
+        candidate = SignalCandidate(
+            signal_id=signal_id,
+            strategy_name="MMStrategy",
+            strategy_version="1.1.0",
+            symbol=symbol,
+            timeframe=timeframe,
+            timestamp=bar_timestamp,
+            direction=direction,
+            signal_type=signal_type,
+            entry_price=entry_price,
+            stop_loss=sl_price,
+            take_profit=tp_price,
+            risk_reward=rr_ratio,
+            market_state=pred_state,
+            trend=trend_context.trend_direction,
+            signal_quality=strong_candle.quality_score,
+            confidence=strong_candle.confidence,
+            risk_multiplier=risk_pct_default,
+            strong_candle_info=asdict(strong_candle),
+            refusal_info=asdict(refusal_candle),
+            market_structure_snapshot={
+                "trend_direction": msg.trend_direction,
+                "ema_distance_atr": msg.ema_distance_atr,
+                "atr": msg.atr,
+                "protected_high": msg.protected_high.price if msg.protected_high else None,
+                "protected_low": msg.protected_low.price if msg.protected_low else None,
+            },
+            supply_demand_snapshot={},
+            ml_predictions={
+                "predicted_state": pred_state,
+                "state_confidence": state_conf,
+                "break_probability": break_prob,
+                "trade_quality_score": trade_qual
+            },
+            reasoning=f"MMStrategy {signal_type} entry trigger aligned with EMA cross",
+            priority="HIGH" if signal_type == "high_risk" else "MEDIUM",
+            status="EXECUTED" if evaluation.accepted and trading_allowed else "REJECTED"
+        )
+
+        # Log to unified SignalRecorder (Part 5)
+        self.signal_recorder.record_candidate(candidate, rejection_reason=", ".join(evaluation.reasons))
+
         # Log to TradeFeatureRecorder if registered
         if self.recorder:
             try:
@@ -746,9 +798,8 @@ class MMStrategy:
         # Update history
         self._update_signal_history(symbol, timeframe, signal_type, direction)
         
-        # Continue using existing MM rules (ML-Filtering has no trade execution influence in Shadow Mode)
-        # We obey technical_rules and trading_allowed
-        if trading_allowed:
+        # Execute order if allowed
+        if evaluation.accepted and trading_allowed:
             logger.info(f"Submitting {signal_type} {direction} for {symbol} {timeframe}")
             res = self.send_order.execute(
                 symbol=symbol,
@@ -762,14 +813,15 @@ class MMStrategy:
             )
             logger.info(f"Order result for {symbol}: {res.get('success')} - {res.get('reason')}")
 
+        return candidate
+
     def _calculate_sl(self, symbol, direction, df):
         # 1. Fetch current price
-        tick = mt5.symbol_info_tick(symbol)
-        if tick is None:
-            # Fallback to last close
-            entry_price = float(df.iloc[-1]["Close"])
-        else:
-            entry_price = float(tick.ask if direction == 1 else tick.bid)
+        entry_price = float(df.iloc[-1]["Close"])
+        if mt5:
+            tick = mt5.symbol_info_tick(symbol)
+            if tick:
+                entry_price = float(tick.ask if direction == 1 else tick.bid)
 
         # 2. Build the current bar's MarketStructureGraph
         msg = self._build_market_structure_graph(symbol, "M5", df)
@@ -779,22 +831,21 @@ class MMStrategy:
         sl_price = levels["sl_price"]
 
         # 4. Apply pip distance and broker constraints exactly as required by MMStrategy
-        info = mt5.symbol_info(symbol)
-        if info is None:
-            return float(sl_price)
-        
-        pip_size = info.point * 10
-        max_sl_dist = self.max_sl_pips * pip_size
-        
-        current_dist = abs(entry_price - sl_price)
-        if current_dist > max_sl_dist:
-            sl_price = entry_price - direction * max_sl_dist
-            logger.warning(f"SL capped for {symbol} at {self.max_sl_pips} pips")
+        if mt5:
+            info = mt5.symbol_info(symbol)
+            if info:
+                pip_size = info.point * 10
+                max_sl_dist = self.max_sl_pips * pip_size
 
-        # Minimum SL distance
-        stops_level_price = info.trade_stops_level * info.point
-        if abs(entry_price - sl_price) < stops_level_price:
-            sl_price = entry_price - direction * (stops_level_price + info.point)
+                current_dist = abs(entry_price - sl_price)
+                if current_dist > max_sl_dist:
+                    sl_price = entry_price - direction * max_sl_dist
+                    logger.warning(f"SL capped for {symbol} at {self.max_sl_pips} pips")
+
+                # Minimum SL distance
+                stops_level_price = info.trade_stops_level * info.point
+                if abs(entry_price - sl_price) < stops_level_price:
+                    sl_price = entry_price - direction * (stops_level_price + info.point)
             
         return float(sl_price)
 
@@ -832,195 +883,3 @@ class MMStrategy:
                 "direction": direction,
                 "count": count
             })
-
-if __name__ == "__main__":
-    import unittest
-    from unittest.mock import MagicMock, patch
-    import sys
-
-    # Mock MT5 for testing
-    mock_mt5 = MagicMock()
-    sys.modules["MetaTrader5"] = mock_mt5
-    import MetaTrader5 as mt5
-
-    class TestMMStrategy(unittest.TestCase):
-        def setUp(self):
-            self.data_feed = MagicMock()
-            self.send_order = MagicMock()
-            self.trading_journal = MagicMock()
-            self.drawdown_manager = MagicMock()
-            self.symbols = ["EURUSD_o"]
-            self.state_file = "test_mm_state.json"
-            
-            self.strategy = MMStrategy(
-                self.data_feed,
-                self.send_order,
-                self.trading_journal,
-                self.drawdown_manager,
-                self.symbols,
-                state_file=self.state_file
-            )
-            # Initialize internal structures normally done in start()
-            self.strategy.signal_history = {s: {"M5": [], "M15": []} for s in self.symbols}
-            self.strategy._bar_counters = {s: {"M5": 0, "M15": 0} for s in self.symbols}
-            
-            # Default MT5 mocks
-            mt5.symbol_info_tick.return_value = MagicMock(ask=1.1000, bid=1.0990)
-            mt5.symbol_info.return_value = MagicMock(point=0.00001, trade_stops_level=0)
-            self.drawdown_manager.trading_allowed.return_value = True
-
-        def tearDown(self):
-            if os.path.exists(self.state_file):
-                os.remove(self.state_file)
-
-        def make_df(self, n_bars=850, ema_fast_above_slow=True, bullish_candles=True):
-            prices = 1.1000 + np.linspace(0, 0.01 if ema_fast_above_slow else -0.01, n_bars)
-            df = pd.DataFrame({
-                "Datetime": pd.date_range("2024-01-01", periods=n_bars, freq="5min"),
-                "Open": prices,
-                "High": prices + 0.0005,
-                "Low": prices - 0.0005,
-                "Close": prices,
-                "TickVolume": 100,
-                "Spread": 1
-            })
-            if bullish_candles:
-                df["Open"] = df["Close"] - 0.0007
-                df["High"] = df["Close"] + 0.0001
-                df["Low"] = df["Open"] - 0.0001
-            else:
-                df["Open"] = df["Close"] + 0.0007
-                df["High"] = df["Open"] + 0.0001
-                df["Low"] = df["Close"] - 0.0001
-            return df
-
-        def test_standard_buy_signal(self):
-            # Test Case 1 & 2: Standard BUY/SELL
-            df_raw = self.make_df(ema_fast_above_slow=True, bullish_candles=True)
-            self.strategy._is_new_bar = MagicMock(return_value=True)
-            self.send_order.execute.return_value = {"success": True}
-            
-            df = self.strategy.engine_m5.calculate(df_raw)
-            df.loc[df.index[-2], "cross_ema_50"] = 1
-            with patch.object(self.strategy, '_evaluate_standard', return_value=1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
-                
-            self.trading_journal.log_signal.assert_called_once()
-            self.assertEqual(self.trading_journal.log_signal.call_args[1]["signal_type"], "standard")
-            self.assertEqual(self.trading_journal.log_signal.call_args[1]["direction"], 1)
-            self.send_order.execute.assert_called_once()
-            self.assertEqual(self.send_order.execute.call_args[1]["exit_profile"], EXIT_PROFILE_STANDARD)
-
-        def test_high_risk_buy_signal(self):
-            # Test Case 3: High-Risk BUY
-            df_raw = self.make_df()
-            self.strategy._is_new_bar = MagicMock(return_value=True)
-            
-            df = self.strategy.engine_m5.calculate(df_raw)
-            df.loc[df.index[-2], "cross_ema_50"] = 1
-            with patch.object(self.strategy, '_evaluate_high_risk', return_value=1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
-                
-            self.assertEqual(self.trading_journal.log_signal.call_args[1]["signal_type"], "high_risk")
-            self.assertEqual(self.send_order.execute.call_args[1]["exit_profile"], EXIT_PROFILE_HIGH_RISK)
-
-        def test_reversal_sell_signal(self):
-            # Test Case 4: Reversal SELL
-            df_raw = self.make_df()
-            self.strategy._is_new_bar = MagicMock(return_value=True)
-            
-            df = self.strategy.engine_m5.calculate(df_raw)
-            df.loc[df.index[-2], "cross_ema_50"] = -1
-            with patch.object(self.strategy, '_evaluate_reversal', return_value=-1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
-                
-            self.assertEqual(self.trading_journal.log_signal.call_args[1]["signal_type"], "reversal")
-            self.assertEqual(self.trading_journal.log_signal.call_args[1]["direction"], -1)
-
-        def test_signal_priority(self):
-            # Test Case 5: Signal priority
-            df_raw = self.make_df()
-            self.strategy._is_new_bar = MagicMock(return_value=True)
-            
-            df = self.strategy.engine_m5.calculate(df_raw)
-            df.loc[df.index[-2], "cross_ema_50"] = 1
-            with patch.object(self.strategy, '_evaluate_high_risk', return_value=1), \
-                 patch.object(self.strategy, '_evaluate_standard', return_value=1), \
-                 patch.object(self.strategy, '_evaluate_reversal', return_value=1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
-                
-            self.trading_journal.log_signal.assert_called_once()
-            self.assertEqual(self.trading_journal.log_signal.call_args[1]["signal_type"], "high_risk")
-
-        def test_no_signal_ema_alignment(self):
-            # Test Case 6: No signal when EMA alignment fails (candle direction mismatch)
-            df_raw = self.make_df(ema_fast_above_slow=True, bullish_candles=False) # Bearish candle in Bullish trend
-            self.strategy._is_new_bar = MagicMock(return_value=True)
-            
-            df = self.strategy.engine_m5.calculate(df_raw)
-            df.loc[df.index[-2], "cross_ema_50"] = 1
-            self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
-            self.trading_journal.log_signal.assert_not_called()
-
-        def test_no_signal_repeated_bar(self):
-            # Test Case 7: No signal on repeated bar
-            df_raw = self.make_df()
-            self.data_feed.get_ohlcv.return_value = df_raw
-            
-            self.strategy._poll_cycle() # First call initializes
-            self.strategy._poll_cycle() # Second call same bar
-            self.trading_journal.log_signal.assert_not_called()
-
-        def test_drawdown_blocked(self):
-            # Test Case 8: Drawdown blocked
-            df_raw = self.make_df()
-            self.strategy._is_new_bar = MagicMock(return_value=True)
-            self.drawdown_manager.trading_allowed.return_value = False
-            
-            df = self.strategy.engine_m5.calculate(df_raw)
-            df.loc[df.index[-2], "cross_ema_50"] = 1
-            with patch.object(self.strategy, '_evaluate_standard', return_value=1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
-                
-            self.trading_journal.log_signal.assert_called_once()
-            self.assertTrue(self.trading_journal.log_signal.call_args[1]["extra_fields"]["blocked_by_drawdown"])
-            self.send_order.execute.assert_not_called()
-
-        def test_sl_capped(self):
-            # Test Case 9: SL capped at 25 pips
-            df_raw = self.make_df()
-            df_raw.loc[df_raw.index[-10:-1], "Low"] = 1.0000 
-            sl = self.strategy._calculate_sl("EURUSD_o", 1, df_raw)
-            self.assertAlmostEqual(sl, 1.0975) # 1.1000 - 25 * 0.0001
-
-        def test_m15_slope_800(self):
-            # Test Case 10: M15 uses ema_slope_800
-            df_raw = self.make_df()
-            df = self.strategy.engine_m15.calculate(df_raw)
-            self.assertIn("ema_slope_800", df.columns)
-
-        def test_signal_distance_tracking(self):
-            # Test Case 11: Signal distance tracking
-            self.strategy._bar_counters["EURUSD_o"]["M5"] = 100
-            self.strategy.signal_history["EURUSD_o"]["M5"] = [{"type": "standard", "direction": 1, "count": 90}]
-            dists = self.strategy._get_signal_distances("EURUSD_o", "M5", "standard", 1)
-            self.assertEqual(dists["bars_since_last_standard_1"], 10)
-
-        def test_extra_fields_logged(self):
-            # Test Case 12: extra_fields logged correctly
-            df_raw = self.make_df()
-            self.strategy._is_new_bar = MagicMock(return_value=True)
-
-            df = self.strategy.engine_m5.calculate(df_raw)
-            df.loc[df.index[-2], "cross_ema_50"] = 1
-            with patch.object(self.strategy, '_evaluate_standard', return_value=1):
-                self.strategy._check_and_submit_signal("EURUSD_o", "M5", df, 50, 600)
-            
-            fields = self.trading_journal.log_signal.call_args[1]["extra_fields"]
-            required = ["ema_fast", "ema_slow", "atr", "body_pct", "body_vs_avg", "ema_slope", 
-                        "ema_separation_atr", "risk_pct_default", "bars_since_last_standard_1", 
-                        "bars_since_last_high_risk_1", "bars_since_last_any_signal"]
-            for r in required:
-                self.assertIn(r, fields)
-
-    unittest.main()
