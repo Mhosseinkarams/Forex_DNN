@@ -3,10 +3,10 @@ import os
 import pandas as pd
 from datetime import datetime, timedelta
 
-from simulation.simulation_clock import SimulationClock
-from simulation.simulation_account import SimulationAccount
-from simulation.simulation_broker import SimulationBroker
-from simulation.simulation_environment import env
+from Simulation.simulation_clock import SimulationClock
+from Simulation.simulation_account import SimulationAccount
+from Simulation.simulation_broker import SimulationBroker
+from Simulation.simulation_environment import env
 
 from Collecting_Data.trading_journal import TradingJournal
 from Trade_Execution.position_manager import PositionManager
@@ -15,10 +15,10 @@ from Trade_Execution.drawdown import DrawdownManager
 from Trade_Execution.risk_sizing import PositionSizer
 from Trade_Execution.exit_manager import ExitManager
 from Strategies.mm_strategy import MMStrategy
-from simulation.historical_data_feed import HistoricalDataFeed
-from simulation.simulation_order_engine import SimulationOrderEngine
-from simulation.statistics_engine import StatisticsEngine
-from simulation.backtest_report import BacktestReport
+from Simulation.historical_data_feed import HistoricalDataFeed
+from Simulation.simulation_order_engine import SimulationOrderEngine
+from Simulation.statistics_engine import StatisticsEngine
+from Simulation.backtest_report import BacktestReport
 
 logger = logging.getLogger("SimulationRunner")
 

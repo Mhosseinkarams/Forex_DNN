@@ -5,7 +5,7 @@ import threading
 import os
 from datetime import datetime, timezone
 
-from simulation.simulation_environment import env as mt5
+from Simulation.simulation_environment import env as mt5
 from Collecting_Data.utils import safe_file_replace
 
 logger = logging.getLogger("PositionTracker")

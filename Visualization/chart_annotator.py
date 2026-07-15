@@ -2,6 +2,8 @@ import os
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
+import pandas as pd
+import numpy as np
 
 # Optional MT5 import
 try:
@@ -27,6 +29,20 @@ class ChartAnnotationEngine:
     """
     def __init__(self, config: Optional[DebugConfig] = None):
         self.config = config or DebugConfig()
+
+    def _format_timestamp(self, ts) -> str:
+        if ts is None or (isinstance(ts, float) and np.isnan(ts)):
+            return ""
+        if hasattr(ts, "strftime"):
+            try:
+                return ts.strftime("%Y.%m.%d %H:%M:%S")
+            except Exception:
+                pass
+        try:
+            pd_ts = pd.Timestamp(ts)
+            return pd_ts.strftime("%Y.%m.%d %H:%M:%S")
+        except Exception:
+            return str(ts)
 
     def render(
         self,
@@ -64,7 +80,7 @@ class ChartAnnotationEngine:
             # Swings
             if self.config.is_enabled("swings"):
                 for i, sh in enumerate(structure_graph.swing_highs):
-                    time_str = sh.timestamp.strftime("%Y.%m.%d %H:%M:%S") if sh.timestamp else ""
+                    time_str = self._format_timestamp(sh.timestamp) if sh.timestamp else ""
                     color = "Orange" if getattr(sh, "structure_type", "Major") == "Minor" else ("Magenta" if getattr(sh, "structure_type", "Major") == "Internal" else "Red")
                     struct_insts.append(DrawInstruction(
                         type_name="SWING",
@@ -76,7 +92,7 @@ class ChartAnnotationEngine:
                         text=f"H{sh.index}:{sh.price:.5f}({getattr(sh, 'structure_type', 'Major')})"
                     ))
                 for i, sl in enumerate(structure_graph.swing_lows):
-                    time_str = sl.timestamp.strftime("%Y.%m.%d %H:%M:%S") if sl.timestamp else ""
+                    time_str = self._format_timestamp(sl.timestamp) if sl.timestamp else ""
                     color = "LightGreen" if getattr(sl, "structure_type", "Major") == "Minor" else ("Cyan" if getattr(sl, "structure_type", "Major") == "Internal" else "Green")
                     struct_insts.append(DrawInstruction(
                         type_name="SWING",
@@ -90,7 +106,7 @@ class ChartAnnotationEngine:
 
                 if structure_graph.protected_high:
                     ph = structure_graph.protected_high
-                    time_str = ph.timestamp.strftime("%Y.%m.%d %H:%M:%S") if ph.timestamp else ""
+                    time_str = self._format_timestamp(ph.timestamp) if ph.timestamp else ""
                     struct_insts.append(DrawInstruction(
                         type_name="LEVEL",
                         name="FXDNN_PROTECTED_HIGH",
@@ -102,7 +118,7 @@ class ChartAnnotationEngine:
                     ))
                 if structure_graph.protected_low:
                     pl = structure_graph.protected_low
-                    time_str = pl.timestamp.strftime("%Y.%m.%d %H:%M:%S") if pl.timestamp else ""
+                    time_str = self._format_timestamp(pl.timestamp) if pl.timestamp else ""
                     struct_insts.append(DrawInstruction(
                         type_name="LEVEL",
                         name="FXDNN_PROTECTED_LOW",
@@ -116,7 +132,7 @@ class ChartAnnotationEngine:
             # Structure Breaks
             if self.config.is_enabled("structure"):
                 for i, b in enumerate(structure_graph.bos):
-                    time_str = b.timestamp.strftime("%Y.%m.%d %H:%M:%S") if b.timestamp else ""
+                    time_str = self._format_timestamp(b.timestamp) if b.timestamp else ""
                     color = "Blue" if b.direction == 1 else "Magenta"
                     dir_text = "Bullish" if b.direction == 1 else "Bearish"
                     struct_insts.append(DrawInstruction(
@@ -129,7 +145,7 @@ class ChartAnnotationEngine:
                         text=f"BOS ({dir_text})"
                     ))
                 for i, c in enumerate(structure_graph.choch):
-                    time_str = c.timestamp.strftime("%Y.%m.%d %H:%M:%S") if c.timestamp else ""
+                    time_str = self._format_timestamp(c.timestamp) if c.timestamp else ""
                     color = "Cyan" if c.new_trend == 1 else "Orange"
                     dir_text = "Bullish" if c.new_trend == 1 else "Bearish"
                     struct_insts.append(DrawInstruction(
@@ -151,7 +167,7 @@ class ChartAnnotationEngine:
         if self.config.is_enabled("zones"):
             zone_insts = []
             for i, z in enumerate(structure_graph.supply_zones):
-                time_start = z.created_time.strftime("%Y.%m.%d %H:%M:%S") if z.created_time else ""
+                time_start = self._format_timestamp(z.created_time) if z.created_time else ""
                 broken_status = "Broken" if z.broken else "Active"
                 zone_insts.append(DrawInstruction(
                     type_name="ZONE",
@@ -164,7 +180,7 @@ class ChartAnnotationEngine:
                     text=f"Supply Zone | Str: {z.strength_score:.1f} | {broken_status}"
                 ))
             for i, z in enumerate(structure_graph.demand_zones):
-                time_start = z.created_time.strftime("%Y.%m.%d %H:%M:%S") if z.created_time else ""
+                time_start = self._format_timestamp(z.created_time) if z.created_time else ""
                 broken_status = "Broken" if z.broken else "Active"
                 zone_insts.append(DrawInstruction(
                     type_name="ZONE",

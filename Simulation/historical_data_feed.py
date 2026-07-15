@@ -18,7 +18,10 @@ class HistoricalDataFeed:
             logger.error(f"File not found: {filepath}")
             return False
 
-        df = pd.read_csv(filepath)
+        if filepath.endswith(".parquet"):
+            df = pd.read_parquet(filepath)
+        else:
+            df = pd.read_csv(filepath)
         # Assuming CSV has 'Datetime' or 'time'
         if 'Datetime' not in df.columns and 'time' in df.columns:
             df = df.rename(columns={'time': 'Datetime'})

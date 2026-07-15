@@ -43,7 +43,10 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
         df.to_csv(dataset_path, index=False)
         print(f"Synthetic dataset saved to {dataset_path}")
 
-    df = pd.read_csv(dataset_path)
+    if dataset_path.endswith(".parquet"):
+        df = pd.read_parquet(dataset_path)
+    else:
+        df = pd.read_csv(dataset_path)
     print(f"Loaded dataset containing {len(df)} samples.")
 
     # Initialize child class with external YAML config
@@ -74,13 +77,21 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     # Use Trainer to perform train/val split, training, and registration
     trainer = Trainer(random_seed=random_seed)
 
-    # Extract feature columns automatically
-    feature_cols = [c for c in df.columns if c not in ["label", "confidence", "timestamp"]]
+    target_col = "target" if "target" in df.columns else "label"
+
+    # Extract feature columns automatically, avoiding metadata leakage
+    metadata_cols = [
+        "label", "target", "confidence", "timestamp", "Datetime", "symbol", "timeframe",
+        "window_start", "window_end", "sample_id", "label_version", "engine_version",
+        "meta_labeler_rule_fired", "Open", "High", "Low", "Close", "TickVolume", "Spread",
+        "ema_50", "ema_600", "ema_800"
+    ]
+    feature_cols = [c for c in df.columns if c not in metadata_cols and not c.startswith("meta_labeler_")]
 
     train_results = trainer.train_model(
         model=clf,
         df=df,
-        target_col="label",
+        target_col=target_col,
         feature_cols=feature_cols,
         test_size=0.2,
         chronological=True,

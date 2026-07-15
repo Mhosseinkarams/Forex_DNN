@@ -3,7 +3,7 @@ import os
 import shutil
 import pandas as pd
 from datetime import datetime, timezone
-from simulation.simulation_runner import SimulationRunner
+from Simulation.simulation_runner import SimulationRunner
 from trade_auditor import TradeAuditor
 
 class TestSimulationEngine(unittest.TestCase):

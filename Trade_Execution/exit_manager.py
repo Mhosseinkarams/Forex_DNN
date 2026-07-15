@@ -5,7 +5,7 @@ import threading
 import math
 from datetime import datetime, timezone
 from typing import Optional
-from simulation.simulation_environment import env as mt5
+from Simulation.simulation_environment import env as mt5
 from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE, EXIT_PROFILES
 
 # Constants for when MetaTrader5 is not installed (e.g. during local testing),

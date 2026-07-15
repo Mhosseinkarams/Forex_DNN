@@ -1,0 +1,11 @@
+# Configuration for historical data processing pipeline
+input_dir: "HistoricalData"
+output_dir: "output/datasets"
+timeframe: "M5"
+window_size: 35
+window_stride: 1
+max_workers: 4
+use_multiprocessing: true
+clean_data: true
+drop_duplicates: true
+handle_missing: true

@@ -1,0 +1,20 @@
+# Configuration settings for trading strategies
+mm_strategy:
+  ema_periods: [50, 600, 800]
+  atr_period: 14
+  risk_pct: 0.01
+  ml_filtering: false
+  shadow_mode: true
+
+sm_strategy:
+  sl_buffer_pct: 0.10
+  tp_buffer_pct: 0.20
+  rejection_threshold: 80.0
+  rejection_probability_threshold: 0.50
+  risk_pct: 0.01
+  shadow_mode: true
+
+unit_strategy:
+  atr_multiplier: 2.0
+  risk_pct: 0.01
+  shadow_mode: true
