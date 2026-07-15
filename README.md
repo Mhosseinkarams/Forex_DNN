@@ -58,6 +58,8 @@ Forex_DNN/
 │
 ├── Strategies/             # Quant Strategy Implementations
 │   ├── mm_strategy.py      # MMStrategy (Standard, High-Risk, Reversal intraday Forex signals)
+│   ├── sm_strategy.py      # SMStrategy (Ranging mean-reversion Stubborn Man strategy)
+│   ├── refusal_candle_engine.py # RefusalCandleEngine multi-factor candle rejection score builder
 │   └── signal_evaluator.py # Unified SignalEvaluator decoupling strategy rules from ML diagnostics
 │
 ├── Trade_Execution/        # Decoupled Execution, Tracking, and Risk Systems
@@ -928,9 +930,9 @@ Strategies are decoupled from execution and order management. They receive struc
 - **Current Status**: **Planned**.
 
 ### 20.3 SM Strategy
-- **Purpose**: Range-bound mean reversion strategy.
-- **Core Rules**: Identifies range boundaries, structural highs/lows, and supply/demand zone rejections using ML-confirmed entry signals.
-- **Current Status**: **Under Development**.
+- **Purpose**: Range-bound mean reversion strategy (Stubborn Man).
+- **Core Rules**: Identifies range boundaries, structural highs/lows, and supply/demand zone rejections using the multi-factor Refusal Candle Engine and ML confirmation.
+- **Current Status**: **Fully Operational** in backtesting, validation, and live pipeline execution.
 
 ---
 

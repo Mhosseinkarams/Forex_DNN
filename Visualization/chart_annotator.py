@@ -147,7 +147,7 @@ class ChartAnnotationEngine:
                 struct_insts
             )
 
-        # 2. Supply & Demand Zones -> EURUSD_zones.csv
+        # 2. Supply & Demand Zones (Range Boundaries) -> EURUSD_zones.csv
         if self.config.is_enabled("zones"):
             zone_insts = []
             for i, z in enumerate(structure_graph.supply_zones):
@@ -225,7 +225,7 @@ class ChartAnnotationEngine:
                 color = "Green" if accepted else "Gray"
                 style = "ArrowUp" if direction == 1 else "ArrowDown"
                 status_text = "Accepted" if accepted else "Rejected"
-                label = f"{strategy} {sig_type} {status_text} | Reason: {reason}"
+                label = f"{strategy.upper()} {sig_type.upper()} {status_text} | {reason}"
 
                 sig_insts.append(DrawInstruction(
                     type_name="SIGNAL",

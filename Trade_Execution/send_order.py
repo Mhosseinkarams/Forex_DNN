@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import sys
+from typing import Optional
 from Collecting_Data.position_lifecycle import EXIT_PROFILE_STANDARD, EXIT_PROFILE_SINGLE, EXIT_PROFILES
 from Collecting_Data.utils import safe_file_replace
 
@@ -68,6 +69,7 @@ class SendOrder:
         signal_category: str,    # "standard", "high_risk", or "reversal"
         signal_id: str,          # from TradingJournal.log_signal(), already logged upstream
         comment: str = "",
+        tp_price: Optional[float] = None,
     ) -> dict:
         """
         Purpose:
@@ -157,9 +159,10 @@ class SendOrder:
         profile_cfg = EXIT_PROFILES.get(exit_profile)
         tp_level = profile_cfg["broker_tp_level"] if profile_cfg else 1
 
-        # Calculate R and TP price based on market_price
-        R = abs(market_price - sl_price)
-        tp_price = market_price + (1 if direction == 1 else -1) * tp_level * R
+        # Calculate R and TP price based on market_price if not provided
+        if tp_price is None:
+            R = abs(market_price - sl_price)
+            tp_price = market_price + (1 if direction == 1 else -1) * tp_level * R
 
         for pos in symbol_positions:
             existing_ticket = pos["ticket"]
@@ -229,7 +232,8 @@ class SendOrder:
                     sl_price=actual_sl,
                     direction=direction,
                     exit_profile=exit_profile,
-                    signal_id=signal_id
+                    signal_id=signal_id,
+                    tp_price=actual_tp
                 )
                 logger.info(f"Registered ticket {ticket} with ExitManager")
             except Exception as e:

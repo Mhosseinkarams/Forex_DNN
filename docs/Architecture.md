@@ -14,7 +14,7 @@ In this new pipeline, raw market data is consumed once, enriched through standar
 2.  **Data & Pipeline Layer**: Handles raw data retrieval (`DataFeed`), indicator calculation (`IndicatorEngine`), and structural intelligence (`MarketStructureEngine`, `SupplyDemandEngine`, `MarketStateEngine`, `FeaturePipeline`).
 3.  **Central Market Representation**: Holds the populated `MarketStructureGraph` instances.
 4.  **Centralized ML Inference & Decision Layer (Module 16)**: Houses `MLDecisionEngine`, `ModelRegistry`, `BaseCalibrator` variants, and `BasePolicy` implementations which aggregate multi-model predictions into an immutable, thread-safe `DecisionContext`.
-5.  **Strategy & Trade Location Layer**: Lightweight strategies query the `MarketStructureGraph`, consume `DecisionContext` predictions, and leverage `TradeLocationEngine` to resolve structural boundaries.
+5.  **Strategy & Trade Location Layer**: Lightweight trend-following (MM) and range mean-reversion (SM) strategies query the `MarketStructureGraph`, consume `DecisionContext` predictions, leverage `RefusalCandleEngine` (for rejections), and use `TradeLocationEngine` to resolve structural boundaries.
 6.  **Execution & Management Layer**: Contains the core execution engines, including `PositionTracker`, `DrawdownManager`, `ExitManager`, `SendOrder`, and `PositionSizer`.
 
 ## Module Responsibilities
@@ -44,6 +44,7 @@ In this new pipeline, raw market data is consumed once, enriched through standar
 ## Object Relationships
 
 - `MMStrategy` depends on `DataFeed`, `MarketStructureGraph`, `TradeLocationEngine`, and `SendOrder`.
+- `SMStrategy` depends on `DataFeed`, `MarketStructureGraph`, `RefusalCandleEngine`, `TradeLocationEngine`, and `SendOrder`.
 - `TradeLocationEngine` depends on `MarketStructureGraph`.
 - `SendOrder` depends on `PositionManager`, `PositionTracker`, `DrawdownManager`, `PositionSizer`, and `ExitManager`.
 - `ExitManager` depends on `PositionTracker` and `PositionManager`.
@@ -79,6 +80,51 @@ TradeFeatureRecorder (Logs candidates and trade outcomes for future retraining)
 ```
 
 The strategy always owns the final decision; ML never directly executes, manages, or closes positions on its own.
+
+## Stubborn Man (SM) Strategy & Refusal Candle Engine
+
+### 1. Strategy Trading Philosophy
+While the MM Strategy trades trend continuation and EMA breakouts, the Stubborn Man (SM) Strategy specializes in mean reversion and range boundaries. SM assumes that prices are more likely to reject key institutional supply and demand zones than immediately break them.
+
+### 2. Complete Execution Pipeline
+The complete, end-to-end range trading pipeline flow is as follows:
+```
+MarketStructureEngine (Swings, Shifts)
+       │
+       ▼
+SupplyDemandEngine (Active Range Boundaries)
+       │
+       ▼
+MarketStateClassifier (Validates regime is RANGE; TREND or TRANSITION exits immediately)
+       │
+       ▼
+TradeLevelEngine (Resolves structural SL beyond zone & TP before opposite zone with buffer)
+       │
+       ▼
+RefusalCandleEngine (Evaluates multi-factor score for structural level rejection)
+       │
+       ▼
+LevelBreakProbabilityModel (Validates that Level Break Probability <= max_break_probability)
+       │
+       ▼
+MLDecisionEngine (Aggregates inferences under Shadow Mode)
+       │
+       ▼
+SignalEvaluator (Performs final risk and validation check)
+       │
+       ▼
+SMStrategy (Submits order, logs to journal, and writes Daily Retraining files)
+```
+
+### 3. Refusal Candle Engine Scoring
+The `RefusalCandleEngine` (`Strategies/refusal_candle_engine.py`) uses a highly parameterized, score-based mechanism evaluating multi-factor indicators:
+- **Wick/Body Ratio**: Size of the rejection wick compared to the candle body size.
+- **Wick Percentage**: Rejection wick length relative to total candle range.
+- **Close Position**: Closeness of the bar close to the bottom (for supply) or top (for demand).
+- **Zone Penetration Depth**: Depth of the rejection bar's extremity into the S/D zone.
+- **Close Outside Zone**: Confirms that price was successfully rejected outside the zone.
+- **Previous Candle direction & Momentum**: Rejection is strongest if incoming momentum was strong, signaling an abrupt block.
+- **Volume Spike**: Rejections backed by high tick volume represent strong institutional participation.
 
 ### 2. Runtime Feature Pipeline (Module 17)
 The `FeaturePipeline` under `ML/feature_pipeline.py` consumes current OHLC dataframes, indicator dataframes, the active `MarketStructureGraph`, and execution contexts. It extracts and standardizes features dynamically according to the active `FeatureRegistry` order.
