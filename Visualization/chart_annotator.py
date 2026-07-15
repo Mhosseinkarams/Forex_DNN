@@ -280,6 +280,40 @@ class ChartAnnotationEngine:
                 ml_insts
             )
 
+        # 7. Strong & Refusal Candles -> EURUSD_candles.csv
+        if self.config.is_enabled("candles") or True:
+            candle_insts = []
+            if decision:
+                if "strong_candle_info" in decision:
+                    sc_info = decision["strong_candle_info"]
+                    cls_val = sc_info.get("classification", "UNKNOWN")
+                    sc_val = sc_info.get("quality_score", 0)
+                    cnf_val = sc_info.get("confidence", 0.0)
+                    candle_insts.append(DrawInstruction(
+                        type_name="CANDLE",
+                        name="FXDNN_CANDLE_STRONG",
+                        color="Green" if sc_info.get("bullish") else "Red",
+                        style="ArrowUp" if sc_info.get("bullish") else "ArrowDown",
+                        text=f"Strong Candle: {cls_val} | Score: {sc_val} | Conf: {cnf_val:.2f}"
+                    ))
+                if "refusal_info" in decision:
+                    rc_info = decision["refusal_info"]
+                    cls_val = rc_info.get("classification", "UNKNOWN")
+                    sc_val = rc_info.get("quality_score", 0)
+                    cnf_val = rc_info.get("confidence", 0.0)
+                    candle_insts.append(DrawInstruction(
+                        type_name="CANDLE",
+                        name="FXDNN_CANDLE_REFUSAL",
+                        color="Blue" if rc_info.get("bullish") else "Orange",
+                        style="ArrowUp" if rc_info.get("bullish") else "ArrowDown",
+                        text=f"Refusal Rejection: {cls_val} | Score: {sc_val} | Conf: {cnf_val:.2f}"
+                    ))
+
+            DrawInstructionWriter.write_instructions(
+                os.path.join(target_dir, f"{symbol}_candles.csv"),
+                candle_insts
+            )
+
     def annotate_mt5(
         self,
         symbol: str,
@@ -317,7 +351,8 @@ class ChartAnnotationEngine:
         state_ctx: Optional[StateContext] = None,
         trade_levels: Optional[Dict[str, Any]] = None,
         signal_info: Optional[Dict[str, Any]] = None,
-        ml_info: Optional[Dict[str, Any]] = None
+        ml_info: Optional[Dict[str, Any]] = None,
+        df: Optional[pd.DataFrame] = None
     ):
         """
         Draw structural overlays directly on a Matplotlib axis.
@@ -432,6 +467,27 @@ class ChartAnnotationEngine:
                     xytext=(index, msg.atr + msg.atr * 2.0),
                     arrowprops=dict(facecolor=color, shrink=0.05, width=1.5, headwidth=6)
                 )
+
+        # Highlight Strong & Refusal Candles on the Matplotlib axis if DataFrame is provided
+        if df is not None:
+            strong_engine = StrongCandleEngine()
+            refusal_engine = RefusalCandleEngine()
+
+            # Evaluate and draw last 100 bars for display
+            start_i = max(0, len(df) - 100)
+            for i in range(start_i, len(df)):
+                sc = strong_engine.evaluate(df, i, msg)
+                if sc.classification in ["VERY_STRONG", "STRONG", "EXPANSION", "CLIMAX", "EXHAUSTION"]:
+                    col = "green" if sc.bullish else "red"
+                    marker = "P" if sc.classification == "VERY_STRONG" else "*"
+                    ax.plot(i, df.iloc[i]["Close"], marker=marker, color=col, markersize=8, alpha=0.8)
+                    ax.text(i, df.iloc[i]["High"] + (msg.atr * 0.1), f"{sc.classification}({sc.quality_score})", color=col, fontsize=6, rotation=45)
+
+                rc = refusal_engine.evaluate_rejection(df, i, None, msg)
+                if rc.classification in ["PERFECT", "HIGH", "MEDIUM"]:
+                    col = "blue" if rc.bullish else "orange"
+                    ax.plot(i, df.iloc[i]["Close"], marker="d", color=col, markersize=10, alpha=0.9)
+                    ax.text(i, df.iloc[i]["Low"] - (msg.atr * 0.25), f"REF:{rc.classification}({rc.quality_score})", color=col, fontsize=7)
 
         # 6. ML probability overlays
         if self.config.is_enabled("ml") and ml_info:

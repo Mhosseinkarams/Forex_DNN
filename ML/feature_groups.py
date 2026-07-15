@@ -470,8 +470,47 @@ POSITION_FEATURES = [
     )
 ]
 
+CANDLE_INTELLIGENCE_FEATURES = [
+    FeatureDefinition(
+        name="strong_candle_score",
+        display_name="Strong Candle Score",
+        category="PriceAction",
+        dtype=float,
+        units="score",
+        description="Strength score of the latest candle evaluated by StrongCandleEngine",
+        source_module="StrongCandleEngine"
+    ),
+    FeatureDefinition(
+        name="strong_candle_confidence",
+        display_name="Strong Candle Confidence",
+        category="PriceAction",
+        dtype=float,
+        units="ratio",
+        description="Confidence of the latest candle evaluated by StrongCandleEngine",
+        source_module="StrongCandleEngine"
+    ),
+    FeatureDefinition(
+        name="refusal_candle_score",
+        display_name="Refusal Candle Score",
+        category="PriceAction",
+        dtype=float,
+        units="score",
+        description="Rejection/Refusal score of the latest candle evaluated by RefusalCandleEngine",
+        source_module="RefusalCandleEngine"
+    ),
+    FeatureDefinition(
+        name="refusal_candle_confidence",
+        display_name="Refusal Candle Confidence",
+        category="PriceAction",
+        dtype=float,
+        units="ratio",
+        description="Confidence of the latest rejection candle evaluated by RefusalCandleEngine",
+        source_module="RefusalCandleEngine"
+    )
+]
+
 ALL_DEFAULT_FEATURES = (
     TREND_FEATURES + MOMENTUM_FEATURES + STRUCTURE_FEATURES +
     SUPPLY_DEMAND_FEATURES + PRICE_ACTION_FEATURES + VOLATILITY_FEATURES +
-    SESSION_FEATURES + REGIME_FEATURES + POSITION_FEATURES
+    SESSION_FEATURES + REGIME_FEATURES + POSITION_FEATURES + CANDLE_INTELLIGENCE_FEATURES
 )

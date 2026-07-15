@@ -5,6 +5,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Optional, List, Any, Dict, Tuple
+from dataclasses import asdict
 
 # Optional MT5 import
 try:
@@ -35,8 +36,11 @@ from ML.decision_context import DecisionContext
 from Strategies.signal_evaluator import SignalEvaluator, SignalEvaluation
 from ML.trade_feature_recorder import TradeFeatureRecorder
 
-# SM additions
-from Strategies.refusal_candle_engine import RefusalCandleEngine, RefusalResult
+# Signal Intelligence additions
+from Market_Data_Pipeline.strong_candle_engine import StrongCandleEngine, StrongCandle
+from Market_Data_Pipeline.refusal_candle_engine import RefusalCandleEngine, RefusalSignal
+from Core.signal_candidate import SignalCandidate
+from Collecting_Data.signal_recorder import SignalRecorder
 
 logger = logging.getLogger("SMStrategy")
 
@@ -68,7 +72,11 @@ class SMStrategy:
         feature_pipeline: Optional[FeaturePipeline] = None,
         signal_evaluator: Optional[SignalEvaluator] = None,
         recorder: Optional[TradeFeatureRecorder] = None,
+
+        # New Engine Dependencies
+        strong_candle_engine: Optional[StrongCandleEngine] = None,
         refusal_engine: Optional[RefusalCandleEngine] = None,
+        signal_recorder: Optional[SignalRecorder] = None,
 
         # SM Strategy Configuration (Configurable Thresholds)
         min_zone_strength: float = 1.0,
@@ -117,8 +125,10 @@ class SMStrategy:
         self.state_engine = MarketStateEngine()
         self.location_engine = location_engine or TradeLocationEngine()
 
-        # Refusal Candle Engine
+        # Signal Intelligence Engines
+        self.strong_candle_engine = strong_candle_engine or StrongCandleEngine()
         self.refusal_engine = refusal_engine or RefusalCandleEngine()
+        self.signal_recorder = signal_recorder or SignalRecorder()
 
         # ML Services
         self.feature_pipeline = feature_pipeline or FeaturePipeline()
@@ -273,7 +283,7 @@ class SMStrategy:
         )
         return graph
 
-    def _evaluate_setup_and_trade(self, symbol: str, timeframe: str, df: pd.DataFrame):
+    def _evaluate_setup_and_trade(self, symbol: str, timeframe: str, df: pd.DataFrame) -> Optional[SignalCandidate]:
         idx_closed = len(df) - 2 # Analyze the fully closed candle
         bar_closed = df.iloc[idx_closed]
         bar_timestamp = str(bar_closed["Datetime"])
@@ -302,6 +312,9 @@ class SMStrategy:
         )
         self.features_logger.info(f"Features at {bar_timestamp}: {features_fv.features}")
 
+        # Evaluate Engines
+        strong_candle = self.strong_candle_engine.evaluate(df, idx_closed, msg)
+
         # Step 1: Detect Market Regime (Only RANGE)
         predicted_state = "UNKNOWN"
         decision_ctx = None
@@ -326,27 +339,23 @@ class SMStrategy:
         # Step 1: Filter on RANGE regime
         if predicted_state != "RANGE":
             logger.info(f"[SM] Skip {symbol} {timeframe} at {bar_timestamp}: Regime is {predicted_state}, not RANGE.")
-            return
+            return None
 
         # Step 2 & 3: Identify active ranges and check price interactions
-        # Extract active, eligible zones based on thresholds
         eligible_zones: List[Zone] = []
         for zone in msg.supply_zones + msg.demand_zones:
-            # Check strength
             if zone.strength_score < self.min_zone_strength:
                 continue
-            # Check age
             zone_age = idx_closed - zone.created_idx
             if zone_age > self.max_zone_age_bars:
                 continue
-            # Check invalidation
             if zone.broken or zone.invalidated:
                 continue
             eligible_zones.append(zone)
 
         if not eligible_zones:
             logger.info(f"[SM] No eligible zones found for {symbol} {timeframe}")
-            return
+            return None
 
         # Test interaction: High or Low of closed bar must overlap/penetrate an eligible zone
         candidate_zones: List[Tuple[Zone, float, int]] = [] # (Zone, penetration, direction)
@@ -355,30 +364,27 @@ class SMStrategy:
 
         for zone in eligible_zones:
             if zone.type == "Supply":
-                # Sell setup: bar high overlaps or goes above zone lower edge
                 if high_p >= zone.lower:
                     penetration = high_p - zone.lower
                     candidate_zones.append((zone, penetration, -1))
             else:
-                # Buy setup: bar low overlaps or goes below zone upper edge
                 if low_p <= zone.upper:
                     penetration = zone.upper - low_p
                     candidate_zones.append((zone, penetration, 1))
 
         if not candidate_zones:
             logger.info(f"[SM] Price is away from structural levels for {symbol} {timeframe}")
-            return
+            return None
 
         # Step 4: RefusalCandleEngine scoring
-        # Evaluate each candidate zone rejection, pick the strongest
-        best_rejection: Optional[Tuple[Zone, RefusalResult, int]] = None
+        best_rejection: Optional[Tuple[Zone, RefusalSignal, int]] = None
         for zone, pen, direction in candidate_zones:
             res = self.refusal_engine.evaluate_rejection(df, idx_closed, zone, msg)
             if best_rejection is None or res.score > best_rejection[1].score:
                 best_rejection = (zone, res, direction)
 
         if not best_rejection:
-            return
+            return None
 
         active_zone, refusal_result, direction = best_rejection
 
@@ -388,20 +394,20 @@ class SMStrategy:
                 f"[SM] Setup rejected for {symbol} {timeframe} | "
                 f"Refusal score {refusal_result.score} is below threshold {self.min_refusal_score}"
             )
-            # Log rejected trade to journal/recorder
-            self._record_and_log_setup(
+            return self._record_and_log_setup(
                 symbol=symbol,
                 timeframe=timeframe,
                 direction=direction,
                 msg=msg,
+                strong_candle=strong_candle,
                 refusal_result=refusal_result,
+                active_zone=active_zone,
                 decision_ctx=decision_ctx,
                 features_fv=features_fv,
                 bar_timestamp=bar_timestamp,
                 accepted=False,
                 reason=f"Weak refusal score: {refusal_result.score}"
             )
-            return
 
         # Step 6: Level Break Probability check
         break_prob = decision_ctx.break_probability if (decision_ctx and "LevelBreakProbabilityModel" in getattr(decision_ctx, "model_versions", {})) else 0.0
@@ -410,29 +416,28 @@ class SMStrategy:
                 f"[SM] Setup rejected for {symbol} {timeframe} | "
                 f"Level Break Probability {break_prob:.4f} exceeds threshold {self.max_break_probability}"
             )
-            self._record_and_log_setup(
+            return self._record_and_log_setup(
                 symbol=symbol,
                 timeframe=timeframe,
                 direction=direction,
                 msg=msg,
+                strong_candle=strong_candle,
                 refusal_result=refusal_result,
+                active_zone=active_zone,
                 decision_ctx=decision_ctx,
                 features_fv=features_fv,
                 bar_timestamp=bar_timestamp,
                 accepted=False,
                 reason=f"High break probability: {break_prob:.4f}"
             )
-            return
 
         # Step 8: TradeLevelEngine SL/TP calculations
-        # Set Entry Price
-        tick = mt5.symbol_info_tick(symbol) if mt5 else None
-        if tick and tick.ask > 0 and tick.bid > 0:
-            entry_price = float(tick.ask if direction == 1 else tick.bid)
-        else:
-            entry_price = float(bar_closed["Close"])
+        entry_price = float(bar_closed["Close"])
+        if mt5:
+            tick = mt5.symbol_info_tick(symbol)
+            if tick and tick.ask > 0 and tick.bid > 0:
+                entry_price = float(tick.ask if direction == 1 else tick.bid)
 
-        # SL must be placed BEYOND the active zone
         zone_width = active_zone.upper - active_zone.lower
         sl_offset = zone_width * self.sl_buffer_pct
         if direction == 1:
@@ -440,28 +445,22 @@ class SMStrategy:
         else:
             sl_price = active_zone.upper + sl_offset
 
-        # TP is structural, placed BEFORE the opposite zone applying a buffer
         opposite_zones = msg.supply_zones if direction == 1 else msg.demand_zones
         valid_opposites = [z for z in opposite_zones if not z.broken and not z.invalidated]
 
-        # Buffer calculation
         atr_val = msg.atr if msg.atr > 0 else 0.0001
         tp_offset = atr_val * self.tp_buffer_pct
 
         tp_price = 0.0
         if direction == 1:
-            # BUY: Target nearest supply lower edge with buffer
             filtered_opps = [z for z in valid_opposites if z.lower > entry_price]
             if filtered_opps:
-                # Rank TP candidates (pick the nearest one for safety)
                 sorted_opps = sorted(filtered_opps, key=lambda z: z.lower)
                 tp_price = sorted_opps[0].lower - tp_offset
             else:
-                # Fallback to standard 1.5 R:R
                 sl_dist = abs(entry_price - sl_price)
                 tp_price = entry_price + (sl_dist * 1.5)
         else:
-            # SELL: Target nearest demand upper edge with buffer
             filtered_opps = [z for z in valid_opposites if z.upper < entry_price]
             if filtered_opps:
                 sorted_opps = sorted(filtered_opps, key=lambda z: z.upper, reverse=True)
@@ -470,7 +469,6 @@ class SMStrategy:
                 sl_dist = abs(sl_price - entry_price)
                 tp_price = entry_price - (sl_dist * 1.5)
 
-        # RR validation
         sl_dist = abs(entry_price - sl_price)
         tp_dist = abs(tp_price - entry_price)
         rr_ratio = tp_dist / sl_dist if sl_dist > 0 else 0.0
@@ -480,19 +478,20 @@ class SMStrategy:
                 f"[SM] Setup rejected for {symbol} {timeframe} | "
                 f"RR ratio {rr_ratio:.2f} is below minimum {self.min_rr}"
             )
-            self._record_and_log_setup(
+            return self._record_and_log_setup(
                 symbol=symbol,
                 timeframe=timeframe,
                 direction=direction,
                 msg=msg,
+                strong_candle=strong_candle,
                 refusal_result=refusal_result,
+                active_zone=active_zone,
                 decision_ctx=decision_ctx,
                 features_fv=features_fv,
                 bar_timestamp=bar_timestamp,
                 accepted=False,
                 reason=f"Poor RR ratio: {rr_ratio:.2f}"
             )
-            return
 
         # Step 9: SignalEvaluator performing final validation
         trading_allowed = self.drawdown_manager.trading_allowed()
@@ -519,13 +518,15 @@ class SMStrategy:
             risk_state=risk_state
         )
 
-        # Step 10: Log to Journal & Record
-        self._record_and_log_setup(
+        # Step 10: Log to Journal, SignalRecorder & Record
+        candidate = self._record_and_log_setup(
             symbol=symbol,
             timeframe=timeframe,
             direction=direction,
             msg=msg,
+            strong_candle=strong_candle,
             refusal_result=refusal_result,
+            active_zone=active_zone,
             decision_ctx=decision_ctx,
             features_fv=features_fv,
             bar_timestamp=bar_timestamp,
@@ -545,10 +546,10 @@ class SMStrategy:
                 direction=direction,
                 entry_price=0.0,
                 sl_price=sl_price,
-                exit_profile=EXIT_PROFILE_SINGLE, # single exit mean-reversion
+                exit_profile=EXIT_PROFILE_SINGLE,
                 strategy="sm",
                 signal_category="reversal",
-                signal_id=0, # filled dynamically
+                signal_id=candidate.signal_id,
                 tp_price=tp_price
             )
             logger.info(f"[SM] Order status: {res.get('success')} - {res.get('reason')}")
@@ -594,13 +595,17 @@ class SMStrategy:
             except Exception as ex:
                 logger.error(f"Failed to render chart annotations: {ex}")
 
+        return candidate
+
     def _record_and_log_setup(
         self,
         symbol: str,
         timeframe: str,
         direction: int,
         msg: MarketStructureGraph,
-        refusal_result: RefusalResult,
+        strong_candle: StrongCandle,
+        refusal_result: RefusalSignal,
+        active_zone: Zone,
         decision_ctx: Optional[DecisionContext],
         features_fv: Any,
         bar_timestamp: str,
@@ -610,11 +615,10 @@ class SMStrategy:
         sl_price: float = 0.0,
         tp_price: float = 0.0,
         rr_ratio: float = 0.0
-    ):
+    ) -> SignalCandidate:
         """
-        Helper method to coordinate logging to TradingJournal, TradeFeatureRecorder, and custom logs.
+        Helper method to coordinate logging to TradingJournal, TradeFeatureRecorder, SignalRecorder, and custom logs.
         """
-        # Formulate metrics payload
         extra_fields = {
             "strategy": "sm",
             "refusal_score": refusal_result.score,
@@ -648,11 +652,60 @@ class SMStrategy:
             except Exception as j_ex:
                 logger.error(f"Failed to log signal to trading journal: {j_ex}")
 
+        # Construct and log the standard SignalCandidate (Part 4)
+        pred_state = decision_ctx.predicted_state if decision_ctx else "RANGE"
+        candidate = SignalCandidate(
+            signal_id=signal_id if signal_id else int(time.time()),
+            strategy_name="SMStrategy",
+            strategy_version="1.1.0",
+            symbol=symbol,
+            timeframe=timeframe,
+            timestamp=bar_timestamp,
+            direction=direction,
+            signal_type="reversal",
+            entry_price=entry_price,
+            stop_loss=sl_price,
+            take_profit=tp_price,
+            risk_reward=rr_ratio,
+            market_state=pred_state,
+            trend=msg.trend_direction,
+            signal_quality=refusal_result.quality_score,
+            confidence=refusal_result.confidence,
+            risk_multiplier=1.0,
+            strong_candle_info=asdict(strong_candle),
+            refusal_info=asdict(refusal_result),
+            market_structure_snapshot={
+                "trend_direction": msg.trend_direction,
+                "ema_distance_atr": msg.ema_distance_atr,
+                "atr": msg.atr,
+                "protected_high": msg.protected_high.price if msg.protected_high else None,
+                "protected_low": msg.protected_low.price if msg.protected_low else None,
+            },
+            supply_demand_snapshot={
+                "type": active_zone.type,
+                "upper": active_zone.upper,
+                "lower": active_zone.lower,
+                "strength_score": active_zone.strength_score
+            },
+            ml_predictions={
+                "predicted_state": pred_state,
+                "state_confidence": decision_ctx.state_confidence if decision_ctx else 0.5,
+                "break_probability": decision_ctx.break_probability if decision_ctx else 0.5,
+                "trade_quality_score": decision_ctx.trade_quality_score if decision_ctx else 0.5
+            },
+            reasoning=f"SMStrategy range rejection of {active_zone.type} zone with refusal score {refusal_result.score}",
+            priority="HIGH" if refusal_result.score >= 80 else "MEDIUM",
+            status="EXECUTED" if accepted else "REJECTED"
+        )
+
+        # Log candidate to unified SignalRecorder (Part 5)
+        self.signal_recorder.record_candidate(candidate, rejection_reason=reason)
+
         # Log to TradeFeatureRecorder (Layer 2)
         if self.recorder:
             try:
                 self.recorder.record_candidate(
-                    signal_id=signal_id if signal_id else int(time.time()),
+                    signal_id=candidate.signal_id,
                     timestamp=bar_timestamp,
                     strategy="sm",
                     symbol=symbol,
@@ -675,3 +728,5 @@ class SMStrategy:
         )
         self.shadow_logger.info(shadow_log_msg)
         self.evaluator_logger.info(f"Signal Evaluation for SM: {extra_fields}")
+
+        return candidate

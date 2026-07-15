@@ -912,6 +912,25 @@ The framework is designed to evolve into a fully automated, machine learning and
 
 ---
 
+## 19.5 Signal Intelligence Layer
+
+The **Signal Intelligence Layer** standardizes how strategies evaluate price candles and records unified candidate signals for subsequent ML, RL, and statistical performance training.
+
+### Core Components:
+1. **StrongCandleEngine** (`Market_Data_Pipeline/strong_candle_engine.py`):
+   - Analyzes every price candle to classify its strength.
+   - Evaluates body size, candle range, wicks ratios, Close position inside candle, ATR normalized size, EMA distance/direction, volume, and volatility regime.
+   - Outputs a `StrongCandle` object containing `quality_score` (0-100) and `confidence` (0.0-1.0) conforming to the **Common Scoring Convention**.
+2. **RefusalCandleEngine** (`Market_Data_Pipeline/refusal_candle_engine.py`):
+   - Detects rejection candles by combining shape and structural context (Supply/Demand, protected levels, swing highs/lows, BOS, CHOCH, trend, regime, EMA, ATR).
+   - Outputs a `RefusalSignal` object with `quality_score` (0-100) and `confidence` (0.0-1.0).
+3. **SignalCandidate** (`Core/signal_candidate.py`):
+   - The universal dataclass representing a trade setup or signal. It is the sole interface between trading strategies and execution/management systems.
+4. **SignalRecorder** (`Collecting_Data/signal_recorder.py`):
+   - Logs every single generated candidate (accepted, rejected, ignored, executed, etc.) to a rolling, retrospective CSV database (`Logs/signal_records.csv`) for future retraining.
+
+---
+
 ## 20. Strategies
 
 Strategies are decoupled from execution and order management. They receive structured state from the engines and return execution signal candidates.
