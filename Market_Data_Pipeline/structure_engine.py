@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import logging
 from typing import List, Optional, Dict, Any
+from datetime import datetime
 
 from Market_Data_Pipeline.structure_graph import StructureLevel, BOS, CHOCH
 
@@ -9,14 +10,11 @@ logger = logging.getLogger('MarketStructureEngine')
 
 class MarketStructureEngine:
     """
-    Purpose:
-        Version 1.0 Production-Ready Smart Money Market Structure Engine.
-        Extracts objective SMC market structure from OHLC data.
-        Detects Major, Minor, and Internal Swing points, Protected Levels,
-        BOS, CHOCH, and nested swings with look-ahead protection.
+    SMC Market Structure Engine based on SmartMoneyConcepts.mq5.
+    Extracts objective Smart Money market structure from OHLC data.
     """
     def __init__(self, lookback: int = 3, lookback_major: int = 10, lookback_internal: int = 1):
-        self.lookback = lookback  # Acts as minor lookback
+        self.lookback = lookback  # Acts as the Swing Length (InpSwingLength)
         self.lookback_minor = lookback
         self.lookback_major = lookback_major
         self.lookback_internal = lookback_internal
@@ -38,299 +36,293 @@ class MarketStructureEngine:
         self.last_choch_idx: int = -1
 
     def _calculate_atr(self, df: pd.DataFrame, window: int = 14) -> np.ndarray:
-        """
-        Calculate Average True Range (ATR) dynamically based on True Range rolling mean.
-        """
         prev_close = df['Close'].shift(1)
         tr = pd.concat([
             df['High'] - df['Low'],
             (df['High'] - prev_close).abs(),
             (df['Low'] - prev_close).abs()
         ], axis=1).max(axis=1)
-        return tr.rolling(window=window).mean().values
+        return tr.rolling(window=window).mean().fillna(0.0010).values
 
-    def _detect_swings(self, df: pd.DataFrame, atr: np.ndarray):
-        """
-        Detect Swing Highs and Swing Lows based on Major, Minor, and Internal lookbacks.
-        Ensures nested structure tagging and full metadata tracking.
-        """
-        highs = df['High'].values
-        lows = df['Low'].values
-        times = df['Datetime'].values if 'Datetime' in df.columns else [None] * len(df)
-
+    def process(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
         n_bars = len(df)
 
-        # Helper to check peak dominance
-        for i in range(1, n_bars - 1):
-            dt = pd.to_datetime(times[i]) if times[i] is not None else None
-            curr_atr = atr[i] if (i < len(atr) and not np.isnan(atr[i]) and atr[i] > 0) else 0.0001
+        # Reset State
+        self.swings = []
+        self.bos_list = []
+        self.choch_list = []
+        self.bos_count = 0
+        self.choch_count = 0
+        self.current_trend = 0
+        self.last_bos_idx = -1
+        self.last_choch_idx = -1
+        self.last_swing_high = None
+        self.last_swing_low = None
+        self.protected_high = None
+        self.protected_low = None
 
-            # Identify which lookback window is satisfied
-            for stype, l_bk in [("Major", self.lookback_major), ("Minor", self.lookback_minor), ("Internal", self.lookback_internal)]:
-                if i < l_bk or i >= n_bars - l_bk:
-                    continue
+        # Prepare outputs
+        trend_arr = np.zeros(n_bars)
+        bos_arr = np.zeros(n_bars)
+        choch_arr = np.zeros(n_bars)
+        bos_cnt_arr = np.zeros(n_bars)
+        choch_cnt_arr = np.zeros(n_bars)
+        last_bos_dir_arr = np.zeros(n_bars)
+        last_choch_dir_arr = np.zeros(n_bars)
+        sh_arr = np.full(n_bars, np.nan)
+        sl_arr = np.full(n_bars, np.nan)
 
-                # Check Swing High
-                is_sh = True
-                for j in range(1, l_bk + 1):
-                    if highs[i] < highs[i - j] or highs[i] < highs[i + j]:
-                        is_sh = False
-                        break
+        if n_bars < self.lookback * 2 + 1:
+            df['trend'] = trend_arr
+            df['bos'] = bos_arr
+            df['choch'] = choch_arr
+            df['bos_count'] = bos_cnt_arr
+            df['choch_count'] = choch_cnt_arr
+            df['bars_since_bos'] = np.full(n_bars, -1)
+            df['bars_since_choch'] = np.full(n_bars, -1)
+            df['last_bos_direction'] = last_bos_dir_arr
+            df['last_choch_direction'] = last_choch_dir_arr
+            df['swing_high'] = sh_arr
+            df['swing_low'] = sl_arr
+            return df
 
-                if is_sh:
-                    # Check duplicates
-                    if not any(s.index == i and s.level_type == 'SwingHigh' and s.structure_type == stype for s in self.swings):
-                        # Calculate strength score based on local variance / ATR
-                        surrounding_highs = highs[max(0, i - l_bk):min(n_bars, i + l_bk + 1)]
-                        mean_highs = np.mean(surrounding_highs)
-                        strength_score = float((highs[i] - mean_highs) / curr_atr) if curr_atr > 0 else 1.0
-
-                        swing = StructureLevel(
-                            price=float(highs[i]),
-                            index=i,
-                            timestamp=dt,
-                            strength=l_bk,
-                            level_type='SwingHigh',
-                            strength_score=strength_score,
-                            confirmation_candle=i + l_bk,
-                            confirmation_delay=l_bk,
-                            bars_since_confirmation=-1,
-                            is_valid=True,
-                            broken=False,
-                            reason="active",
-                            structure_type=stype,
-                            why_detected=f"Candle high {highs[i]:.5f} is a local peak with lookback {l_bk}.",
-                            rule_fired="swing_high_detection",
-                            thresholds_satisfied=[f"high_index_{i} > surrounding_{l_bk}_bars"],
-                            confidence_score=min(1.0, l_bk / 10.0)
-                        )
-                        self.swings.append(swing)
-
-                # Check Swing Low
-                is_sl = True
-                for j in range(1, l_bk + 1):
-                    if lows[i] > lows[i - j] or lows[i] > lows[i + j]:
-                        is_sl = False
-                        break
-
-                if is_sl:
-                    if not any(s.index == i and s.level_type == 'SwingLow' and s.structure_type == stype for s in self.swings):
-                        surrounding_lows = lows[max(0, i - l_bk):min(n_bars, i + l_bk + 1)]
-                        mean_lows = np.mean(surrounding_lows)
-                        strength_score = float((mean_lows - lows[i]) / curr_atr) if curr_atr > 0 else 1.0
-
-                        swing = StructureLevel(
-                            price=float(lows[i]),
-                            index=i,
-                            timestamp=dt,
-                            strength=l_bk,
-                            level_type='SwingLow',
-                            strength_score=strength_score,
-                            confirmation_candle=i + l_bk,
-                            confirmation_delay=l_bk,
-                            bars_since_confirmation=-1,
-                            is_valid=True,
-                            broken=False,
-                            reason="active",
-                            structure_type=stype,
-                            why_detected=f"Candle low {lows[i]:.5f} is a local trough with lookback {l_bk}.",
-                            rule_fired="swing_low_detection",
-                            thresholds_satisfied=[f"low_index_{i} < surrounding_{l_bk}_bars"],
-                            confidence_score=min(1.0, l_bk / 10.0)
-                        )
-                        self.swings.append(swing)
-
-        # Build nest linkages (linking internal to minor, and minor to major)
-        # Sort swings by index
-        self.swings.sort(key=lambda s: (s.index, s.level_type))
-
-        # Track last swing high and last swing low for summary compatibility
-        sh_majors = [s for s in self.swings if s.level_type == 'SwingHigh' and s.structure_type == 'Major']
-        sl_majors = [s for s in self.swings if s.level_type == 'SwingLow' and s.structure_type == 'Major']
-
-        all_swing_highs = [s for s in self.swings if s.level_type == 'SwingHigh']
-        all_swing_lows = [s for s in self.swings if s.level_type == 'SwingLow']
-
-        if sh_majors:
-            self.last_swing_high = sh_majors[-1]
-        elif all_swing_highs:
-            self.last_swing_high = all_swing_highs[-1]
-
-        if sl_majors:
-            self.last_swing_low = sl_majors[-1]
-        elif all_swing_lows:
-            self.last_swing_low = all_swing_lows[-1]
-
-    def _detect_structure_breaks(self, df: pd.DataFrame, atr: np.ndarray):
-        """
-        Detect BOS and CHOCH precisely using confirmed swings.
-        Determines and tracks protected swing levels dynamically.
-        """
-        if not self.swings:
-            return
-
+        highs = df['High'].values
+        lows = df['Low'].values
         closes = df['Close'].values
-        volumes = df['TickVolume'].values if 'TickVolume' in df.columns else np.zeros(len(df))
-        times = df['Datetime'].values if 'Datetime' in df.columns else [None] * len(df)
+        opens = df['Open'].values
+        times = df['Datetime'].values if 'Datetime' in df.columns else [None] * n_bars
 
-        # Calculate ATR
-        atr_period = 14
-        prev_close = df['Close'].shift(1)
-        tr = pd.concat([df['High'] - df['Low'], (df['High'] - prev_close).abs(), (df['Low'] - prev_close).abs()], axis=1).max(axis=1)
-        atr = tr.rolling(window=atr_period).mean().values
+        # Precompute Pivot Highs & Pivot Lows
+        piv_highs = np.zeros(n_bars, dtype=bool)
+        piv_lows = np.zeros(n_bars, dtype=bool)
 
-        broken_swings = set()
+        for i in range(self.lookback, n_bars - self.lookback):
+            p_high = highs[i]
+            is_ph = True
+            for k in range(1, self.lookback + 1):
+                if highs[i - k] >= p_high or highs[i + k] >= p_high:
+                    is_ph = False
+                    break
+            piv_highs[i] = is_ph
 
-        for i in range(1, len(df)):
-            curr_atr = atr[i] if (not np.isnan(atr[i]) and atr[i] > 0) else 0.0001
-            dt_i = pd.to_datetime(times[i]) if times[i] is not None else None
+            p_low = lows[i]
+            is_pl = True
+            for k in range(1, self.lookback + 1):
+                if lows[i - k] <= p_low or lows[i + k] <= p_low:
+                    is_pl = False
+                    break
+            piv_lows[i] = is_pl
 
-            # Get swings confirmed by index i (index + confirmation_delay <= i)
-            confirmed_swings = [s for s in self.swings if s.index + s.confirmation_delay <= i]
-            if not confirmed_swings:
-                continue
+        # Running SMC variables
+        g_phLevel = 0.0
+        g_plLevel = 0.0
+        g_phIdx = -1
+        g_plIdx = -1
+        g_trend = 0  # 1: Bull, -1: Bear, 0: Neutral
 
-            # We use Major/Minor swings to define the market structure boundary
-            latest_highs = [s for s in confirmed_swings if s.level_type == 'SwingHigh' and s.structure_type in ('Major', 'Minor')]
-            latest_lows = [s for s in confirmed_swings if s.level_type == 'SwingLow' and s.structure_type in ('Major', 'Minor')]
-            if not latest_highs or not latest_lows:
-                continue
+        atr_vals = self._calculate_atr(df, window=14)
 
-            curr_high_swing = latest_highs[-1]
-            curr_low_swing = latest_lows[-1]
+        # Sequential point-in-time calculation
+        for t in range(n_bars):
+            idx = t - self.lookback
+            if idx >= self.lookback:
+                # Process Pivot High
+                if piv_highs[idx]:
+                    pivPrice = highs[idx]
+                    pivTime = times[idx] if isinstance(times[idx], datetime) else (pd.to_datetime(times[idx]) if times[idx] is not None else None)
 
-            # Removed redundant O(N) loop here. bars_since_confirmation will be vectorized/calculated below.
-
-            # Check Bullish BOS / Bullish CHOCH
-            if closes[i] > curr_high_swing.price and curr_high_swing.index not in broken_swings:
-                broken_swings.add(curr_high_swing.index)
-                curr_high_swing.broken = True
-                curr_high_swing.reason = f"Broken by Close at bar {i}"
-
-                distance = float(closes[i] - curr_high_swing.price)
-                norm_dist = distance / curr_atr
-                vol = float(volumes[i])
-
-                # Impulse size from previous swing low
-                prev_lows_before = [s for s in confirmed_swings if s.level_type == 'SwingLow' and s.index < curr_high_swing.index]
-                impulse_base = prev_lows_before[-1].price if prev_lows_before else curr_high_swing.price - curr_atr
-                imp_size = float(closes[i] - impulse_base)
-                norm_imp = imp_size / curr_atr
-
-                # Break strength is ratio of close-open or break candle body to ATR
-                break_strength_val = float(abs(closes[i] - df['Open'].values[i]) / curr_atr)
-
-                if self.current_trend >= 0:
-                    # Bullish BOS
-                    bos_obj = BOS(
-                        index=i,
-                        direction=1,
-                        broken_level=curr_high_swing.price,
-                        timestamp=dt_i,
-                        strength=curr_high_swing.strength,
-                        distance=distance,
-                        atr_normalized_distance=norm_dist,
-                        break_candle=i,
-                        impulse_size=imp_size,
-                        atr_normalized_impulse=norm_imp,
-                        volume=vol,
-                        break_strength=break_strength_val,
-                        why_detected=f"Close {closes[i]:.5f} broke SwingHigh {curr_high_swing.price:.5f} in trend direction.",
-                        rule_fired="bullish_bos_break",
-                        thresholds_satisfied=[f"close_{closes[i]:.5f} > swing_high_{curr_high_swing.price:.5f}"],
-                        confidence_score=min(1.0, break_strength_val / 2.0)
+                    # Create StructureLevel Swing High
+                    swing = StructureLevel(
+                        price=float(pivPrice),
+                        index=idx,
+                        timestamp=pivTime,
+                        strength=self.lookback,
+                        level_type='SwingHigh',
+                        strength_score=1.0,
+                        confirmation_candle=t,
+                        confirmation_delay=self.lookback,
+                        bars_since_confirmation=t - idx,
+                        is_valid=True,
+                        broken=False,
+                        structure_type='Minor' if self.lookback < 8 else 'Major'
                     )
-                    self.bos_list.append(bos_obj)
-                    self.bos_count += 1
-                    self.last_bos_idx = i
-                else:
-                    # Bullish CHOCH
-                    choch_obj = CHOCH(
-                        index=i,
-                        previous_trend=self.current_trend,
-                        new_trend=1,
-                        timestamp=dt_i,
-                        price=closes[i],
-                        strength=curr_high_swing.strength,
-                        confirmation_score=float(min(1.0, break_strength_val / 1.5)),
-                        why_detected=f"Close {closes[i]:.5f} broke SwingHigh {curr_high_swing.price:.5f} against bearish trend.",
-                        rule_fired="bullish_choch_break",
-                        thresholds_satisfied=[f"close_{closes[i]:.5f} > swing_high_{curr_high_swing.price:.5f}"],
-                        confidence_score=min(1.0, break_strength_val / 1.5)
+                    self.swings.append(swing)
+                    self.last_swing_high = swing
+
+                    # Breakout Check (BOS/CHoCH)
+                    if g_phLevel > 0 and pivPrice > g_phLevel:
+                        tag = "CHoCH" if g_trend == -1 else "BOS"
+                        g_trend = 1
+
+                        distance = float(pivPrice - g_phLevel)
+                        norm_dist = float(distance / atr_vals[t]) if atr_vals[t] > 0 else 0.0
+
+                        if tag == "BOS":
+                            bos_obj = BOS(
+                                index=t,
+                                direction=1,
+                                broken_level=float(g_phLevel),
+                                timestamp=times[t],
+                                strength=self.lookback,
+                                distance=distance,
+                                atr_normalized_distance=norm_dist,
+                                break_candle=t,
+                                impulse_size=distance,
+                                atr_normalized_impulse=norm_dist,
+                                break_strength=1.0
+                            )
+                            self.bos_list.append(bos_obj)
+                            self.bos_count += 1
+                            self.last_bos_idx = t
+                        else:
+                            choch_obj = CHOCH(
+                                index=t,
+                                previous_trend=-1,
+                                new_trend=1,
+                                timestamp=times[t],
+                                price=float(pivPrice),
+                                strength=self.lookback,
+                                confirmation_score=1.0
+                            )
+                            self.choch_list.append(choch_obj)
+                            self.choch_count += 1
+                            self.last_choch_idx = t
+
+                        # Protected Levels updates
+                        if self.last_swing_low:
+                            self.protected_low = self.last_swing_low
+                            self.protected_low.level_type = "ProtectedLow"
+
+                    g_phLevel = pivPrice
+                    g_phIdx = idx
+
+                # Process Pivot Low
+                if piv_lows[idx]:
+                    pivPrice = lows[idx]
+                    pivTime = times[idx] if isinstance(times[idx], datetime) else (pd.to_datetime(times[idx]) if times[idx] is not None else None)
+
+                    # Create StructureLevel Swing Low
+                    swing = StructureLevel(
+                        price=float(pivPrice),
+                        index=idx,
+                        timestamp=pivTime,
+                        strength=self.lookback,
+                        level_type='SwingLow',
+                        strength_score=1.0,
+                        confirmation_candle=t,
+                        confirmation_delay=self.lookback,
+                        bars_since_confirmation=t - idx,
+                        is_valid=True,
+                        broken=False,
+                        structure_type='Minor' if self.lookback < 8 else 'Major'
                     )
-                    self.choch_list.append(choch_obj)
-                    self.choch_count += 1
-                    self.last_choch_idx = i
+                    self.swings.append(swing)
+                    self.last_swing_low = swing
 
-                self.current_trend = 1
-                self.protected_low = curr_low_swing
-                if self.protected_low:
-                    self.protected_low.level_type = "ProtectedLow"
+                    # Breakdown Check
+                    if g_plLevel > 0 and pivPrice < g_plLevel:
+                        tag = "CHoCH" if g_trend == 1 else "BOS"
+                        g_trend = -1
 
-            # Check Bearish BOS / Bearish CHOCH
-            elif closes[i] < curr_low_swing.price and curr_low_swing.index not in broken_swings:
-                broken_swings.add(curr_low_swing.index)
-                curr_low_swing.broken = True
-                curr_low_swing.reason = f"Broken by Close at bar {i}"
+                        distance = float(g_plLevel - pivPrice)
+                        norm_dist = float(distance / atr_vals[t]) if atr_vals[t] > 0 else 0.0
 
-                distance = float(curr_low_swing.price - closes[i])
-                norm_dist = distance / curr_atr
-                vol = float(volumes[i])
+                        if tag == "BOS":
+                            bos_obj = BOS(
+                                index=t,
+                                direction=-1,
+                                broken_level=float(g_plLevel),
+                                timestamp=times[t],
+                                strength=self.lookback,
+                                distance=distance,
+                                atr_normalized_distance=norm_dist,
+                                break_candle=t,
+                                impulse_size=distance,
+                                atr_normalized_impulse=norm_dist,
+                                break_strength=1.0
+                            )
+                            self.bos_list.append(bos_obj)
+                            self.bos_count += 1
+                            self.last_bos_idx = t
+                        else:
+                            choch_obj = CHOCH(
+                                index=t,
+                                previous_trend=1,
+                                new_trend=-1,
+                                timestamp=times[t],
+                                price=float(pivPrice),
+                                strength=self.lookback,
+                                confirmation_score=1.0
+                            )
+                            self.choch_list.append(choch_obj)
+                            self.choch_count += 1
+                            self.last_choch_idx = t
 
-                # Impulse size from previous swing high
-                prev_highs_before = [s for s in confirmed_swings if s.level_type == 'SwingHigh' and s.index < curr_low_swing.index]
-                impulse_base = prev_highs_before[-1].price if prev_highs_before else curr_low_swing.price + curr_atr
-                imp_size = float(impulse_base - closes[i])
-                norm_imp = imp_size / curr_atr
+                        # Protected Levels updates
+                        if self.last_swing_high:
+                            self.protected_high = self.last_swing_high
+                            self.protected_high.level_type = "ProtectedHigh"
 
-                break_strength_val = float(abs(closes[i] - df['Open'].values[i]) / curr_atr)
+                    g_plLevel = pivPrice
+                    g_plIdx = idx
 
-                if self.current_trend <= 0:
-                    # Bearish BOS
-                    bos_obj = BOS(
-                        index=i,
-                        direction=-1,
-                        broken_level=curr_low_swing.price,
-                        timestamp=dt_i,
-                        strength=curr_low_swing.strength,
-                        distance=distance,
-                        atr_normalized_distance=norm_dist,
-                        break_candle=i,
-                        impulse_size=imp_size,
-                        atr_normalized_impulse=norm_imp,
-                        volume=vol,
-                        break_strength=break_strength_val,
-                        why_detected=f"Close {closes[i]:.5f} broke SwingLow {curr_low_swing.price:.5f} in trend direction.",
-                        rule_fired="bearish_bos_break",
-                        thresholds_satisfied=[f"close_{closes[i]:.5f} < swing_low_{curr_low_swing.price:.5f}"],
-                        confidence_score=min(1.0, break_strength_val / 2.0)
-                    )
-                    self.bos_list.append(bos_obj)
-                    self.bos_count += 1
-                    self.last_bos_idx = i
-                else:
-                    # Bearish CHOCH
-                    choch_obj = CHOCH(
-                        index=i,
-                        previous_trend=self.current_trend,
-                        new_trend=-1,
-                        timestamp=dt_i,
-                        price=closes[i],
-                        strength=curr_low_swing.strength,
-                        confirmation_score=float(min(1.0, break_strength_val / 1.5)),
-                        why_detected=f"Close {closes[i]:.5f} broke SwingLow {curr_low_swing.price:.5f} against bullish trend.",
-                        rule_fired="bearish_choch_break",
-                        thresholds_satisfied=[f"close_{closes[i]:.5f} < swing_low_{curr_low_swing.price:.5f}"],
-                        confidence_score=min(1.0, break_strength_val / 1.5)
-                    )
-                    self.choch_list.append(choch_obj)
-                    self.choch_count += 1
-                    self.last_choch_idx = i
+            # Populate point-in-time state arrays
+            trend_arr[t] = g_trend
+            bos_cnt_arr[t] = self.bos_count
+            choch_cnt_arr[t] = self.choch_count
 
-                self.current_trend = -1
-                self.protected_high = curr_high_swing
-                if self.protected_high:
-                    self.protected_high.level_type = "ProtectedHigh"
+            if self.last_bos_idx != -1:
+                bos_arr[self.last_bos_idx] = self.bos_list[-1].direction if self.bos_list else 0
+                last_bos_dir_arr[t] = self.bos_list[-1].direction if self.bos_list else 0
+            if self.last_choch_idx != -1:
+                choch_arr[self.last_choch_idx] = self.choch_list[-1].new_trend if self.choch_list else 0
+                last_choch_dir_arr[t] = self.choch_list[-1].new_trend if self.choch_list else 0
+
+            # Update confirmed swing high/low prices on historical array
+            if g_phIdx != -1:
+                sh_arr[t] = highs[g_phIdx]
+            if g_plIdx != -1:
+                sl_arr[t] = lows[g_plIdx]
+
+        self.current_trend = int(g_trend)
+
+        # Compute bars since
+        bs_b = np.full(n_bars, -1)
+        bs_c = np.full(n_bars, -1)
+        last_b = -1
+        last_c = -1
+        for i in range(n_bars):
+            if bos_arr[i] != 0:
+                last_b = i
+            if choch_arr[i] != 0:
+                last_c = i
+            if last_b != -1:
+                bs_b[i] = i - last_b
+            if last_c != -1:
+                bs_c[i] = i - last_c
+
+        # Vectorized bars since confirmation for swings list
+        for s in self.swings:
+            confirmation_idx = s.index + s.confirmation_delay
+            if confirmation_idx < n_bars:
+                s.bars_since_confirmation = n_bars - 1 - confirmation_idx
+            else:
+                s.bars_since_confirmation = -1
+
+        df['trend'] = trend_arr
+        df['bos'] = bos_arr
+        df['choch'] = choch_arr
+        df['bos_count'] = bos_cnt_arr
+        df['choch_count'] = choch_cnt_arr
+        df['bars_since_bos'] = bs_b
+        df['bars_since_choch'] = bs_c
+        df['last_bos_direction'] = last_bos_dir_arr
+        df['last_choch_direction'] = last_choch_dir_arr
+        df['swing_high'] = sh_arr
+        df['swing_low'] = sl_arr
+
+        return df.loc[:, ~df.columns.duplicated()]
 
     def get_summary(self, df: pd.DataFrame) -> Dict[str, Any]:
         bars_since_bos = len(df) - 1 - self.last_bos_idx if self.last_bos_idx != -1 else -1
@@ -348,104 +340,3 @@ class MarketStructureEngine:
             "swing_high": self.last_swing_high.price if self.last_swing_high else None,
             "swing_low": self.last_swing_low.price if self.last_swing_low else None,
         }
-
-    def process(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        # Reset state
-        self.swings = []
-        self.bos_list = []
-        self.choch_list = []
-        self.bos_count = 0
-        self.choch_count = 0
-        self.current_trend = 0
-        self.last_bos_idx = -1
-        self.last_choch_idx = -1
-        self.last_swing_high = None
-        self.last_swing_low = None
-        self.protected_high = None
-        self.protected_low = None
-
-        # Calculate ATR once for reuse
-        atr = self._calculate_atr(df, window=14)
-
-        self._detect_swings(df, atr)
-        self._detect_structure_breaks(df, atr)
-
-        # Vectorized / single-pass calculation of bars_since_confirmation for all swings at end of process
-        n_bars = len(df)
-        for s in self.swings:
-            confirmation_idx = s.index + s.confirmation_delay
-            if confirmation_idx < n_bars:
-                s.bars_since_confirmation = n_bars - 1 - confirmation_idx
-            else:
-                s.bars_since_confirmation = -1
-
-        # Columns mapping for DataFrame enrichment (SMC outputs)
-        trend_arr = np.zeros(len(df))
-        bos_arr = np.zeros(len(df))
-        choch_arr = np.zeros(len(df))
-        bos_cnt_arr = np.zeros(len(df))
-        choch_cnt_arr = np.zeros(len(df))
-        last_bos_dir_arr = np.zeros(len(df))
-        last_choch_dir_arr = np.zeros(len(df))
-        sh_arr = np.full(len(df), np.nan)
-        sl_arr = np.full(len(df), np.nan)
-
-        # Swings
-        for s in self.swings:
-            if s.level_type == 'SwingHigh':
-                sh_arr[s.index + s.confirmation_delay:] = s.price
-            else:
-                sl_arr[s.index + s.confirmation_delay:] = s.price
-
-        # BOS
-        curr_bos_cnt = 0
-        last_bos_dir = 0
-        for b in self.bos_list:
-            bos_arr[b.index] = b.direction
-            curr_bos_cnt += 1
-            last_bos_dir = b.direction
-            bos_cnt_arr[b.index:] = curr_bos_cnt
-            last_bos_dir_arr[b.index:] = last_bos_dir
-
-        # CHOCH
-        curr_choch_cnt = 0
-        last_choch_dir = 0
-        for c in self.choch_list:
-            choch_arr[c.index] = c.new_trend
-            curr_choch_cnt += 1
-            last_choch_dir = c.new_trend
-            choch_cnt_arr[c.index:] = curr_choch_cnt
-            last_choch_dir_arr[c.index:] = last_choch_dir
-
-        # Trend and Bars Since
-        curr_tr = 0
-        last_b = -1
-        last_c = -1
-        bs_b = np.full(len(df), -1)
-        bs_c = np.full(len(df), -1)
-
-        for i in range(len(df)):
-            if bos_arr[i] != 0:
-                curr_tr = bos_arr[i]
-                last_b = i
-            if choch_arr[i] != 0:
-                curr_tr = choch_arr[i]
-                last_c = i
-            trend_arr[i] = curr_tr
-            if last_b != -1: bs_b[i] = i - last_b
-            if last_c != -1: bs_c[i] = i - last_c
-
-        df['trend'] = trend_arr
-        df['bos'] = bos_arr
-        df['choch'] = choch_arr
-        df['bos_count'] = bos_cnt_arr
-        df['choch_count'] = choch_cnt_arr
-        df['bars_since_bos'] = bs_b
-        df['bars_since_choch'] = bs_c
-        df['last_bos_direction'] = last_bos_dir_arr
-        df['last_choch_direction'] = last_choch_dir_arr
-        df['swing_high'] = sh_arr
-        df['swing_low'] = sl_arr
-
-        return df.loc[:, ~df.columns.duplicated()]

@@ -21,31 +21,27 @@ class BOS:
     index: int
     direction: int  # 1 for Bullish, -1 for Bearish
     broken_level: float
-    timestamp: datetime
-    strength: int
-    distance: float
-    atr_normalized_distance: float
+    timestamp: Optional[datetime] = None
+    strength: int = 1
+    distance: float = 0.0
+    atr_normalized_distance: float = 0.0
 
 @dataclass
 class CHOCH:
     index: int
     previous_trend: int
     new_trend: int
-    timestamp: datetime
-    price: float
-    strength: int
+    timestamp: Optional[datetime] = None
+    price: float = 0.0
+    strength: int = 1
 
 class MarketStructureEngine:
     """
-    Purpose:
-        Extract objective Smart Money market structure from OHLC data.
-        Detects Swing Highs/Lows, BOS (Break of Structure), and CHOCH (Change of Character).
-
-    No trading decisions.
-    Pure deterministic calculations.
+    SMC Market Structure Engine based on SmartMoneyConcepts.mq5.
+    Extracts objective Smart Money market structure from OHLC data using pivot-to-pivot breakouts.
     """
     def __init__(self, lookback: int = 3):
-        self.lookback = lookback
+        self.lookback = lookback  # Swing Length (bars)
         self.swings: List[SwingPoint] = []
         self.bos_list: List[BOS] = []
         self.choch_list: List[CHOCH] = []
@@ -61,98 +57,12 @@ class MarketStructureEngine:
         self.last_choch_idx: int = -1
 
     def _detect_swings(self, df: pd.DataFrame):
-        """
-        Detect Swing Highs and Swing Lows based on configurable lookback.
-        """
-        highs = df['High'].values
-        lows = df['Low'].values
-        times = df['Datetime'].values if 'Datetime' in df.columns else [None] * len(df)
-
-        for i in range(self.lookback, len(df) - self.lookback):
-            # Swing High Detection
-            is_swing_high = True
-            for j in range(1, self.lookback + 1):
-                if highs[i] <= highs[i-j] or highs[i] < highs[i+j]:
-                    is_swing_high = False
-                    break
-
-            if is_swing_high:
-                if not self.swings or not (self.swings[-1].index == i and self.swings[-1].type == 'High'):
-                    swing = SwingPoint(index=i, price=highs[i], type='High', strength=1, timestamp=times[i])
-                    self.swings.append(swing)
-                    self.last_swing_high = swing
-
-            # Swing Low Detection
-            is_swing_low = True
-            for j in range(1, self.lookback + 1):
-                if lows[i] >= lows[i-j] or lows[i] > lows[i+j]:
-                    is_swing_low = False
-                    break
-
-            if is_swing_low:
-                if not self.swings or not (self.swings[-1].index == i and self.swings[-1].type == 'Low'):
-                    swing = SwingPoint(index=i, price=lows[i], type='Low', strength=1, timestamp=times[i])
-                    self.swings.append(swing)
-                    self.last_swing_low = swing
+        # Kept for backward compatibility interface, but actual work is done sequentially in process()
+        pass
 
     def _detect_structure_breaks(self, df: pd.DataFrame):
-        """
-        Detect BOS and CHOCH based on swing points and current trend.
-        """
-        if not self.swings:
-            return
-
-        closes = df['Close'].values
-        times = df['Datetime'].values if 'Datetime' in df.columns else [None] * len(df)
-
-        # Calculate ATR
-        atr_period = 14
-        prev_close = df['Close'].shift(1)
-        tr = pd.concat([df['High'] - df['Low'], (df['High'] - prev_close).abs(), (df['Low'] - prev_close).abs()], axis=1).max(axis=1)
-        atr = tr.rolling(window=atr_period).mean().values
-
-        broken_swings = set()
-
-        for i in range(1, len(df)):
-            confirmed_swings = [s for s in self.swings if s.index + self.lookback <= i]
-            if not confirmed_swings: continue
-
-            latest_highs = [s for s in confirmed_swings if s.type == 'High']
-            latest_lows = [s for s in confirmed_swings if s.type == 'Low']
-            if not latest_highs or not latest_lows: continue
-
-            curr_high_swing = latest_highs[-1]
-            curr_low_swing = latest_lows[-1]
-
-            if closes[i] > curr_high_swing.price and curr_high_swing.index not in broken_swings:
-                broken_swings.add(curr_high_swing.index)
-                distance = closes[i] - curr_high_swing.price
-                norm_dist = distance / atr[i] if atr[i] > 0 else 0
-
-                if self.current_trend >= 0:
-                    self.bos_list.append(BOS(index=i, direction=1, broken_level=curr_high_swing.price, timestamp=times[i], strength=1, distance=distance, atr_normalized_distance=norm_dist))
-                    self.bos_count += 1
-                    self.last_bos_idx = i
-                else:
-                    self.choch_list.append(CHOCH(index=i, previous_trend=self.current_trend, new_trend=1, timestamp=times[i], price=closes[i], strength=1))
-                    self.choch_count += 1
-                    self.last_choch_idx = i
-                self.current_trend = 1
-
-            elif closes[i] < curr_low_swing.price and curr_low_swing.index not in broken_swings:
-                broken_swings.add(curr_low_swing.index)
-                distance = curr_low_swing.price - closes[i]
-                norm_dist = distance / atr[i] if atr[i] > 0 else 0
-
-                if self.current_trend <= 0:
-                    self.bos_list.append(BOS(index=i, direction=-1, broken_level=curr_low_swing.price, timestamp=times[i], strength=1, distance=distance, atr_normalized_distance=norm_dist))
-                    self.bos_count += 1
-                    self.last_bos_idx = i
-                else:
-                    self.choch_list.append(CHOCH(index=i, previous_trend=self.current_trend, new_trend=-1, timestamp=times[i], price=closes[i], strength=1))
-                    self.choch_count += 1
-                    self.last_choch_idx = i
-                self.current_trend = -1
+        # Kept for backward compatibility interface, but actual work is done sequentially in process()
+        pass
 
     def get_summary(self, df: pd.DataFrame) -> Dict[str, Any]:
         bars_since_bos = len(df) - 1 - self.last_bos_idx if self.last_bos_idx != -1 else -1
@@ -173,58 +83,224 @@ class MarketStructureEngine:
 
     def process(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
+        n_bars = len(df)
+
         # Reset state
-        self.swings = []; self.bos_list = []; self.choch_list = []
-        self.bos_count = 0; self.choch_count = 0; self.current_trend = 0
-        self.last_bos_idx = -1; self.last_choch_idx = -1
-        self.last_swing_high = None; self.last_swing_low = None
+        self.swings = []
+        self.bos_list = []
+        self.choch_list = []
+        self.bos_count = 0
+        self.choch_count = 0
+        self.current_trend = 0
+        self.last_bos_idx = -1
+        self.last_choch_idx = -1
+        self.last_swing_high = None
+        self.last_swing_low = None
 
-        self._detect_swings(df)
-        self._detect_structure_breaks(df)
+        # Prep output arrays
+        trend_arr = np.zeros(n_bars)
+        bos_arr = np.zeros(n_bars)
+        choch_arr = np.zeros(n_bars)
+        bos_cnt_arr = np.zeros(n_bars)
+        choch_cnt_arr = np.zeros(n_bars)
+        last_bos_dir_arr = np.zeros(n_bars)
+        last_choch_dir_arr = np.zeros(n_bars)
+        sh_arr = np.full(n_bars, np.nan)
+        sl_arr = np.full(n_bars, np.nan)
 
-        # Optimized column assignment
-        trend_arr = np.zeros(len(df)); bos_arr = np.zeros(len(df)); choch_arr = np.zeros(len(df))
-        bos_cnt_arr = np.zeros(len(df)); choch_cnt_arr = np.zeros(len(df))
-        last_bos_dir_arr = np.zeros(len(df)); last_choch_dir_arr = np.zeros(len(df))
-        sh_arr = np.full(len(df), np.nan); sl_arr = np.full(len(df), np.nan)
+        if n_bars < self.lookback * 2 + 1:
+            df['trend'] = trend_arr
+            df['bos'] = bos_arr
+            df['choch'] = choch_arr
+            df['bos_count'] = bos_cnt_arr
+            df['choch_count'] = choch_cnt_arr
+            df['bars_since_bos'] = np.full(n_bars, -1)
+            df['bars_since_choch'] = np.full(n_bars, -1)
+            df['last_bos_direction'] = last_bos_dir_arr
+            df['last_choch_direction'] = last_choch_dir_arr
+            df['swing_high'] = sh_arr
+            df['swing_low'] = sl_arr
+            return df
 
-        # Swings
-        for s in self.swings:
-            if s.type == 'High': sh_arr[s.index + self.lookback:] = s.price
-            else: sl_arr[s.index + self.lookback:] = s.price
+        highs = df['High'].values
+        lows = df['Low'].values
+        closes = df['Close'].values
+        opens = df['Open'].values
+        times = df['Datetime'].values if 'Datetime' in df.columns else [None] * n_bars
 
-        # BOS
-        curr_bos_cnt = 0; last_bos_dir = 0
-        for b in self.bos_list:
-            bos_arr[b.index] = b.direction
-            curr_bos_cnt += 1
-            last_bos_dir = b.direction
-            bos_cnt_arr[b.index:] = curr_bos_cnt
-            last_bos_dir_arr[b.index:] = last_bos_dir
+        # Precompute pivots
+        piv_highs = np.zeros(n_bars, dtype=bool)
+        piv_lows = np.zeros(n_bars, dtype=bool)
 
-        # CHOCH
-        curr_choch_cnt = 0; last_choch_dir = 0
-        for c in self.choch_list:
-            choch_arr[c.index] = c.new_trend
-            curr_choch_cnt += 1
-            last_choch_dir = c.new_trend
-            choch_cnt_arr[c.index:] = curr_choch_cnt
-            last_choch_dir_arr[c.index:] = last_choch_dir
+        for i in range(self.lookback, n_bars - self.lookback):
+            # IsPivotHigh
+            p_high = highs[i]
+            is_ph = True
+            for k in range(1, self.lookback + 1):
+                if highs[i - k] >= p_high or highs[i + k] >= p_high:
+                    is_ph = False
+                    break
+            piv_highs[i] = is_ph
 
-        # Trend and Bars Since
-        curr_tr = 0; last_b = -1; last_c = -1
-        bs_b = np.full(len(df), -1); bs_c = np.full(len(df), -1)
+            # IsPivotLow
+            p_low = lows[i]
+            is_pl = True
+            for k in range(1, self.lookback + 1):
+                if lows[i - k] <= p_low or lows[i + k] <= p_low:
+                    is_pl = False
+                    break
+            piv_lows[i] = is_pl
 
-        for i in range(len(df)):
+        # Running SMC variables
+        g_phLevel = 0.0
+        g_plLevel = 0.0
+        g_phIdx = -1
+        g_plIdx = -1
+        g_trend = 0  # 1: Bull, -1: Bear, 0: Neutral
+
+        # Calculate ATR
+        atr_period = 14
+        prev_close = df['Close'].shift(1)
+        tr = pd.concat([df['High'] - df['Low'], (df['High'] - prev_close).abs(), (df['Low'] - prev_close).abs()], axis=1).max(axis=1)
+        atr_vals = tr.rolling(window=atr_period).mean().fillna(0.0010).values
+
+        # Sequential processing
+        for t in range(n_bars):
+            # Check if there is a confirmed pivot at idx = t - self.lookback
+            idx = t - self.lookback
+            if idx >= self.lookback:
+                # Process Pivot High
+                if piv_highs[idx]:
+                    pivPrice = highs[idx]
+                    pivTime = times[idx] if isinstance(times[idx], datetime) else (pd.to_datetime(times[idx]) if times[idx] is not None else None)
+
+                    # Create SwingPoint
+                    swing = SwingPoint(index=idx, price=float(pivPrice), type='High', strength=self.lookback, timestamp=pivTime)
+                    self.swings.append(swing)
+                    self.last_swing_high = swing
+
+                    # Breakout check (BOS/CHoCH)
+                    if g_phLevel > 0 and pivPrice > g_phLevel:
+                        tag = "CHoCH" if g_trend == -1 else "BOS"
+                        g_trend = 1
+
+                        # Distance & ATR norm distance
+                        distance = float(pivPrice - g_phLevel)
+                        norm_dist = float(distance / atr_vals[t]) if atr_vals[t] > 0 else 0.0
+
+                        if tag == "BOS":
+                            bos_obj = BOS(
+                                index=t,  # confirmation candle index
+                                direction=1,
+                                broken_level=float(g_phLevel),
+                                timestamp=times[t],
+                                strength=self.lookback,
+                                distance=distance,
+                                atr_normalized_distance=norm_dist
+                            )
+                            self.bos_list.append(bos_obj)
+                            self.bos_count += 1
+                            self.last_bos_idx = t
+                        else:
+                            choch_obj = CHOCH(
+                                index=t,
+                                previous_trend=-1,
+                                new_trend=1,
+                                timestamp=times[t],
+                                price=float(pivPrice),
+                                strength=self.lookback
+                            )
+                            self.choch_list.append(choch_obj)
+                            self.choch_count += 1
+                            self.last_choch_idx = t
+
+                    # Update level
+                    g_phLevel = pivPrice
+                    g_phIdx = idx
+
+                # Process Pivot Low
+                if piv_lows[idx]:
+                    pivPrice = lows[idx]
+                    pivTime = times[idx] if isinstance(times[idx], datetime) else (pd.to_datetime(times[idx]) if times[idx] is not None else None)
+
+                    # Create SwingPoint
+                    swing = SwingPoint(index=idx, price=float(pivPrice), type='Low', strength=self.lookback, timestamp=pivTime)
+                    self.swings.append(swing)
+                    self.last_swing_low = swing
+
+                    # Breakdown check
+                    if g_plLevel > 0 and pivPrice < g_plLevel:
+                        tag = "CHoCH" if g_trend == 1 else "BOS"
+                        g_trend = -1
+
+                        # Distance & ATR norm distance
+                        distance = float(g_plLevel - pivPrice)
+                        norm_dist = float(distance / atr_vals[t]) if atr_vals[t] > 0 else 0.0
+
+                        if tag == "BOS":
+                            bos_obj = BOS(
+                                index=t,
+                                direction=-1,
+                                broken_level=float(g_plLevel),
+                                timestamp=times[t],
+                                strength=self.lookback,
+                                distance=distance,
+                                atr_normalized_distance=norm_dist
+                            )
+                            self.bos_list.append(bos_obj)
+                            self.bos_count += 1
+                            self.last_bos_idx = t
+                        else:
+                            choch_obj = CHOCH(
+                                index=t,
+                                previous_trend=1,
+                                new_trend=-1,
+                                timestamp=times[t],
+                                price=float(pivPrice),
+                                strength=self.lookback
+                            )
+                            self.choch_list.append(choch_obj)
+                            self.choch_count += 1
+                            self.last_choch_idx = t
+
+                    # Update level
+                    g_plLevel = pivPrice
+                    g_plIdx = idx
+
+            # Populate point-in-time state arrays
+            trend_arr[t] = g_trend
+            bos_cnt_arr[t] = self.bos_count
+            choch_cnt_arr[t] = self.choch_count
+
+            if self.last_bos_idx != -1:
+                bos_arr[self.last_bos_idx] = self.bos_list[-1].direction if self.bos_list else 0
+                last_bos_dir_arr[t] = self.bos_list[-1].direction if self.bos_list else 0
+            if self.last_choch_idx != -1:
+                choch_arr[self.last_choch_idx] = self.choch_list[-1].new_trend if self.choch_list else 0
+                last_choch_dir_arr[t] = self.choch_list[-1].new_trend if self.choch_list else 0
+
+            # Update confirmed swing high/low prices on historical array
+            if g_phIdx != -1:
+                sh_arr[t] = highs[g_phIdx]
+            if g_plIdx != -1:
+                sl_arr[t] = lows[g_plIdx]
+
+        self.current_trend = int(g_trend)
+
+        # Compute bars since
+        bs_b = np.full(n_bars, -1)
+        bs_c = np.full(n_bars, -1)
+        last_b = -1
+        last_c = -1
+        for i in range(n_bars):
             if bos_arr[i] != 0:
-                curr_tr = bos_arr[i]
                 last_b = i
             if choch_arr[i] != 0:
-                curr_tr = choch_arr[i]
                 last_c = i
-            trend_arr[i] = curr_tr
-            if last_b != -1: bs_b[i] = i - last_b
-            if last_c != -1: bs_c[i] = i - last_c
+            if last_b != -1:
+                bs_b[i] = i - last_b
+            if last_c != -1:
+                bs_c[i] = i - last_c
 
         df['trend'] = trend_arr
         df['bos'] = bos_arr
