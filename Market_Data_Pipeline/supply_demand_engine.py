@@ -10,6 +10,13 @@ from Market_Data_Pipeline.structure_graph import Zone
 
 logger = logging.getLogger('SupplyDemandEngine')
 
+# Constants matching MQL5 strength rankings
+ZONE_WEAK = 0
+ZONE_TURNCOAT = 1
+ZONE_UNTESTED = 2
+ZONE_VERIFIED = 3
+ZONE_PROVEN = 4
+
 @dataclass
 class FVG:
     upper: float
@@ -29,9 +36,9 @@ class EQHLPattern:
 
 class SupplyDemandEngine:
     """
-    SMC Order Block and Fair Value Gap (FVG) Engine.
-    Detects supply and demand zones as Order Blocks (OBs) formed by structure breaks.
-    Supports mitigation, FVG confluence, and EQH/EQL tracking.
+    SMC Supply & Demand Engine that supports BOTH:
+    1. shved_supply_and_demand_v1.5.mq5 (Fast/Slow Fractals, touch validation, turncoat, zone merging).
+    2. SmartMoneyConcepts.mq5 Order Blocks (breakout-based zones), Fair Value Gaps (FVG), and EQH/EQL patterns.
     """
     def __init__(
         self,
@@ -95,22 +102,330 @@ class SupplyDemandEngine:
         if n_bars < 25:
             return self._fill_empty_columns(df)
 
-        highs = df['High'].values
-        lows = df['Low'].values
         closes = df['Close'].values
         opens = df['Open'].values
-        times = df['Datetime'].values if 'Datetime' in df.columns else [None] * n_bars
+        highs = df['High'].values
+        lows = df['Low'].values
+        times = df['Datetime'].values if 'Datetime' in df.columns else [None] * len(df)
 
-        # Precompute ATR
+        # Pre-calculate ATR
         prev_close = df['Close'].shift(1)
-        tr = pd.concat([df['High'] - df['Low'], (df['High'] - prev_close).abs(), (df['Low'] - prev_close).abs()], axis=1).max(axis=1)
+        tr = pd.concat([
+            df['High'] - df['Low'],
+            (df['High'] - prev_close).abs(),
+            (df['Low'] - prev_close).abs()
+        ], axis=1).max(axis=1)
         atr = tr.rolling(window=self.atr_period).mean().fillna(0.0010).values
 
-        # Config parameters matching MQL5
-        lookback = 10  # Swing Length (InpSwingLength)
-        inp_max_ob = 5  # InpMaxOB
+        # -------------------------------------------------------------
+        # PART 1: SHVED SUPPLY AND DEMAND (Fractal-based detection)
+        # -------------------------------------------------------------
+        # Calculate fractal radiuses based on factors
+        P1 = int(self.fractal_fast_factor * 2 + math.ceil(self.fractal_fast_factor / 2))
+        P2 = int(self.fractal_slow_factor * 2 + math.ceil(self.fractal_slow_factor / 2))
 
-        # Precompute Pivot Highs & Pivot Lows
+        # Arrays to hold fast/slow fractal high/low points
+        fast_up = np.zeros(n_bars)
+        fast_dn = np.zeros(n_bars)
+        slow_up = np.zeros(n_bars)
+        slow_dn = np.zeros(n_bars)
+
+        # Precompute Shved fractals
+        for idx in range(P1, n_bars - P1):
+            is_peak = True
+            for j in range(1, P1 + 1):
+                if highs[idx - j] > highs[idx] or highs[idx + j] >= highs[idx]:
+                    is_peak = False
+                    break
+            if is_peak:
+                fast_up[idx] = highs[idx]
+
+            is_trough = True
+            for j in range(1, P1 + 1):
+                if lows[idx - j] < lows[idx] or lows[idx + j] <= lows[idx]:
+                    is_trough = False
+                    break
+            if is_trough:
+                fast_dn[idx] = lows[idx]
+
+        for idx in range(P2, n_bars - P2):
+            is_peak = True
+            for j in range(1, P2 + 1):
+                if highs[idx - j] > highs[idx] or highs[idx + j] >= highs[idx]:
+                    is_peak = False
+                    break
+            if is_peak:
+                slow_up[idx] = highs[idx]
+
+            is_trough = True
+            for j in range(1, P2 + 1):
+                if lows[idx - j] < lows[idx] or lows[idx + j] <= lows[idx]:
+                    is_trough = False
+                    break
+            if is_trough:
+                slow_dn[idx] = lows[idx]
+
+        start_idx = max(0, n_bars - self.back_limit)
+        raw_zones = []
+
+        # Find Shved Zones
+        for ii in range(start_idx, n_bars - 5):
+            atr_ii = atr[ii] if (ii < len(atr) and not np.isnan(atr[ii]) and atr[ii] > 0) else 0.0001
+            fu = (atr_ii / 2) * self.zone_fuzzfactor
+
+            if fast_up[ii] > 0.001:
+                is_weak = True
+                if slow_up[ii] > 0.001:
+                    is_weak = False
+
+                hival = highs[ii]
+                if self.zone_extend:
+                    hival += fu
+
+                loval = max(min(closes[ii], highs[ii] - fu), highs[ii] - fu * 2)
+
+                raw_zones.append({
+                    "start": ii,
+                    "is_peak": True,
+                    "hi": hival,
+                    "lo": loval,
+                    "is_weak": is_weak,
+                    "hits": 0,
+                    "turn": False
+                })
+
+            elif fast_dn[ii] > 0.001:
+                is_weak = True
+                if slow_dn[ii] > 0.001:
+                    is_weak = False
+
+                loval = lows[ii]
+                if self.zone_extend:
+                    loval -= fu
+
+                hival = min(max(closes[ii], lows[ii] + fu), lows[ii] + fu * 2)
+
+                raw_zones.append({
+                    "start": ii,
+                    "is_peak": False,
+                    "hi": hival,
+                    "lo": loval,
+                    "is_weak": is_weak,
+                    "hits": 0,
+                    "turn": False
+                })
+
+        # Shved Touch & Mitigation Simulation
+        for rz in raw_zones:
+            ii = rz["start"]
+            is_peak_zone = rz["is_peak"]
+            hival = rz["hi"]
+            loval = rz["lo"]
+            is_weak = rz["is_weak"]
+
+            turned = False
+            hasturned = False
+            is_bust = False
+            bustcount = 0
+            testcount = 0
+
+            for i in range(ii + 1, n_bars):
+                is_touch = False
+                if is_peak_zone:
+                    if not turned:
+                        if fast_up[i] >= loval and fast_up[i] <= hival:
+                            is_touch = True
+                    else:
+                        if fast_dn[i] <= hival and fast_dn[i] >= loval:
+                            is_touch = True
+                else:
+                    if turned:
+                        if fast_up[i] >= loval and fast_up[i] <= hival:
+                            is_touch = True
+                    else:
+                        if fast_dn[i] <= hival and fast_dn[i] >= loval:
+                            is_touch = True
+
+                if is_touch:
+                    touch_ok = True
+                    for j in range(max(ii + 1, i - 10), i):
+                        if is_peak_zone:
+                            if not turned:
+                                if fast_up[j] >= loval and fast_up[j] <= hival:
+                                    touch_ok = False
+                                    break
+                            else:
+                                if fast_dn[j] <= hival and fast_dn[j] >= loval:
+                                    touch_ok = False
+                                    break
+                        else:
+                            if turned:
+                                if fast_up[j] >= loval and fast_up[j] <= hival:
+                                    touch_ok = False
+                                    break
+                            else:
+                                if fast_dn[j] <= hival and fast_dn[j] >= loval:
+                                    touch_ok = False
+                                    break
+
+                    if touch_ok:
+                        bustcount = 0
+                        testcount += 1
+
+                is_breaker = False
+                if is_peak_zone:
+                    if not turned:
+                        if highs[i] > hival:
+                            is_breaker = True
+                    else:
+                        if lows[i] < loval:
+                            is_breaker = True
+                else:
+                    if turned:
+                        if highs[i] > hival:
+                            is_breaker = True
+                    else:
+                        if lows[i] < loval:
+                            is_breaker = True
+
+                if is_breaker:
+                    bustcount += 1
+                    if bustcount > 1 or is_weak:
+                        is_bust = True
+                        break
+
+                    turned = not turned
+                    hasturned = True
+                    testcount = 0
+
+            if is_bust:
+                rz["hits"] = -1
+            else:
+                rz["hits"] = testcount
+                rz["turn"] = hasturned
+
+                if testcount > 3:
+                    rz["strength"] = ZONE_PROVEN
+                elif testcount > 0:
+                    rz["strength"] = ZONE_VERIFIED
+                elif hasturned:
+                    rz["strength"] = ZONE_TURNCOAT
+                elif not is_weak:
+                    rz["strength"] = ZONE_UNTESTED
+                else:
+                    rz["strength"] = ZONE_WEAK
+
+        # Shved Merge overlap
+        temp_zones = [rz for rz in raw_zones if rz["hits"] >= 0]
+        if self.zone_merge:
+            merge_count = 1
+            iterations = 0
+            while merge_count > 0 and iterations < 3:
+                merge_count = 0
+                iterations += 1
+
+                temp_merge = [False] * len(temp_zones)
+
+                for i in range(len(temp_zones) - 1):
+                    if temp_zones[i]["hits"] == -1 or temp_merge[i]:
+                        continue
+
+                    for j in range(i + 1, len(temp_zones)):
+                        if temp_zones[j]["hits"] == -1 or temp_merge[j]:
+                            continue
+
+                        zi = temp_zones[i]
+                        zj = temp_zones[j]
+
+                        if ((zi["hi"] >= zj["lo"] and zi["hi"] <= zj["hi"]) or
+                            (zi["lo"] <= zj["hi"] and zi["lo"] >= zj["lo"]) or
+                            (zj["hi"] >= zi["lo"] and zj["hi"] <= zi["hi"]) or
+                            (zj["lo"] <= zi["hi"] and zj["lo"] >= zi["lo"])):
+
+                            zi["hi"] = max(zi["hi"], zj["hi"])
+                            zi["lo"] = min(zi["lo"], zj["lo"])
+                            zi["hits"] += zj["hits"]
+                            zi["start"] = max(zi["start"], zj["start"])
+                            zi["strength"] = max(zi["strength"], zj["strength"])
+
+                            if zi["hits"] > 3:
+                                zi["strength"] = ZONE_PROVEN
+
+                            if zi["hits"] == 0 and not zi["turn"]:
+                                zi["hits"] = 1
+                                if zi["strength"] < ZONE_VERIFIED:
+                                    zi["strength"] = ZONE_VERIFIED
+
+                            if not zi["turn"] or not zj["turn"]:
+                                zi["turn"] = False
+
+                            if zi["turn"]:
+                                zi["hits"] = 0
+
+                            zj["hits"] = -1
+                            temp_merge[i] = True
+                            temp_merge[j] = True
+                            merge_count += 1
+
+            temp_zones = [z for z in temp_zones if z["hits"] >= 0]
+
+        # Convert Shved Zones to official Zone models
+        for rz in temp_zones:
+            ii = rz["start"]
+            hival = rz["hi"]
+            loval = rz["lo"]
+
+            # Determine type Support/Resistance
+            ref_close = closes[n_bars - 5] if n_bars >= 5 else closes[-1]
+            if hival < ref_close:
+                final_type = 'Demand'
+            elif loval > ref_close:
+                final_type = 'Supply'
+            else:
+                final_type = 'Demand'
+                for j in range(n_bars - 5, start_idx - 1, -1):
+                    if j < 0 or j >= n_bars:
+                        continue
+                    if closes[j] < loval:
+                        final_type = 'Supply'
+                        break
+                    elif closes[j] > hival:
+                        final_type = 'Demand'
+                        break
+
+            strength_score_map = {
+                ZONE_WEAK: 0.0,
+                ZONE_TURNCOAT: 1.0,
+                ZONE_UNTESTED: 2.0,
+                ZONE_VERIFIED: 3.0,
+                ZONE_PROVEN: 4.0
+            }
+            final_strength_score = strength_score_map.get(rz["strength"], 2.0)
+
+            # Build Zone
+            zone_obj = Zone(
+                upper=float(hival),
+                lower=float(loval),
+                type=final_type,
+                created_time=times[ii] if isinstance(times[ii], datetime) else (pd.to_datetime(times[ii]) if times[ii] is not None else None),
+                created_idx=ii,
+                freshness=(rz["hits"] == 0 and not rz["turn"]),
+                touch_count=rz["hits"],
+                broken=False,
+                active=True,
+                strength_score=final_strength_score,
+                creation_candle=ii,
+                origin_candle=ii
+            )
+            self.zones.append(zone_obj)
+
+        # -------------------------------------------------------------
+        # PART 2: SMC ORDER BLOCKS OVERLAY (from SmartMoneyConcepts.mq5)
+        # -------------------------------------------------------------
+        lookback = 10  # SMC Swing Length
+        inp_max_ob = 5
+
+        # Precompute SMC pivots
         piv_highs = np.zeros(n_bars, dtype=bool)
         piv_lows = np.zeros(n_bars, dtype=bool)
 
@@ -131,7 +446,7 @@ class SupplyDemandEngine:
                     break
             piv_lows[i] = is_pl
 
-        # Equal Highs / Lows tracker
+        # EQH pivots
         eqh_pivs = np.zeros(n_bars, dtype=bool)
         eql_pivs = np.zeros(n_bars, dtype=bool)
         eqh_len = 5
@@ -152,26 +467,8 @@ class SupplyDemandEngine:
                     break
             eql_pivs[i] = is_pl
 
-        # Output arrays
-        ns_dist = np.full(n_bars, np.nan)
-        nd_dist = np.full(n_bars, np.nan)
-        in_s = np.zeros(n_bars)
-        in_d = np.zeros(n_bars)
-        s_st = np.zeros(n_bars)
-        d_st = np.zeros(n_bars)
-        s_fresh = np.zeros(n_bars)
-        d_fresh = np.zeros(n_bars)
-        s_touches = np.zeros(n_bars)
-        d_touches = np.zeros(n_bars)
-        bs_s = np.full(n_bars, -1)
-        bs_d = np.full(n_bars, -1)
-
-        # running state for breakout tracking to align OB creation exactly
         g_phLevel = 0.0
         g_plLevel = 0.0
-        g_trend = 0
-
-        # EQH running state
         last_eqh_level = 0.0
         last_eql_level = 0.0
 
@@ -179,18 +476,14 @@ class SupplyDemandEngine:
         bull_OBs: List[Zone] = []
         bear_OBs: List[Zone] = []
 
-        # Sequential bar-by-bar simulation
         for t in range(n_bars):
             idx = t - lookback
-            # 1. Structure Breakout check for OB creation
             if idx >= lookback:
+                # Pivot High structure break
                 if piv_highs[idx]:
                     pivPrice = highs[idx]
-                    pivTime = times[idx] if isinstance(times[idx], datetime) else (pd.to_datetime(times[idx]) if times[idx] is not None else None)
-
                     if g_phLevel > 0 and pivPrice > g_phLevel:
-                        g_trend = 1
-                        # Create Bullish Order Block (Demand Zone)
+                        # Bullish OB (Demand Zone)
                         found = -1
                         for k in range(idx - 1, max(0, idx - lookback) - 1, -1):
                             if closes[k] < opens[k]:
@@ -203,7 +496,6 @@ class SupplyDemandEngine:
                             obTop = bodyMid
                             obBottom = bodyBot
 
-                            # Duplication check
                             duplicate = False
                             for ob in bull_OBs:
                                 if ob.active and abs(ob.upper - obTop) < atr[t] * 0.3:
@@ -217,7 +509,7 @@ class SupplyDemandEngine:
                                     active_bull[0].broken = True
                                     active_bull[0].broken_idx = t
 
-                                new_zone = Zone(
+                                new_ob = Zone(
                                     upper=float(obTop),
                                     lower=float(obBottom),
                                     type='Demand',
@@ -225,23 +517,22 @@ class SupplyDemandEngine:
                                     created_time=times[found],
                                     freshness=True,
                                     touch_count=0,
-                                    strength_score=3.0,
+                                    strength_score=3.0,  # Verified Order Block
                                     creation_candle=found,
                                     origin_candle=idx,
-                                    active=True
+                                    active=True,
+                                    why_detected="SMC Order Block breakout"
                                 )
-                                bull_OBs.append(new_zone)
-                                self.zones.append(new_zone)
+                                bull_OBs.append(new_ob)
+                                self.zones.append(new_ob)
 
                     g_phLevel = pivPrice
 
+                # Pivot Low structure break
                 if piv_lows[idx]:
                     pivPrice = lows[idx]
-                    pivTime = times[idx] if isinstance(times[idx], datetime) else (pd.to_datetime(times[idx]) if times[idx] is not None else None)
-
                     if g_plLevel > 0 and pivPrice < g_plLevel:
-                        g_trend = -1
-                        # Create Bearish Order Block (Supply Zone)
+                        # Bearish OB (Supply Zone)
                         found = -1
                         for k in range(idx - 1, max(0, idx - lookback) - 1, -1):
                             if closes[k] > opens[k]:
@@ -254,7 +545,6 @@ class SupplyDemandEngine:
                             obTop = bodyTop
                             obBottom = bodyMid
 
-                            # Duplication check
                             duplicate = False
                             for ob in bear_OBs:
                                 if ob.active and abs(ob.upper - obTop) < atr[t] * 0.3:
@@ -268,7 +558,7 @@ class SupplyDemandEngine:
                                     active_bear[0].broken = True
                                     active_bear[0].broken_idx = t
 
-                                new_zone = Zone(
+                                new_ob = Zone(
                                     upper=float(obTop),
                                     lower=float(obBottom),
                                     type='Supply',
@@ -279,14 +569,15 @@ class SupplyDemandEngine:
                                     strength_score=3.0,
                                     creation_candle=found,
                                     origin_candle=idx,
-                                    active=True
+                                    active=True,
+                                    why_detected="SMC Order Block breakdown"
                                 )
-                                bear_OBs.append(new_zone)
-                                self.zones.append(new_zone)
+                                bear_OBs.append(new_ob)
+                                self.zones.append(new_ob)
 
                     g_plLevel = pivPrice
 
-            # 2. EQH / EQL detection (Pivot length 5)
+            # EQH / EQL detection (Pivot 5)
             idx_eq = t - eqh_len
             if idx_eq >= eqh_len:
                 if eqh_pivs[idx_eq]:
@@ -305,7 +596,7 @@ class SupplyDemandEngine:
                             self.eqhl_patterns.append(EQHLPattern(index=idx_eq, pattern_type='EQL', price=float(pivPrice), timestamp=times[idx_eq]))
                     last_eql_level = pivPrice
 
-            # 3. FVG detection
+            # FVG detection
             if t >= 2:
                 # Bullish FVG
                 if lows[t] > highs[t - 2]:
@@ -332,14 +623,30 @@ class SupplyDemandEngine:
                         if not duplicate:
                             self.fvgs.append(FVG(upper=float(fTop), lower=float(fBot), bias=-1, created_idx=t-1, created_time=times[t-1], active=True))
 
-            # 4. Mitigation checks & touch calculations sequentially
+        # -------------------------------------------------------------
+        # PART 3: JOINT SIMULATION (Mitigations & distance generation)
+        # -------------------------------------------------------------
+        ns_dist = np.full(n_bars, np.nan)
+        nd_dist = np.full(n_bars, np.nan)
+        in_s = np.zeros(n_bars)
+        in_d = np.zeros(n_bars)
+        s_st = np.zeros(n_bars)
+        d_st = np.zeros(n_bars)
+        s_fresh = np.zeros(n_bars)
+        d_fresh = np.zeros(n_bars)
+        s_touches = np.zeros(n_bars)
+        d_touches = np.zeros(n_bars)
+        bs_s = np.full(n_bars, -1)
+        bs_d = np.full(n_bars, -1)
+
+        for t in range(n_bars):
             curr_close = closes[t]
             curr_low = lows[t]
             curr_high = highs[t]
 
             # FVG mitigation
             for f in self.fvgs:
-                if f.active:
+                if f.active and f.created_idx < t:
                     if f.bias == 1:
                         if curr_low <= f.upper and curr_low >= f.lower:
                             f.active = False
@@ -349,41 +656,37 @@ class SupplyDemandEngine:
                             f.active = False
                             f.mitigated_idx = t
 
-            # OB Mitigation & Touch
-            for ob in self.zones:
-                if ob.active:
-                    if ob.type == 'Demand':
-                        # Touch logic
-                        if curr_low <= ob.upper:
-                            if not ob.mitigated:
-                                ob.mitigated = True
-                                ob.mitigated_idx = t
-                                ob.freshness = False
-                            ob.touch_count += 1
-                            ob.number_of_reactions += 1
-                        # Break check
-                        if curr_close < ob.lower:
-                            ob.active = False
-                            ob.broken = True
-                            ob.broken_idx = t
+            # Joint zone mitigation & retests
+            for z in self.zones:
+                if z.active and z.created_idx < t:
+                    if z.type == 'Demand':
+                        if curr_low <= z.upper:
+                            if not z.mitigated:
+                                z.mitigated = True
+                                z.mitigated_idx = t
+                                z.freshness = False
+                            z.touch_count += 1
+                            z.number_of_reactions += 1
+                        if curr_close < z.lower:
+                            z.active = False
+                            z.broken = True
+                            z.broken_idx = t
                     else:
-                        # Touch logic
-                        if curr_high >= ob.lower:
-                            if not ob.mitigated:
-                                ob.mitigated = True
-                                ob.mitigated_idx = t
-                                ob.freshness = False
-                            ob.touch_count += 1
-                            ob.number_of_reactions += 1
-                        # Break check
-                        if curr_close > ob.upper:
-                            ob.active = False
-                            ob.broken = True
-                            ob.broken_idx = t
+                        if curr_high >= z.lower:
+                            if not z.mitigated:
+                                z.mitigated = True
+                                z.mitigated_idx = t
+                                z.freshness = False
+                            z.touch_count += 1
+                            z.number_of_reactions += 1
+                        if curr_close > z.upper:
+                            z.active = False
+                            z.broken = True
+                            z.broken_idx = t
 
-            # 5. Populate point-in-time metrics
-            active_supplies = [ob for ob in bear_OBs if ob.active and ob.lower > curr_close]
-            active_demands = [ob for ob in bull_OBs if ob.active and ob.upper < curr_close]
+            # Populate metrics for current bar t
+            active_supplies = [z for z in self.zones if z.active and z.created_idx < t and z.type == 'Supply' and z.lower > curr_close]
+            active_demands = [z for z in self.zones if z.active and z.created_idx < t and z.type == 'Demand' and z.upper < curr_close]
 
             if active_supplies:
                 nz = min(active_supplies, key=lambda o: o.lower)
@@ -393,7 +696,7 @@ class SupplyDemandEngine:
                 s_touches[t] = nz.touch_count
                 bs_s[t] = t - nz.created_idx
 
-            if any(curr_high >= ob.lower and curr_low <= ob.upper for ob in bear_OBs if ob.active):
+            if any(curr_high >= ob.lower and curr_low <= ob.upper for ob in self.zones if ob.active and ob.created_idx < t and ob.type == 'Supply'):
                 in_s[t] = 1
 
             if active_demands:
@@ -404,7 +707,7 @@ class SupplyDemandEngine:
                 d_touches[t] = nz.touch_count
                 bs_d[t] = t - nz.created_idx
 
-            if any(curr_low <= ob.upper and curr_high >= ob.lower for ob in bull_OBs if ob.active):
+            if any(curr_low <= ob.upper and curr_high >= ob.lower for ob in self.zones if ob.active and ob.created_idx < t and ob.type == 'Demand'):
                 in_d[t] = 1
 
         df['nearest_supply_distance'] = ns_dist
