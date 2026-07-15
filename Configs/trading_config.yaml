@@ -1,0 +1,35 @@
+# Configuration for the unified live/backtest trading pipeline
+trading_mode: "backtest" # Options: live, demo, paper, validation, backtest, simulation
+shadow_mode: true
+symbols: ["EURUSD"]
+timeframe: "M5"
+initial_balance: 10000.0
+leverage: 100
+magic_mm: 100002
+magic_sm: 100003
+magic_unit: 100004
+daily_limit_pct: 0.03
+total_limit_pct: 0.10
+
+# Component feature flags
+components:
+  data_feed: true
+  spike_detection: true
+  market_state_classifier: true
+  level_break_classifier: true
+  ml_decision_engine: true
+  visualization: true
+  journal: true
+  signal_recorder: true
+
+# Strategy activation settings
+strategies:
+  mm_strategy:
+    enabled: true
+    risk_pct: 0.01
+  sm_strategy:
+    enabled: false
+    risk_pct: 0.01
+  unit_strategy:
+    enabled: false
+    risk_pct: 0.01

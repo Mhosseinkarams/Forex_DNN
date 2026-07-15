@@ -1,5 +1,5 @@
 import logging
-from simulation.simulation_environment import env as mt5
+from Simulation.simulation_environment import env as mt5
 
 # Constants for when MetaTrader5 is not installed (e.g. during local testing)
 if not hasattr(mt5, "ORDER_FILLING_FOK"):

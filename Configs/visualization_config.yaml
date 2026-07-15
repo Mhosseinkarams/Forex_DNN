@@ -1,0 +1,31 @@
+# Configuration for the passive ChartAnnotationEngine visualizer
+enabled_layers:
+  - "swings"
+  - "structure"
+  - "zones"
+  - "levels"
+  - "signals"
+  - "ml"
+  - "candles"
+
+colors:
+  swing_high_minor: "Orange"
+  swing_high_internal: "Magenta"
+  swing_high_major: "Red"
+  swing_low_minor: "LightGreen"
+  swing_low_internal: "Cyan"
+  swing_low_major: "Green"
+  protected_high: "DarkRed"
+  protected_low: "DarkGreen"
+  supply_zone: "LightCoral"
+  demand_zone: "LightBlue"
+  entry_level: "Blue"
+  sl_level: "Red"
+  tp_level: "Green"
+
+styles:
+  bos: "Dash"
+  choch: "DashDot"
+  sl: "Dash"
+  tp: "Dash"
+  invalidation: "Dot"

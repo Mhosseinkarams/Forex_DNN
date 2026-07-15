@@ -18,7 +18,7 @@ from Trade_Execution.exit_manager import ExitManager
 from Trade_Execution.send_order import SendOrder
 from Strategies.mm_strategy import MMStrategy
 
-from simulation.simulation_environment import env as mt5
+from Simulation.simulation_environment import env as mt5
 
 # ==============================================================================
 # CONFIGURATION

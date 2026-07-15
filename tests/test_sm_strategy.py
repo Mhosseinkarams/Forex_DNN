@@ -208,9 +208,11 @@ class TestSMStrategySuite(unittest.TestCase):
         # Mock the RefusalCandleEngine to return a high score
         ref_res = RefusalResult(
             score=85.0,
+            quality_score=85,
             confidence=0.9,
             bullish=True,
             bearish=False,
+            classification="HIGH",
             reasons=["Confirmed pin bar"],
             metrics={}
         )

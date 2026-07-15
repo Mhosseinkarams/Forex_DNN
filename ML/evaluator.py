@@ -60,7 +60,7 @@ class Evaluator:
             f1 = f1_score(y_val, y_pred, average="weighted", zero_division=0)
             auc = 0.0  # Multiclass AUC not computed by default here
 
-        cm = confusion_matrix(y_val, y_pred)
+        cm = confusion_matrix(y_val, y_pred, labels=list(range(len(classes))))
 
         # Class distribution
         unique, counts = np.unique(y_val, return_counts=True)

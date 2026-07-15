@@ -1,6 +1,6 @@
 import logging
 import math
-from simulation.simulation_environment import env as mt5
+from Simulation.simulation_environment import env as mt5
 
 logger = logging.getLogger("PositionSizer")
 

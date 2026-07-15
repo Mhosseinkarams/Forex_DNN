@@ -1,42 +1,41 @@
 # Performance & Verification Audit: MarketStateClassifier
 
 - **Backend Learning Engine**: LIGHTGBM
-- **Timestamp**: 2026-07-14T17:00:06.066173
+- **Timestamp**: 2026-07-15T13:20:14.939444
 
 ## Summary Metrics
-- **Accuracy**: 0.3400
-- **Precision**: 0.3398
-- **Recall**: 0.3400
-- **F1-Score**: 0.3379
+- **Accuracy**: 0.9922
+- **Precision**: 0.9926
+- **Recall**: 0.9922
+- **F1-Score**: 0.9923
 
 ## Class Distributions
-- **TREND**: 68 samples
-- **RANGE**: 69 samples
-- **TRANSITION**: 63 samples
+- **RANGE**: 110 samples
+- **TRANSITION**: 19 samples
 
 ## Top Feature Importances
 | Feature Name | Relative Importance Score |
 | :--- | :--- |
-| `demand_width` | 150.000000 |
-| `distance_to_ema600` | 147.000000 |
-| `time_since_last_bos` | 135.000000 |
-| `ema_compression` | 128.000000 |
-| `ema50_distance_v1` | 126.000000 |
-| `ema_separation` | 123.000000 |
-| `session` | 119.000000 |
-| `distance_to_nearest_low` | 119.000000 |
-| `demand_touch_count` | 114.000000 |
-| `supply_freshness` | 111.000000 |
-| `ema50_slope` | 108.000000 |
-| `lower_wick` | 103.000000 |
-| `protected_high_distance` | 102.000000 |
-| `distance_to_invalidation_level` | 100.000000 |
-| `candle_body` | 97.000000 |
+| `ema50_slope` | 211.000000 |
+| `ema_separation` | 161.000000 |
+| `distance_to_ema600` | 113.000000 |
+| `datetime` | 101.000000 |
+| `ema800_slope` | 90.000000 |
+| `distance_to_ema800` | 83.000000 |
+| `ema_compression` | 75.000000 |
+| `demand_width` | 73.000000 |
+| `ema600_slope` | 70.000000 |
+| `rolling_std` | 64.000000 |
+| `realized_volatility` | 63.000000 |
+| `weekday` | 59.000000 |
+| `compression_score` | 56.000000 |
+| `distance_to_ema50` | 37.000000 |
+| `atr_ratio` | 37.000000 |
 
 ## Confusion Matrix
 Target classes order: ['TREND', 'RANGE', 'TRANSITION']
 ```
-[[28 22 18]
- [27 23 19]
- [28 18 17]]
+[[  0   0   0]
+ [  0 109   1]
+ [  0   0  19]]
 ```

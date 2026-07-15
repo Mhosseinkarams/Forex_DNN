@@ -108,7 +108,7 @@ class SendOrder:
 
         # 2. Fetch Live Price for Market Order
         try:
-            from simulation.simulation_environment import env as mt5_env
+            from Simulation.simulation_environment import env as mt5_env
             tick = mt5.symbol_info_tick(symbol)
             if tick is None:
                 err = mt5.last_error()

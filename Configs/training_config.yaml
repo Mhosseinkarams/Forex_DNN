@@ -1,0 +1,19 @@
+# Configuration for the unified ML training pipeline
+seed: 42
+test_size: 0.2
+chronological: true
+output_reports_dir: "output/reports"
+
+models:
+  market_state:
+    trainer_script: "Training/train_market_state.py"
+    dataset_path: "output/datasets/market_state_dataset.parquet"
+    model_save_path: "models/MarketState/market_state_classifier.joblib"
+    enabled: true
+    dependencies: []
+  level_break:
+    trainer_script: "Training/train_level_break.py"
+    dataset_path: "output/datasets/level_break_dataset.parquet"
+    model_save_path: "models/LevelBreak/level_break_probability.joblib"
+    enabled: true
+    dependencies: ["market_state"]

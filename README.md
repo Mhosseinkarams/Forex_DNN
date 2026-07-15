@@ -117,6 +117,37 @@ Forex_DNN/
 
 ---
 
+## 2.5 Unified Production Entry Points & Configuration
+
+To simplify framework execution, increase traceability, and improve overall developer experience, we have centralized all operations under four unified root-level entry points and configured them purely through YAML files:
+
+### Centralized YAML Configs (under `Configs/`):
+- **`process_config.yaml`**: Preprocessing parameters, sliding window size/stride, and multiprocessing settings.
+- **`training_config.yaml`**: Seeds, test splitting, output paths, and trainers.
+- **`trading_config.yaml`**: Run modes (live/demo/backtest), risk ceilings, and active component lists.
+- **`strategy_config.yaml`**: Strategy-specific indicator parameters and buffers.
+- **`visualization_config.yaml`**: Color settings and active layers for visualization overlays.
+
+### Unified Command-Line Entry Points:
+1. **`process_data.py`** (Data Pipeline): Prepares ALL raw data for machine learning by loading, validating, cleaning, sorting, and generating 4 distinct ML datasets:
+   ```bash
+   python3 process_data.py --symbol ALL --timeframe M5
+   ```
+2. **`train.py`** (Training Pipeline Orchestration): Discovers datasets and trainer scripts, resolving optimal topological dependency order to retrain and evaluate ML models:
+   ```bash
+   python3 train.py --all
+   ```
+3. **`trade.py`** (Unified Execution Runtime): The single-user entry point to bootstrap backtests, simulations, demos, paper trading, or live trading:
+   ```bash
+   python3 trade.py --mode backtest --symbols EURUSD --strategy mm_strategy
+   ```
+4. **`Validation/validate_all.py`** (Integration Validation): Performs comprehensive integration dry-runs of the entire data pipeline, training, and trading components in end-to-end sequences:
+   ```bash
+   python3 Validation/validate_all.py
+   ```
+
+---
+
 ## 3. Complete Workflow
 
 To utilize the framework's full capabilities, operations must follow a strict chronological sequence. This workflow enforces time-determinism, look-ahead protection, and strict risk guidelines.

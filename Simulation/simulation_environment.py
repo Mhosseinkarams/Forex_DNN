@@ -109,6 +109,14 @@ class SimulationEnvironment:
     def symbol_info_tick(self, symbol):
         if self.mode == 'backtest':
             return self.broker.symbol_info_tick(symbol)
+        if mt5_live is None:
+            # Return a mock tick structure when mt5_live is missing
+            from unittest.mock import MagicMock
+            tick = MagicMock()
+            tick.bid = 1.1000
+            tick.ask = 1.1002
+            tick.time = int(datetime.now().timestamp())
+            return tick
         return mt5_live.symbol_info_tick(symbol)
 
     def symbol_select(self, symbol, enable):
