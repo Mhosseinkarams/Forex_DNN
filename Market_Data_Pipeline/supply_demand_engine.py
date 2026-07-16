@@ -87,7 +87,9 @@ class SupplyDemandEngine:
         df['demand_touch_count'] = np.zeros(n_bars)
         df['bars_since_supply'] = np.full(n_bars, -1)
         df['bars_since_demand'] = np.full(n_bars, -1)
-        return df.loc[:, ~df.columns.duplicated()]
+        if df.columns.duplicated().any():
+            df = df.loc[:, ~df.columns.duplicated()]
+        return df
 
     def process(self, df: pd.DataFrame) -> pd.DataFrame:
         if not self.use_fractal:
@@ -723,7 +725,9 @@ class SupplyDemandEngine:
         df['bars_since_supply'] = bs_s
         df['bars_since_demand'] = bs_d
 
-        return df.loc[:, ~df.columns.duplicated()]
+        if df.columns.duplicated().any():
+            df = df.loc[:, ~df.columns.duplicated()]
+        return df
 
     def _process_impulse(self, df: pd.DataFrame) -> pd.DataFrame:
         """Fallback to previous impulsive move detection for backward compatibility."""
@@ -946,4 +950,6 @@ class SupplyDemandEngine:
         df['bars_since_supply'] = bs_s
         df['bars_since_demand'] = bs_d
 
-        return df.loc[:, ~df.columns.duplicated()]
+        if df.columns.duplicated().any():
+            df = df.loc[:, ~df.columns.duplicated()]
+        return df
