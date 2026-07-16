@@ -4,6 +4,7 @@ import logging
 import threading
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Union, Type
+from Configs.path_manager import PathManager
 from ML.base_model import BaseTradingModel
 from ML.models.market_state_classifier import MarketStateClassifier
 from ML.models.level_break_probability import LevelBreakProbabilityModel
@@ -18,7 +19,9 @@ class ModelRegistry:
     Saves metadata in 'models/model_registry.json' and allows easy retrieval
     and caching of production models. Fully thread-safe.
     """
-    def __init__(self, registry_path: str = "models/model_registry.json"):
+    def __init__(self, registry_path: str = None):
+        if registry_path is None:
+            registry_path = PathManager.get_relative_path("models", "model_registry.json")
         self.registry_path = registry_path
         self.registry_data: Dict[str, Any] = {"models": []}
         self._lock = threading.Lock()

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 # Add parent directory to path so imports work correctly
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from Configs.path_manager import PathManager
 from ML.label_engine import LabelEngine
 from ML.dataset_validator import DatasetValidator
 from Market_Data_Pipeline.structure_engine import MarketStructureEngine
@@ -178,8 +179,8 @@ def run_pipeline(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Deterministic Sliding-Window Dataset Generator CLI")
     parser.add_argument("--input_csv", type=str, default="", help="Path to input CSV containing historical OHLCV data.")
-    parser.add_argument("--output_csv", type=str, default="output/market_state_dataset.csv", help="Path to write the labeled output CSV.")
-    parser.add_argument("--output_manifest", type=str, default="output/market_state_dataset_manifest.json", help="Path to write the JSON manifest.")
+    parser.add_argument("--output_csv", type=str, default=PathManager.get_relative_path("datasets", "market_state_dataset.csv"), help="Path to write the labeled output CSV.")
+    parser.add_argument("--output_manifest", type=str, default=PathManager.get_relative_path("datasets", "market_state_dataset_manifest.json"), help="Path to write the JSON manifest.")
     parser.add_argument("--window_size", type=int, default=35, help="Size of the sliding window (default: 35).")
     parser.add_argument("--window_stride", type=int, default=1, help="Stride of the sliding window (default: 1).")
     parser.add_argument("--symbol", type=str, default="EURUSD", help="Symbol identifier for the metadata columns.")

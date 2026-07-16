@@ -6,6 +6,7 @@ import numpy as np
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Union
 
+from Configs.path_manager import PathManager
 from ML.decision_context import DecisionContext
 from Collecting_Data.position_lifecycle import PositionLifecycle
 
@@ -24,10 +25,12 @@ class TradeFeatureRecorder:
     """
     def __init__(
         self,
-        storage_dir: str = "ML/recorded_features",
+        storage_dir: str = None,
         file_format: str = "csv",  # "csv", "parquet", or "both"
         compression: Optional[str] = None,
     ):
+        if storage_dir is None:
+            storage_dir = PathManager.get_relative_path("feature_data")
         self.storage_dir = storage_dir
         self.file_format = file_format.lower()
         self.compression = compression

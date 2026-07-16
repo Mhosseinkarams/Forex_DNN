@@ -15,6 +15,7 @@ import numpy as np
 import concurrent.futures
 from tqdm import tqdm
 
+from Configs.path_manager import PathManager
 from ML.feature_registry import FeatureRegistry
 from ML.label_engine import LabelEngine
 from ML.dataset_validator import DatasetValidator
@@ -41,8 +42,8 @@ class HistoricalDatasetBuilder:
     """
     def __init__(
         self,
-        input_dir: str = "HistoricalData",
-        output_dir: str = "output",
+        input_dir: Optional[str] = None,
+        output_dir: Optional[str] = None,
         window_size: int = 35,
         window_stride: int = 1,
         timeframe: str = "M5",
@@ -51,8 +52,8 @@ class HistoricalDatasetBuilder:
         label_engine: Optional[LabelEngine] = None,
         ms_engine: Optional[MarketStructureEngine] = None,
         sd_engine: Optional[SupplyDemandEngine] = None,
-        cache_dir: str = "cache",
-        datasets_dir: str = "datasets"
+        cache_dir: Optional[str] = None,
+        datasets_dir: Optional[str] = None
     ):
         """
         Args:
@@ -69,20 +70,20 @@ class HistoricalDatasetBuilder:
             cache_dir: Path to the cache directory.
             datasets_dir: Path to the datasets version manager directory.
         """
-        self.input_dir = input_dir
-        self.output_dir = output_dir
+        self.input_dir = input_dir or PathManager.get_relative_path("historical_data")
+        self.output_dir = output_dir or PathManager.get_relative_path("temporary")
         self.window_size = window_size
         self.window_stride = window_stride
         self.timeframe = timeframe
         self.version = version
 
+        if cache_dir is None:
+            cache_dir = PathManager.get_relative_path("cache")
+        if datasets_dir is None:
+            datasets_dir = PathManager.get_relative_path("datasets")
+
         # Ensure Directory Layout is cleanly initialized
-        for d in [
-            "raw_data", "processed_data", "cache", "datasets",
-            "models", "models/MarketState", "models/LevelBreak",
-            "experiments", "training_runs", "reports", "backtests"
-        ]:
-            os.makedirs(d, exist_ok=True)
+        PathManager.ensure_all_dirs()
 
         self.registry = registry or FeatureRegistry(load_defaults=True)
         self.ms_engine = ms_engine or MarketStructureEngine(lookback=3)

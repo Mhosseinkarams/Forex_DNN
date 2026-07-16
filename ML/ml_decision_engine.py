@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Any, Optional, Union
 
+from Configs.path_manager import PathManager
 from ML.feature_registry import FeatureRegistry
 from ML.model_registry import ModelRegistry
 from ML.decision_context import DecisionContext, PolicyRecommendation
@@ -23,10 +24,12 @@ class MLDecisionEngine:
     """
     def __init__(
         self,
-        registry_path: str = "models/model_registry.json",
+        registry_path: str = None,
         policy: Optional[BasePolicy] = None,
         calibrators: Optional[Dict[str, BaseCalibrator]] = None
     ):
+        if registry_path is None:
+            registry_path = PathManager.get_relative_path("models", "model_registry.json")
         self.model_registry = ModelRegistry(registry_path=registry_path)
         self.feature_registry = FeatureRegistry(load_defaults=True)
         self.policy = policy or RuleBasedPolicy()

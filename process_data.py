@@ -39,6 +39,7 @@ import concurrent.futures
 from tqdm import tqdm
 
 # Framework Imports
+from Configs.path_manager import PathManager
 from ML.feature_registry import FeatureRegistry
 from ML.feature_pipeline import FeaturePipeline
 from ML.data_cleaner import DataCleaner
@@ -61,7 +62,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("Logs/process_data.log", encoding="utf-8")
+        logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8")
     ]
 )
 logger = logging.getLogger("ProcessDataPipeline")
@@ -70,8 +71,8 @@ logger = logging.getLogger("ProcessDataPipeline")
 def load_config(config_path: str) -> Dict[str, Any]:
     """Loads configuration from YAML with safe fallbacks."""
     defaults = {
-        "input_dir": "HistoricalData",
-        "output_dir": "output/datasets",
+        "input_dir": PathManager.get_relative_path("historical_data"),
+        "output_dir": PathManager.get_relative_path("datasets"),
         "timeframe": "M5",
         "window_size": 35,
         "window_stride": 1,
@@ -195,8 +196,10 @@ def process_single_symbol(
     file_path: str,
     cfg: Dict[str, Any],
     registry: FeatureRegistry,
-    cache_dir: str = "cache"
+    cache_dir: str = None
 ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    if cache_dir is None:
+        cache_dir = PathManager.get_relative_path("cache")
     """Loads, cleans, enriches, and produces Market State and Level Break datasets for a single symbol."""
     try:
         # 1. Resume Caching check
@@ -335,7 +338,7 @@ def main():
     logger.info(f"Window Size/Stride: {cfg['window_size']} / {cfg['window_stride']}")
 
     # Clear cache if forced
-    cache_dir = "cache"
+    cache_dir = PathManager.get_relative_path("cache")
     if args.force and os.path.exists(cache_dir):
         logger.info("Force flag enabled. Flushing cache directory...")
         import shutil

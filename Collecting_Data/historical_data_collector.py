@@ -23,6 +23,11 @@ from abc import ABC, abstractmethod
 import pandas as pd
 import numpy as np
 
+# Add parent directory to path so imports work correctly
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from Configs.path_manager import PathManager
+
 # Try to load MetaTrader5 safely
 try:
     import MetaTrader5 as mt5
@@ -544,9 +549,9 @@ class HistoricalDataCollector:
     """
     Orchestrator class for downloading, validating, merging, and saving historical market data.
     """
-    def __init__(self, provider: BaseDataProvider, output_dir: str = "HistoricalData", format: str = "parquet", chunk_size_days: int = 180, max_workers: int = 4, monitor: ConsoleProgressMonitor = None):
+    def __init__(self, provider: BaseDataProvider, output_dir: str = None, format: str = "parquet", chunk_size_days: int = 180, max_workers: int = 4, monitor: ConsoleProgressMonitor = None):
         self.provider = provider
-        self.output_dir = output_dir
+        self.output_dir = output_dir or PathManager.get_relative_path("historical_data")
         self.format = format.lower()
         self.chunk_size_days = chunk_size_days
         self.max_workers = max_workers
@@ -1042,7 +1047,7 @@ def main():
     parser.add_argument("--symbols", type=str, default="all", help="Comma-separated symbols, 'all', or filters (forex, metals, indices, crypto)")
     parser.add_argument("--provider", type=str, default="mt5", choices=["mt5", "dukascopy", "oanda", "csv", "mock"], help="Historical data provider (default: mt5)")
     parser.add_argument("--format", type=str, default="parquet", choices=["parquet", "csv", "both"], help="Output format: parquet, csv, or both")
-    parser.add_argument("--output-dir", type=str, default="HistoricalData", help="Output storage directory")
+    parser.add_argument("--output-dir", type=str, default=PathManager.get_relative_path("historical_data"), help="Output storage directory")
     parser.add_argument("--chunk-size-days", type=int, default=180, help="Chunk size in days for historical queries (default: 180)")
     parser.add_argument("--workers", type=int, default=4, help="Maximum concurrent download workers (default: 4)")
     parser.add_argument("--inject-issues", action="store_true", help="Inject issues into MockProvider for testing")
