@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score
 
+from Configs.path_manager import PathManager
 from ML.models.market_state_classifier import MarketStateClassifier
 from ML.trainer import Trainer
 from ML.evaluator import Evaluator
@@ -16,13 +17,8 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     print("      TRAINING MARKET STATE CLASSIFIER MODEL      ")
     print("==================================================")
 
-    # Initialize Directory Layout Structure
-    for d in [
-        "raw_data", "processed_data", "cache", "datasets",
-        "models", "models/MarketState", "models/LevelBreak",
-        "experiments", "training_runs", "reports", "backtests"
-    ]:
-        os.makedirs(d, exist_ok=True)
+    # Initialize Directory Layout Structure using central PathManager
+    PathManager.ensure_all_dirs()
 
     np.random.seed(random_seed)
 
@@ -50,7 +46,7 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     print(f"Loaded dataset containing {len(df)} samples.")
 
     # Initialize child class with external YAML config
-    config_path = "configs/market_state.yaml" if os.path.exists("configs/market_state.yaml") else None
+    config_path = PathManager.get_relative_path("config", "market_state.yaml") if os.path.exists(PathManager.get_relative_path("config", "market_state.yaml")) else None
 
     clf = MarketStateClassifier(
         model_type="lightgbm",
@@ -106,7 +102,7 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     y_val = train_results["y_val"]
 
     # Use Evaluator to create premium Markdown & HTML reports
-    evaluator = Evaluator(output_dir="reports")
+    evaluator = Evaluator(output_dir=PathManager.get_relative_path("reports"))
     classes = ["TREND", "RANGE", "TRANSITION"]
 
     evaluator.evaluate_and_report(
@@ -139,8 +135,8 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, default="output/market_state_dataset.csv")
-    parser.add_argument("--model", type=str, default="output/market_state_classifier.joblib")
+    parser.add_argument("--dataset", type=str, default=PathManager.get_relative_path("datasets", "market_state_dataset.parquet"))
+    parser.add_argument("--model", type=str, default=PathManager.get_relative_path("models", "MarketState/market_state_classifier.joblib"))
     args = parser.parse_args()
 
     run_training(args.dataset, args.model)

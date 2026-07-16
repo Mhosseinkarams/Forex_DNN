@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
 
+from Configs.path_manager import PathManager
 from ML.base_model import BaseTradingModel
 from ML.model_registry import ModelRegistry
 
@@ -20,8 +21,10 @@ class Trainer:
     def __init__(
         self,
         random_seed: int = 42,
-        model_registry_path: str = "models/model_registry.json"
+        model_registry_path: str = None
     ):
+        if model_registry_path is None:
+            model_registry_path = PathManager.get_relative_path("models", "model_registry.json")
         self.random_seed = random_seed
         self.registry = ModelRegistry(registry_path=model_registry_path)
 

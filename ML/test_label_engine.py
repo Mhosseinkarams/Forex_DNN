@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
 
+from Configs.path_manager import PathManager
 from ML.label_engine import LabelEngine
 from ML.market_state_labeler import MarketStateLabeler
 from ML.dataset_validator import DatasetValidator
@@ -103,8 +104,8 @@ def test_label_engine_sliding_window():
     assert len(df_labeled) + engine.removed_samples_count == 14
 
     # Save manifest and verify structure
-    out_csv = "output/test_label_engine_out.csv"
-    out_manifest = "output/test_label_engine_manifest.json"
+    out_csv = PathManager.get_relative_path("temporary", "test_label_engine_out.csv")
+    out_manifest = PathManager.get_relative_path("temporary", "test_label_engine_manifest.json")
 
     engine.save_dataset_and_manifest(df_labeled, out_csv, out_manifest)
 

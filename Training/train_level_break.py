@@ -5,6 +5,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from Configs.path_manager import PathManager
 from ML.models.level_break_probability import LevelBreakProbabilityModel
 from ML.trainer import Trainer
 from ML.evaluator import Evaluator
@@ -15,13 +16,8 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     print("    TRAINING LEVEL BREAK PROBABILITY MODEL        ")
     print("==================================================")
 
-    # Initialize Directory Layout Structure
-    for d in [
-        "raw_data", "processed_data", "cache", "datasets",
-        "models", "models/MarketState", "models/LevelBreak",
-        "experiments", "training_runs", "reports", "backtests"
-    ]:
-        os.makedirs(d, exist_ok=True)
+    # Initialize Directory Layout Structure using central PathManager
+    PathManager.ensure_all_dirs()
 
     np.random.seed(random_seed)
 
@@ -49,7 +45,7 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     print(f"Loaded dataset containing {len(df)} samples.")
 
     # Initialize child class with external YAML config
-    config_path = "configs/level_break.yaml" if os.path.exists("configs/level_break.yaml") else None
+    config_path = PathManager.get_relative_path("config", "level_break.yaml") if os.path.exists(PathManager.get_relative_path("config", "level_break.yaml")) else None
 
     clf = LevelBreakProbabilityModel(
         model_type="lightgbm",
@@ -87,7 +83,7 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     y_val = train_results["y_val"]
 
     # Use Evaluator to create premium Markdown & HTML reports
-    evaluator = Evaluator(output_dir="reports")
+    evaluator = Evaluator(output_dir=PathManager.get_relative_path("reports"))
     classes = ["REJECT", "BREAK"]
 
     evaluator.evaluate_and_report(
@@ -104,8 +100,8 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, default="output/level_break_dataset.csv")
-    parser.add_argument("--model", type=str, default="output/level_break_probability.joblib")
+    parser.add_argument("--dataset", type=str, default=PathManager.get_relative_path("datasets", "level_break_dataset.parquet"))
+    parser.add_argument("--model", type=str, default=PathManager.get_relative_path("models", "LevelBreak/level_break_probability.joblib"))
     args = parser.parse_args()
 
     run_training(args.dataset, args.model)

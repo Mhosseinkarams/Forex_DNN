@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 
 # Framework Imports
+from Configs.path_manager import PathManager
 from Collecting_Data.trading_journal import TradingJournal
 from Trade_Execution.position_manager import PositionManager
 from Trade_Execution.position_tracker import PositionTracker
@@ -116,9 +117,9 @@ class TradingPipeline:
             # Setup Data Feed
             self.data_feed = HistoricalDataFeed()
             for sym in symbols:
-                csv_path = f"HistoricalData/{sym}/{tf}.parquet"
+                csv_path = PathManager.get_relative_path("historical_data", f"{sym}/{tf}.parquet")
                 if not os.path.exists(csv_path):
-                    csv_path = f"HistoricalData/{sym}/{tf}.csv"
+                    csv_path = PathManager.get_relative_path("historical_data", f"{sym}/{tf}.csv")
                 if os.path.exists(csv_path):
                     self.data_feed.load_csv(sym, tf, csv_path)
                 else:

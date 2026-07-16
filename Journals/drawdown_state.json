@@ -1,5 +1,6 @@
 {
     "start_of_day_balance": 10000.0,
-    "snapshot_date": "2026-06-23",
-    "last_updated": "2026-06-23T00:00:00+00:00"
+    "snapshot_date": "2026-06-05",
+    "account_id": null,
+    "last_updated": "2026-06-05T00:00:00+00:00"
 }

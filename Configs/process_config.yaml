@@ -1,6 +1,6 @@
 # Configuration for historical data processing pipeline
-input_dir: "HistoricalData"
-output_dir: "output/datasets"
+input_dir: "Data/Historical"
+output_dir: "Data/ML/Datasets"
 timeframe: "M5"
 window_size: 35
 window_stride: 1

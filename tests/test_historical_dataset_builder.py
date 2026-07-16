@@ -393,6 +393,7 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
             self.assertIn("feature_hash", html)
 
     def test_directory_layout_initialized(self):
+        from Configs.path_manager import PathManager
         builder = HistoricalDatasetBuilder(
             input_dir=self.test_input_dir,
             output_dir=self.test_output_dir,
@@ -400,11 +401,7 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
             cache_dir=self.test_cache_dir,
             datasets_dir=self.test_datasets_dir
         )
-        for folder in [
-            "raw_data", "processed_data", "cache", "datasets",
-            "models", "models/MarketState", "models/LevelBreak",
-            "experiments", "training_runs", "reports", "backtests"
-        ]:
+        for folder in PathManager.PATHS.values():
             self.assertTrue(os.path.exists(folder))
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 
 # Framework imports
+from Configs.path_manager import PathManager
 from ML.model_registry import ModelRegistry
 from ML.evaluator import Evaluator
 
@@ -32,19 +33,19 @@ class TrainingPipeline:
             "seed": 42,
             "test_size": 0.2,
             "chronological": True,
-            "output_reports_dir": "output/reports",
+            "output_reports_dir": PathManager.get_relative_path("reports"),
             "models": {
                 "market_state": {
                     "trainer_script": "Training/train_market_state.py",
-                    "dataset_path": "output/datasets/market_state_dataset.parquet",
-                    "model_save_path": "models/MarketState/market_state_classifier.joblib",
+                    "dataset_path": PathManager.get_relative_path("datasets", "market_state_dataset.parquet"),
+                    "model_save_path": PathManager.get_relative_path("models", "MarketState/market_state_classifier.joblib"),
                     "enabled": True,
                     "dependencies": []
                 },
                 "level_break": {
                     "trainer_script": "Training/train_level_break.py",
-                    "dataset_path": "output/datasets/level_break_dataset.parquet",
-                    "model_save_path": "models/LevelBreak/level_break_probability.joblib",
+                    "dataset_path": PathManager.get_relative_path("datasets", "level_break_dataset.parquet"),
+                    "model_save_path": PathManager.get_relative_path("models", "LevelBreak/level_break_probability.joblib"),
                     "enabled": True,
                     "dependencies": ["market_state"]
                 }
