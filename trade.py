@@ -60,7 +60,7 @@ def main():
         if args.mode:
             pipeline.config["trading_mode"] = args.mode
         if args.symbols:
-            pipeline.config["symbols"] = [s.strip().upper() for s in args.symbols.split(",")]
+            pipeline.config["symbols"] = [s.strip() for s in args.symbols.split(",")]
         if args.shadow:
             pipeline.config["shadow_mode"] = True
 

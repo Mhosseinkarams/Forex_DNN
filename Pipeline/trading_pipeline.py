@@ -176,7 +176,8 @@ class TradingPipeline:
             position_tracker=self.pt,
             daily_limit_pct=self.config.get("daily_limit_pct", 0.03),
             total_limit_pct=self.config.get("total_limit_pct", 0.10),
-            state_file=os.path.join(journal_root, "drawdown_state.json")
+            state_file=os.path.join(journal_root, "drawdown_state.json"),
+            symbols=symbols
         )
         self.modules["drawdown_manager"] = self.dm
 

@@ -10,7 +10,21 @@ logger = logging.getLogger("DrawdownManager")
 
 class DrawdownManager:
     """
+    DrawdownManager
+    ---------------
     Enforces daily and total drawdown ceilings by monitoring account balance and open risk.
+    Acts as the main RiskAdjuster for the Forex_DNN framework.
+
+    Live Account Synchronization & State Restoration:
+      - Automatically restores persisted day snapshot date and balance from drawdown_state.json.
+      - Automatically synchronizes live account state (balance and ID/login) before each check.
+      - Detects if the live account ID/login has changed (e.g. switched accounts), or if the actual
+        live account balance is significantly different from the startup/restored values.
+      - When an account change or balance reset/mismatch is detected, the manager dynamically
+        reinitializes and resets daily/overall starting balances to the live balance to avoid
+        spurious drawdown violations and ensure a clean trading state.
+      - Safely manages timezone-aligned daily snapshot dates by trying user-supplied symbol configurations
+        with their exact broker-specific suffixes first.
     """
 
     def __init__(
@@ -20,15 +34,30 @@ class DrawdownManager:
         daily_limit_pct: float = 0.03,
         total_limit_pct: float = 0.10,
         state_file: str = "drawdown_state.json",
+        symbols: list = None,
     ):
+        """
+        Initializes the DrawdownManager.
+
+        Args:
+            initial_balance (float): The configured initial balance.
+            position_tracker: Thread-safe tracker to monitor active position open risk.
+            daily_limit_pct (float): Maximum allowed daily loss percentage (default 3%).
+            total_limit_pct (float): Maximum allowed overall drawdown loss percentage (default 10%).
+            state_file (str): Atomic storage file for daily snapshot tracking.
+            symbols (list): Configured broker symbols to check for correct server dates.
+        """
         self.initial_balance = initial_balance
         self.position_tracker = position_tracker
         self.daily_limit_pct = daily_limit_pct
         self.total_limit_pct = total_limit_pct
         self.state_file = state_file
+        self.symbols = symbols or []
 
         self.start_of_day_balance = initial_balance
         self.snapshot_date = ""  # YYYY-MM-DD
+        self.saved_account_id = None
+        self._first_sync = True
 
         self._lock = threading.Lock()
 
@@ -55,7 +84,8 @@ class DrawdownManager:
                     with self._lock:
                         self.start_of_day_balance = data.get("start_of_day_balance", self.initial_balance)
                         self.snapshot_date = data.get("snapshot_date", "")
-                    logger.info(f"Drawdown state restored: date={self.snapshot_date}, start_balance={self.start_of_day_balance}")
+                        self.saved_account_id = data.get("account_id", None)
+                    logger.info(f"Drawdown state restored: date={self.snapshot_date}, start_balance={self.start_of_day_balance}, account_id={self.saved_account_id}")
             except Exception as e:
                 logger.error(f"Failed to load state file: {e}")
 
@@ -66,6 +96,7 @@ class DrawdownManager:
                 data = {
                     "start_of_day_balance": self.start_of_day_balance,
                     "snapshot_date": self.snapshot_date,
+                    "account_id": self.saved_account_id,
                     "last_updated": mt5.get_now().isoformat(),
                 }
             temp_file = self.state_file + ".tmp"
@@ -75,13 +106,52 @@ class DrawdownManager:
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
 
+    def sync_live_state(self):
+        """
+        Synchronizes live account state before checking drawdowns.
+        Detects if account ID or account balance has changed, triggering a reset/reinitialization.
+        """
+        acc = mt5.account_info()
+        if acc is None:
+            logger.warning("Could not retrieve account info for live state synchronization.")
+            return
+
+        current_balance = acc.balance
+        current_account_id = getattr(acc, "login", None)
+
+        server_date = self._get_server_date() or ""
+
+        reset_required = False
+        with self._lock:
+            # 1. Check if account ID changed or is newly identified
+            if self.saved_account_id is not None and current_account_id is not None:
+                if self.saved_account_id != current_account_id:
+                    logger.info(f"Account ID changed from {self.saved_account_id} to {current_account_id}. Resetting drawdown state.")
+                    reset_required = True
+            elif current_account_id is not None:
+                self.saved_account_id = current_account_id
+                reset_required = True
+
+            # 2. Check if startup/restored balance differs from actual live balance
+            if self._first_sync:
+                if abs(self.start_of_day_balance - current_balance) > 0.01 or abs(self.initial_balance - current_balance) > 0.01:
+                    logger.info(f"Restored balance ({self.start_of_day_balance}) differs from live balance ({current_balance}). Resetting drawdown state.")
+                    reset_required = True
+                self._first_sync = False
+
+            if reset_required:
+                self.initial_balance = current_balance
+                self.start_of_day_balance = current_balance
+                self.saved_account_id = current_account_id
+                self.snapshot_date = server_date
+
+        if reset_required:
+            self._save_state()
+
     def _get_server_date(self) -> str | None:
         """
         Retrieves MT5 server date as 'YYYY-MM-DD'.
         Tries any selected symbol to get a tick, falling back to recent bars.
-
-        Fallback symbol list uses LiteFinance's '_o' suffix convention
-        (see data_feed.py), so this resolves even with zero open positions.
         """
         symbols_to_try = []
 
@@ -90,8 +160,12 @@ class DrawdownManager:
         if positions:
             symbols_to_try.extend(list({p['symbol'] for p in positions}))
 
-        # 2. LiteFinance fallback symbols (broker requires '_o' suffix)
-        symbols_to_try.extend(["EURUSD_o", "GBPUSD_o", "XAUUSD_o"])
+        # 2. Check configured symbols
+        if hasattr(self, "symbols") and self.symbols:
+            symbols_to_try.extend(self.symbols)
+
+        # 3. Fallback symbols
+        symbols_to_try.extend(["EURUSD_o", "GBPUSD_o", "XAUUSD_o", "EURUSD"])
 
         for symbol in symbols_to_try:
             if not mt5.symbol_select(symbol, True):
@@ -145,6 +219,7 @@ class DrawdownManager:
             Should be called frequently in the main trading loop to ensure risk
             limits are enforced in real-time.
         """
+        self.sync_live_state()
         self._check_day_boundary()
 
         acc = mt5.account_info()
