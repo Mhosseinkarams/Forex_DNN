@@ -152,7 +152,8 @@ class IndicatorEngine:
         df = df[final_cols]
 
         # Remove duplicate columns if any (e.g. if original_cols already contained some indicators)
-        df = df.loc[:, ~df.columns.duplicated()]
+        if df.columns.duplicated().any():
+            df = df.loc[:, ~df.columns.duplicated()]
 
         return df
 

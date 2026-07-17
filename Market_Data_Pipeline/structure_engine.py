@@ -322,7 +322,9 @@ class MarketStructureEngine:
         df['swing_high'] = sh_arr
         df['swing_low'] = sl_arr
 
-        return df.loc[:, ~df.columns.duplicated()]
+        if df.columns.duplicated().any():
+            df = df.loc[:, ~df.columns.duplicated()]
+        return df
 
     def get_summary(self, df: pd.DataFrame) -> Dict[str, Any]:
         bars_since_bos = len(df) - 1 - self.last_bos_idx if self.last_bos_idx != -1 else -1
