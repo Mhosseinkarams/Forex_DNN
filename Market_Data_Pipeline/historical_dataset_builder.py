@@ -195,6 +195,7 @@ class HistoricalDatasetBuilder:
         version_str = self.version or "v001"
         cached_df = self.cache_manager.get_cached_symbol(symbol, self.timeframe, version_str)
         if cached_df is not None:
+            logger.info(f"[{symbol}] [CACHE] Found cached datasets. Loading directly...")
             return cached_df
 
         # Avoid reentrancy / thread safety issues with fresh local instances of engines in a clone pipeline
@@ -225,10 +226,14 @@ class HistoricalDatasetBuilder:
                     else:
                         local_pipeline.register(copy.copy(stage))
 
+        logger.info(f"[{symbol}] [1/4] READING: Loading raw candles from {os.path.basename(file_path)}...")
         df_ohlcv = self._load_file(file_path)
+        logger.info(f"[{symbol}] [1/4] READING: Completed. Loaded {len(df_ohlcv)} bars.")
 
         # Run sequential transformations
+        logger.info(f"[{symbol}] [2/4] PROCESSING (INDICATORS/SMC/SD): Executing transformation pipeline stages...")
         df_transformed = local_pipeline.execute(df_ohlcv, symbol, self.timeframe)
+        logger.info(f"[{symbol}] [2/4] PROCESSING: Completed indicator and structure calculations.")
 
         # Retrieve engines for building structure graph
         ms_stage = local_pipeline.get_stage("MarketStructureEngine") or local_pipeline.get_stage(MarketStructureEngine)
@@ -297,13 +302,23 @@ class HistoricalDatasetBuilder:
 
         samples: List[DatasetSample] = []
 
+        logger.info(f"[{symbol}] [3/4] LABELING & FEATURE EXTRACTION: Generating labeled samples across {n_bars} bars...")
+        total_windows = len(range(0, n_bars - self.window_size + 1, self.window_stride))
+        log_interval = max(1, total_windows // 10)
+        window_count = 0
+
         for start_idx in range(0, n_bars - self.window_size + 1, self.window_stride):
+            window_count += 1
             end_idx = start_idx + self.window_size - 1
 
             # Step 1: Label window
             label, confidence, label_info = local_label_engine.labeler.label_window(
                 df_transformed, msg, start_idx, end_idx
             )
+
+            if window_count % log_interval == 0 or window_count == total_windows:
+                pct = int(window_count / total_windows * 100)
+                logger.info(f"[{symbol}] [3/4] LABELING & FEATURE EXTRACTION: {pct}% complete ({window_count}/{total_windows} windows)")
 
             if label is None:
                 # Discard sample
@@ -376,7 +391,9 @@ class HistoricalDatasetBuilder:
         df_labeled = pd.DataFrame(flat_samples)
 
         # Cache results for next run
+        logger.info(f"[{symbol}] [4/4] SAVING TO CACHE: Serializing dataset copy to Cache...")
         self.cache_manager.cache_symbol(symbol, self.timeframe, version_str, df_labeled)
+        logger.info(f"[{symbol}] [4/4] SAVING TO CACHE: Saved cached datasets for {symbol} successfully.")
 
         return df_labeled
 

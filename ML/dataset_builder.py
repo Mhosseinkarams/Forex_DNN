@@ -58,8 +58,21 @@ class DatasetBuilder:
         rows = []
         warmup = 100
 
+        total_len = len(df) - lookahead_bars - warmup
+        if total_len <= 0:
+            return pd.DataFrame()
+
+        logger.info(f"[{msg.symbol}] LEVEL BREAK PROCESSING: Starting level break labeling for {total_len} candles...")
+        log_interval = max(1, total_len // 10)
+        count = 0
+
         for idx in range(warmup, len(df) - lookahead_bars):
+            count += 1
             row_close = df.iloc[idx]["Close"]
+
+            if count % log_interval == 0 or count == total_len:
+                pct = int(count / total_len * 100)
+                logger.info(f"[{msg.symbol}] LEVEL BREAK PROCESSING: {pct}% complete ({count}/{total_len} bars)")
             row_high = df.iloc[idx]["High"]
             row_low = df.iloc[idx]["Low"]
             atr = df.iloc[idx].get("atr_14", 0.0001)
