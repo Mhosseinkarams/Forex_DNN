@@ -1,4 +1,5 @@
 import logging
+import bisect
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, Dict, Any
 import pandas as pd
@@ -97,59 +98,63 @@ class MarketStateLabeler(BaseLabeler):
         Applies deterministic rules to classify the sliding window into TREND, RANGE, or TRANSITION.
         Samples not meeting strict thresholds are returned as None (for removal).
         """
-        # Ensure we do not look beyond the window bounds for strict point-in-time rules
-        window_df = df.iloc[window_start:window_end + 1]
-        last_row = window_df.iloc[-1]
-
-        atr = last_row.get(f"atr_{self.atr_period}", last_row.get("atr_14", 0.0001))
+        # Ensure fast lookup of the row at window_end
+        atr_col = f"atr_{self.atr_period}" if f"atr_{self.atr_period}" in df.columns else "atr_14"
+        atr = df.at[window_end, atr_col] if atr_col in df.columns else 0.0001
         if atr <= 0:
             atr = 0.0001
 
         # 1. EMA Separation calculation at window_end
-        fast_ema = last_row.get("ema_50")
-        slow_ema = last_row.get("ema_600", last_row.get("ema_800"))
+        fast_ema = df.at[window_end, "ema_50"] if "ema_50" in df.columns else None
+        slow_col = "ema_600" if "ema_600" in df.columns else ("ema_800" if "ema_800" in df.columns else None)
+        slow_ema = df.at[window_end, slow_col] if (slow_col and slow_col in df.columns) else None
 
         ema_separation_atr = 0.0
         if fast_ema is not None and slow_ema is not None:
             ema_separation_atr = abs(fast_ema - slow_ema) / atr
 
-        # Check if EMA fast/slow crossed in this window
+        # Check if EMA fast/slow crossed in this window using fast numpy array slicing
         ema_crossed = False
-        if "ema_50" in window_df.columns:
-            fast_emas = window_df["ema_50"].values
-            slow_emas = window_df.get("ema_600", window_df.get("ema_800", window_df["ema_50"])).values
-            diffs = fast_emas - slow_emas
-            # Check if there is any sign change in difference across the window
+        if "ema_50" in df.columns and slow_col and slow_col in df.columns:
+            fast_arr = df["ema_50"].values[window_start:window_end + 1]
+            slow_arr = df[slow_col].values[window_start:window_end + 1]
+            diffs = fast_arr - slow_arr
             if len(diffs) > 1:
                 has_pos = np.any(diffs > 0)
                 has_neg = np.any(diffs < 0)
                 if has_pos and has_neg:
                     ema_crossed = True
 
-        # 2. Count BOS in window
-        # Verify indices of BOS fall strictly within [window_start, window_end]
-        bos_events = [b for b in msg.bos if window_start <= b.index <= window_end]
-        bos_count = len(bos_events)
+        # 2. Count BOS in window (O(log K) binary search instead of O(K) linear lookup)
+        if not hasattr(msg, '_bos_indices_for_labeler'):
+            msg._bos_indices_for_labeler = [b.index for b in msg.bos]
+        bos_pos_left = bisect.bisect_left(msg._bos_indices_for_labeler, window_start)
+        bos_pos_right = bisect.bisect_right(msg._bos_indices_for_labeler, window_end)
+        bos_count = bos_pos_right - bos_pos_left
 
-        # 3. Count CHOCH in window
-        choch_events = [c for c in msg.choch if window_start <= c.index <= window_end]
-        choch_count = len(choch_events)
+        # 3. Count CHOCH in window (O(log K) binary search)
+        if not hasattr(msg, '_choch_indices_for_labeler'):
+            msg._choch_indices_for_labeler = [c.index for c in msg.choch]
+        choch_pos_left = bisect.bisect_left(msg._choch_indices_for_labeler, window_start)
+        choch_pos_right = bisect.bisect_right(msg._choch_indices_for_labeler, window_end)
+        choch_count = choch_pos_right - choch_pos_left
 
         # 4. Supply & Demand retest/touches inside the window
-        # We can extract interactions from df columns like `inside_supply`, `inside_demand`, etc.
-        # Or from zone touch counts. Let's inspect the window_df for inside zone touches.
-        inside_supply_count = int(window_df.get("inside_supply", pd.Series(0, index=window_df.index)).sum())
-        inside_demand_count = int(window_df.get("inside_demand", pd.Series(0, index=window_df.index)).sum())
-        total_zone_touches = inside_supply_count + inside_demand_count
+        # Access precomputed rolling sums directly
+        if "inside_supply_rollsum" in df.columns:
+            inside_supply_count = int(df.at[window_end, "inside_supply_rollsum"])
+            inside_demand_count = int(df.at[window_end, "inside_demand_rollsum"])
+        else:
+            # Fallback
+            window_df = df.iloc[window_start:window_end + 1]
+            inside_supply_count = int(window_df.get("inside_supply", pd.Series(0, index=window_df.index)).sum())
+            inside_demand_count = int(window_df.get("inside_demand", pd.Series(0, index=window_df.index)).sum())
 
-        # The per-bar interaction columns are the point-in-time record.  Zone
-        # objects are intentionally not used here because their final
-        # touch_count/mitigation state includes future candles.
+        total_zone_touches = inside_supply_count + inside_demand_count
         zone_retests = total_zone_touches
 
         # 5. Volatility & ATR Ratio
-        # Is the volatility expanding or contracting relative to historical average?
-        atr_ratio = last_row.get("atr_ratio", 1.0)
+        atr_ratio = df.at[window_end, "atr_ratio"] if "atr_ratio" in df.columns else 1.0
 
         info = {
             "ema_separation_atr": float(ema_separation_atr),
@@ -163,14 +168,12 @@ class MarketStateLabeler(BaseLabeler):
         }
 
         # --- Rule 1: TREND ---
-        # Strong EMA alignment and separation + at least 1 BOS break in trend direction,
-        # and no opposing structural trend changes (no CHOCH).
         if ema_separation_atr >= self.ema_sep_trend and bos_count >= self.min_bos_trend:
-            # Check trend persistence - did we have an opposing CHOCH?
             has_opposing_choch = False
             if choch_count > 0:
-                # If CHOCH direction opposes the current trend bias
-                last_trend = last_row.get("trend", 0)
+                last_trend = df.at[window_end, "trend"] if "trend" in df.columns else 0
+                # Slice the choch list using binary search positions for O(1) retrieval
+                choch_events = msg.choch[choch_pos_left:choch_pos_right]
                 for c in choch_events:
                     if c.new_trend != last_trend:
                         has_opposing_choch = True
@@ -182,12 +185,10 @@ class MarketStateLabeler(BaseLabeler):
                 return "TREND", float(confidence), info
 
         # --- Rule 2: RANGE ---
-        # Converged EMAs (low separation) OR prolonged zone interactions without structure breaks (BOS)
         is_converged = ema_separation_atr < self.ema_sep_range
         is_retesting_zones = (zone_retests >= self.min_rejections_range or total_zone_touches >= self.min_rejections_range)
 
         if (is_converged or is_retesting_zones) and bos_count == 0:
-            # Extra confidence if both conditions hold
             base_conf = 0.6
             if is_converged and is_retesting_zones:
                 base_conf += 0.15
@@ -196,30 +197,23 @@ class MarketStateLabeler(BaseLabeler):
             return "RANGE", float(confidence), info
 
         # --- Rule 3: TRANSITION ---
-        # Clear signs of regime change: EMAs crossed within window, or CHOCH occurring,
-        # or EMAs are rapidly shrinking in separation from a trending state.
         is_ema_shrinking = False
-        if len(window_df) >= 10:
-            # Check if EMA separation 10 bars ago was trending (> 1.5) and now has shrunk significantly (< 1.0)
-            ema_col = "ema_50"
-            if ema_col in window_df.columns:
-                prev_row = window_df.iloc[-10]
-                prev_fast = prev_row.get("ema_50")
-                prev_slow = prev_row.get("ema_600", prev_row.get("ema_800"))
-                prev_atr = prev_row.get(f"atr_{self.atr_period}", prev_row.get("atr_14", 0.0001))
+        if (window_end - window_start + 1) >= 10:
+            if "ema_50" in df.columns:
+                prev_idx = window_end - 9
+                prev_fast = df.at[prev_idx, "ema_50"]
+                prev_slow = df.at[prev_idx, slow_col] if slow_col else None
+                prev_atr = df.at[prev_idx, atr_col] if atr_col in df.columns else 0.0001
                 if prev_fast is not None and prev_slow is not None and prev_atr > 0:
                     prev_sep = abs(prev_fast - prev_slow) / prev_atr
                     if prev_sep >= 1.2 and ema_separation_atr < 0.9:
                         is_ema_shrinking = True
 
         if ema_crossed or choch_count >= 1 or is_ema_shrinking:
-            # We must be careful not to label standard trend-continuation pullbacks as transition.
-            # If we have a CHOCH or EMA cross, it's a transition.
             confidence = min(1.0, 0.5 + (choch_count * 0.1) + (0.2 if ema_crossed else 0.0))
             info["rule_fired"] = "transition_cross_or_choch_or_shrink"
             return "TRANSITION", float(confidence), info
 
         # --- Unlabeled samples ---
-        # If a sample is ambiguous or does not meet strict rules, return None to remove it.
         info["rule_fired"] = "unlabeled_ambiguous"
         return None, 0.0, info

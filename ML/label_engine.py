@@ -111,6 +111,10 @@ class LabelEngine:
             df_struct = m_engine.process(df_processed)
             df_final = s_engine.process(df_struct)
 
+            # Precompute rolling sums to optimize label_window calls
+            df_final['inside_supply_rollsum'] = df_final['inside_supply'].rolling(self.window_size).sum().fillna(0).astype(int)
+            df_final['inside_demand_rollsum'] = df_final['inside_demand'].rolling(self.window_size).sum().fillna(0).astype(int)
+
             # Build consolidated MarketStructureGraph for lookup
             # Swings must be separated by high/low in graph
             msg = MarketStructureGraph(
