@@ -32,6 +32,7 @@ import json
 import yaml
 import time
 import threading
+import multiprocessing
 from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
@@ -72,6 +73,29 @@ class ProcessingProgressMonitor:
                     return slot
             # Fallback
             return 1
+
+    def register_symbol_slot(self, symbol: str) -> int:
+        """Assigns an unassigned slot index to a symbol dynamically for multiprocessing updates."""
+        with self.lock:
+            # Check if symbol is already registered to a slot
+            for slot, info in self.slots.items():
+                if info.get("symbol") == symbol:
+                    return slot
+            # Assign to first unassigned slot
+            for slot, info in self.slots.items():
+                if info.get("symbol") == "-" or info.get("symbol") is None:
+                    self.slots[slot]["symbol"] = symbol
+                    return slot
+            # Fallback
+            return 1
+
+    def release_symbol_slot(self, symbol: str):
+        """Releases the slot associated with the symbol, resetting its state to Idle."""
+        with self.lock:
+            for slot, info in self.slots.items():
+                if info.get("symbol") == symbol:
+                    self.slots[slot] = {"symbol": "-", "phase": "Idle", "pct": 0, "status": "Idle", "thread_id": None}
+                    break
 
     def increment_completed(self):
         with self.lock:
@@ -277,7 +301,7 @@ def discover_historical_files(input_dir: str, symbol_filter: str, timeframe: str
         file_path = os.path.join(input_dir, file)
         if os.path.isfile(file_path):
             import re
-            match = re.match(r"^([A-Z0-9]+)_" + re.escape(timeframe) + r"\.(parquet|csv)$", file, re.IGNORECASE)
+            match = re.match(r"^([A-Z0-9#_.]+)_" + re.escape(timeframe) + r"\.(parquet|csv)$", file, re.IGNORECASE)
             if match:
                 sym = match.group(1).upper()
                 if sym not in discovered:
@@ -350,7 +374,8 @@ def process_single_symbol(
     registry: FeatureRegistry,
     cache_dir: str = None,
     monitor: Optional[ProcessingProgressMonitor] = None,
-    slot_id: Optional[int] = None
+    slot_id: Optional[int] = None,
+    progress_queue: Optional[Any] = None
 ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     if cache_dir is None:
         cache_dir = PathManager.get_relative_path("cache")
@@ -362,7 +387,9 @@ def process_single_symbol(
 
         # Helper to route progress updates
         def update_progress(phase: str, pct: int, status: str, log_msg: Optional[str] = None):
-            if monitor and monitor.enabled and slot_id:
+            if progress_queue is not None:
+                progress_queue.put(("UPDATE", symbol, phase, pct, status, log_msg))
+            elif monitor and monitor.enabled and slot_id:
                 monitor.update(slot_id, symbol, phase, pct, status)
             elif log_msg:
                 logger.info(log_msg)
@@ -488,7 +515,37 @@ def process_single_symbol(
 
     except Exception as e:
         logger.error(f"[{symbol}] Error processing symbol: {e}", exc_info=True)
+        if progress_queue is not None:
+            progress_queue.put(("UPDATE", symbol, "ERROR", 0, str(e), f"[{symbol}] Error: {e}"))
         return None, None
+    finally:
+        if progress_queue is not None:
+            progress_queue.put(("RELEASE", symbol))
+
+
+def progress_listener_worker(queue, monitor):
+    """
+    Background thread running in the main parent process that listens to the progress queue
+    and updates the terminal ProcessingProgressMonitor display dynamically.
+    """
+    try:
+        while True:
+            msg = queue.get()
+            if msg is None:  # Shutdown sentinel
+                break
+
+            msg_type = msg[0]
+            if msg_type == "UPDATE":
+                _, symbol, phase, pct, status, log_msg = msg
+                slot = monitor.register_symbol_slot(symbol)
+                monitor.update(slot, symbol, phase, pct, status)
+                if log_msg:
+                    logger.info(log_msg)
+            elif msg_type == "RELEASE":
+                _, symbol = msg
+                monitor.release_symbol_slot(symbol)
+    except Exception as e:
+        logger.error(f"Error in progress listener thread: {e}", exc_info=True)
 
 
 def main():
@@ -571,10 +628,21 @@ def main():
         if cfg.get("use_multiprocessing", True):
             # True ProcessPoolExecutor multiprocessing (bypasses GIL)
             logger.info(f"Initiating true ProcessPoolExecutor parallel execution on {max_workers} CPU workers...")
-            # We must pass None as monitor to individual subprocesses because locks are not pickleable.
+
+            # Start background thread to listen to progress updates from worker processes
+            manager = multiprocessing.Manager()
+            progress_queue = manager.Queue()
+
+            listener_thread = threading.Thread(
+                target=progress_listener_worker,
+                args=(progress_queue, monitor),
+                daemon=True
+            )
+            listener_thread.start()
+
             with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
                 future_to_sym = {
-                    executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, None, None): sym
+                    executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, None, None, progress_queue): sym
                     for sym, path in discovered.items()
                 }
                 for future in concurrent.futures.as_completed(future_to_sym):
@@ -588,12 +656,16 @@ def main():
                     except Exception as exc:
                         logger.error(f"Symbol {sym} generated an exception during concurrent multiprocessing run: {exc}", exc_info=True)
                     monitor.increment_completed()
+
+            # Stop the progress listener thread cleanly
+            progress_queue.put(None)
+            listener_thread.join(timeout=5)
         else:
             # ThreadPoolExecutor (shares memory/monitor directly, but bound by GIL)
             logger.info(f"Initiating ThreadPoolExecutor execution on {max_workers} thread workers...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_sym = {
-                    executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, monitor, None): sym
+                    executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, monitor, None, None): sym
                     for sym, path in discovered.items()
                 }
                 for future in concurrent.futures.as_completed(future_to_sym):
@@ -609,7 +681,7 @@ def main():
                     monitor.increment_completed()
     else:
         for sym, path in discovered.items():
-            df_state, df_level = process_single_symbol(sym, path, cfg, registry, cache_dir, monitor, 1)
+            df_state, df_level = process_single_symbol(sym, path, cfg, registry, cache_dir, monitor, 1, None)
             if df_state is not None and not df_state.empty:
                 all_states.append(df_state)
             if df_level is not None and not df_level.empty:
