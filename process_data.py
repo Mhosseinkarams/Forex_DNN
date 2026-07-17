@@ -32,12 +32,53 @@ import json
 import yaml
 import time
 import threading
+import multiprocessing
 from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Any, Tuple, Optional
 import concurrent.futures
 from tqdm import tqdm
+
+# Framework Imports
+from Configs.path_manager import PathManager
+from ML.feature_registry import FeatureRegistry
+from ML.feature_pipeline import FeaturePipeline
+from ML.data_cleaner import DataCleaner
+from ML.dataset_validator import DatasetValidator
+from ML.label_engine import LabelEngine
+from ML.market_state_labeler import MarketStateLabeler
+from ML.dataset_builder import DatasetBuilder
+
+from Market_Data_Pipeline.historical_dataset_builder import HistoricalDatasetBuilder
+from Market_Data_Pipeline.structure_engine import MarketStructureEngine
+from Market_Data_Pipeline.supply_demand_engine import SupplyDemandEngine
+from Market_Data_Pipeline.strong_candle_engine import StrongCandleEngine
+from Market_Data_Pipeline.refusal_candle_engine import RefusalCandleEngine
+from Market_Data_Pipeline.structure_graph import MarketStructureGraph
+from Collecting_Data.indicators import IndicatorEngine
+
+# Configure Logging (MainProcess gets stdout & file, subprocesses get file only to prevent screen corruption)
+if multiprocessing.current_process().name == 'MainProcess':
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8")
+        ]
+    )
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8")
+        ]
+    )
+
+logger = logging.getLogger("ProcessDataPipeline")
+
 
 # Console Progress Monitor & Logging handler
 class ProcessingProgressMonitor:
@@ -72,6 +113,29 @@ class ProcessingProgressMonitor:
                     return slot
             # Fallback
             return 1
+
+    def register_symbol_slot(self, symbol: str) -> int:
+        """Assigns an unassigned slot index to a symbol dynamically for multiprocessing updates."""
+        with self.lock:
+            # Check if symbol is already registered to a slot
+            for slot, info in self.slots.items():
+                if info.get("symbol") == symbol:
+                    return slot
+            # Assign to first unassigned slot
+            for slot, info in self.slots.items():
+                if info.get("symbol") == "-" or info.get("symbol") is None:
+                    self.slots[slot]["symbol"] = symbol
+                    return slot
+            # Fallback
+            return 1
+
+    def release_symbol_slot(self, symbol: str):
+        """Releases the slot associated with the symbol, resetting its state to Idle."""
+        with self.lock:
+            for slot, info in self.slots.items():
+                if info.get("symbol") == symbol:
+                    self.slots[slot] = {"symbol": "-", "phase": "Idle", "pct": 0, "status": "Idle", "thread_id": None}
+                    break
 
     def increment_completed(self):
         with self.lock:
@@ -144,17 +208,14 @@ class ProcessingProgressMonitor:
         sys.stdout.flush()
 
     def clear(self):
-        """Clears the progress monitor output from console."""
+        """Clears the progress monitor output from console cleanly without causing scrolls."""
         if not self.enabled or not self.active_lines_printed:
             return
         with self.lock:
             total_lines = 4 + self.num_workers
-            # Move cursor up and clear lines
-            sys.stdout.write(f"\033[{total_lines}A")
+            # Move up one line and clear it, for total_lines
             for _ in range(total_lines):
-                sys.stdout.write("\033[K\n")
-            # Move back up to leave cursor where it was
-            sys.stdout.write(f"\033[{total_lines}A")
+                sys.stdout.write("\033[1A\033[K")
             sys.stdout.flush()
             self.active_lines_printed = False
 
@@ -188,36 +249,6 @@ class ProgressAwareStreamHandler(logging.StreamHandler):
                 self.stream.flush()
         except Exception:
             self.handleError(record)
-
-
-# Framework Imports
-from Configs.path_manager import PathManager
-from ML.feature_registry import FeatureRegistry
-from ML.feature_pipeline import FeaturePipeline
-from ML.data_cleaner import DataCleaner
-from ML.dataset_validator import DatasetValidator
-from ML.label_engine import LabelEngine
-from ML.market_state_labeler import MarketStateLabeler
-from ML.dataset_builder import DatasetBuilder
-
-from Market_Data_Pipeline.historical_dataset_builder import HistoricalDatasetBuilder
-from Market_Data_Pipeline.structure_engine import MarketStructureEngine
-from Market_Data_Pipeline.supply_demand_engine import SupplyDemandEngine
-from Market_Data_Pipeline.strong_candle_engine import StrongCandleEngine
-from Market_Data_Pipeline.refusal_candle_engine import RefusalCandleEngine
-from Market_Data_Pipeline.structure_graph import MarketStructureGraph
-from Collecting_Data.indicators import IndicatorEngine
-
-# Configure Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8")
-    ]
-)
-logger = logging.getLogger("ProcessDataPipeline")
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -277,7 +308,7 @@ def discover_historical_files(input_dir: str, symbol_filter: str, timeframe: str
         file_path = os.path.join(input_dir, file)
         if os.path.isfile(file_path):
             import re
-            match = re.match(r"^([A-Z0-9]+)_" + re.escape(timeframe) + r"\.(parquet|csv)$", file, re.IGNORECASE)
+            match = re.match(r"^([A-Z0-9#_.]+)_" + re.escape(timeframe) + r"\.(parquet|csv)$", file, re.IGNORECASE)
             if match:
                 sym = match.group(1).upper()
                 if sym not in discovered:
@@ -350,19 +381,29 @@ def process_single_symbol(
     registry: FeatureRegistry,
     cache_dir: str = None,
     monitor: Optional[ProcessingProgressMonitor] = None,
-    slot_id: Optional[int] = None
+    slot_id: Optional[int] = None,
+    progress_queue: Optional[Any] = None
 ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     if cache_dir is None:
         cache_dir = PathManager.get_relative_path("cache")
     """Loads, cleans, enriches, and produces Market State and Level Break datasets for a single symbol."""
     try:
+        # Suppress standard logging output to stream handlers inside subprocess workers to keep terminal display strictly clean
+        if multiprocessing.current_process().name != 'MainProcess':
+            root_logger = logging.getLogger()
+            for h in list(root_logger.handlers):
+                if isinstance(h, logging.StreamHandler):
+                    root_logger.removeHandler(h)
+
         # Register slot dynamically if monitor is provided but slot_id is not
         if monitor and slot_id is None:
             slot_id = monitor.register_worker(threading.get_ident())
 
         # Helper to route progress updates
         def update_progress(phase: str, pct: int, status: str, log_msg: Optional[str] = None):
-            if monitor and monitor.enabled and slot_id:
+            if progress_queue is not None:
+                progress_queue.put(("UPDATE", symbol, phase, pct, status, log_msg))
+            elif monitor and monitor.enabled and slot_id:
                 monitor.update(slot_id, symbol, phase, pct, status)
             elif log_msg:
                 logger.info(log_msg)
@@ -488,7 +529,45 @@ def process_single_symbol(
 
     except Exception as e:
         logger.error(f"[{symbol}] Error processing symbol: {e}", exc_info=True)
+        if progress_queue is not None:
+            progress_queue.put(("UPDATE", symbol, "ERROR", 0, str(e), f"[{symbol}] Error: {e}"))
         return None, None
+    finally:
+        if progress_queue is not None:
+            progress_queue.put(("RELEASE", symbol))
+
+
+def progress_listener_worker(queue, monitor):
+    """
+    Background thread running in the main parent process that listens to the progress queue
+    and updates the terminal ProcessingProgressMonitor display dynamically.
+    """
+    # Create a local file logger strictly dedicated to recording background worker progress step details to logs/process_data.log
+    file_logger = logging.getLogger("ProcessDataFileLogger")
+    file_logger.propagate = False
+    if not file_logger.handlers:
+        file_logger.addHandler(logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8"))
+        file_logger.setLevel(logging.INFO)
+
+    try:
+        while True:
+            msg = queue.get()
+            if msg is None:  # Shutdown sentinel
+                break
+
+            msg_type = msg[0]
+            if msg_type == "UPDATE":
+                _, symbol, phase, pct, status, log_msg = msg
+                slot = monitor.register_symbol_slot(symbol)
+                monitor.update(slot, symbol, phase, pct, status)
+                # Write background progress update messages to the file logger only (leaving the terminal console clean)
+                if log_msg and file_logger:
+                    file_logger.info(log_msg)
+            elif msg_type == "RELEASE":
+                _, symbol = msg
+                monitor.release_symbol_slot(symbol)
+    except Exception as e:
+        logger.error(f"Error in progress listener thread: {e}", exc_info=True)
 
 
 def main():
@@ -568,25 +647,63 @@ def main():
         monitor._draw()
 
     if max_workers > 1 and total_symbols > 1:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_sym = {
-                executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, monitor, None): sym
-                for sym, path in discovered.items()
-            }
-            for future in concurrent.futures.as_completed(future_to_sym):
-                sym = future_to_sym[future]
-                try:
-                    df_state, df_level = future.result()
-                    if df_state is not None and not df_state.empty:
-                        all_states.append(df_state)
-                    if df_level is not None and not df_level.empty:
-                        all_levels.append(df_level)
-                except Exception as exc:
-                    logger.error(f"Symbol {sym} generated an exception during concurrent loop: {exc}")
-                monitor.increment_completed()
+        if cfg.get("use_multiprocessing", True):
+            # True ProcessPoolExecutor multiprocessing (bypasses GIL)
+            logger.info(f"Initiating true ProcessPoolExecutor parallel execution on {max_workers} CPU workers...")
+
+            # Start background thread to listen to progress updates from worker processes
+            manager = multiprocessing.Manager()
+            progress_queue = manager.Queue()
+
+            listener_thread = threading.Thread(
+                target=progress_listener_worker,
+                args=(progress_queue, monitor),
+                daemon=True
+            )
+            listener_thread.start()
+
+            with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+                future_to_sym = {
+                    executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, None, None, progress_queue): sym
+                    for sym, path in discovered.items()
+                }
+                for future in concurrent.futures.as_completed(future_to_sym):
+                    sym = future_to_sym[future]
+                    try:
+                        df_state, df_level = future.result()
+                        if df_state is not None and not df_state.empty:
+                            all_states.append(df_state)
+                        if df_level is not None and not df_level.empty:
+                            all_levels.append(df_level)
+                    except Exception as exc:
+                        logger.error(f"Symbol {sym} generated an exception during concurrent multiprocessing run: {exc}", exc_info=True)
+                    monitor.increment_completed()
+
+            # Stop the progress listener thread cleanly
+            progress_queue.put(None)
+            listener_thread.join(timeout=5)
+        else:
+            # ThreadPoolExecutor (shares memory/monitor directly, but bound by GIL)
+            logger.info(f"Initiating ThreadPoolExecutor execution on {max_workers} thread workers...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_sym = {
+                    executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, monitor, None, None): sym
+                    for sym, path in discovered.items()
+                }
+                for future in concurrent.futures.as_completed(future_to_sym):
+                    sym = future_to_sym[future]
+                    try:
+                        df_state, df_level = future.result()
+                        if df_state is not None and not df_state.empty:
+                            all_states.append(df_state)
+                        if df_level is not None and not df_level.empty:
+                            all_levels.append(df_level)
+                    except Exception as exc:
+                        logger.error(f"Symbol {sym} generated an exception during thread loop: {exc}")
+                    monitor.increment_completed()
     else:
         for sym, path in discovered.items():
-            df_state, df_level = process_single_symbol(sym, path, cfg, registry, cache_dir, monitor, 1)
+            df_state, df_level = process_single_symbol(sym, path, cfg, registry, cache_dir, monitor, 1, None)
             if df_state is not None and not df_state.empty:
                 all_states.append(df_state)
             if df_level is not None and not df_level.empty:

@@ -29,11 +29,12 @@ from Strategies.mm_strategy import MMStrategy
 from Strategies.sm_strategy import SMStrategy
 from Strategies.unit_strategy import UniTStrategy
 
-    """_summary_
+"""_summary_
 
-    Returns:
-        _type_: _description_
-    """logger = logging.getLogger("TradingPipeline")
+Returns:
+    _type_: _description_
+"""
+logger = logging.getLogger("TradingPipeline")
 
 
 class TradingPipeline:
