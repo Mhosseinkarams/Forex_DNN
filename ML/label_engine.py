@@ -53,7 +53,9 @@ class LabelEngine:
         symbol: Optional[str] = None,
         timeframe: Optional[str] = None,
         ms_engine: Optional[MarketStructureEngine] = None,
-        sd_engine: Optional[SupplyDemandEngine] = None
+        sd_engine: Optional[SupplyDemandEngine] = None,
+        monitor: Optional[Any] = None,
+        slot_id: Optional[int] = None
     ) -> pd.DataFrame:
         """
         Generates the sliding-window dataset across symbols and timeframes.
@@ -65,6 +67,8 @@ class LabelEngine:
             timeframe: Active timeframe if data_inputs is a single DataFrame.
             ms_engine: Custom MarketStructureEngine instance (or default).
             sd_engine: Custom SupplyDemandEngine instance (or default).
+            monitor: Optional Console progress monitor.
+            slot_id: Optional slot id for active worker.
 
         Returns:
             pd.DataFrame: Consolidated labeled dataset with features, target, and metadata.
@@ -90,7 +94,10 @@ class LabelEngine:
         s_engine = sd_engine or SupplyDemandEngine(atr_period=14, impulse_threshold=2.0, use_fractal=False)
 
         for (sym, tf), df_ohlcv in df_dict.items():
-            logger.info(f"[{sym}] LABELING & FEATURES: Started sliding window processing with {len(df_ohlcv)} bars...")
+            if monitor and slot_id:
+                monitor.update(slot_id, sym, "LABELING_MS", 0, f"Started labeling ({len(df_ohlcv)} bars)")
+            else:
+                logger.info(f"[{sym}] LABELING & FEATURES: Started sliding window processing with {len(df_ohlcv)} bars...")
 
             # Ensure indicators are calculated
             # Let's check if indicators are present; if not, we can run a simple indicator engine
@@ -144,7 +151,10 @@ class LabelEngine:
 
                 if window_count % log_interval == 0 or window_count == total_windows:
                     pct = int(window_count / total_windows * 100)
-                    logger.info(f"[{sym}] LABELING & FEATURES: {pct}% complete ({window_count}/{total_windows} windows)")
+                    if monitor and monitor.enabled and slot_id:
+                        monitor.update(slot_id, sym, "LABELING_MS", pct, f"Windows {window_count}/{total_windows}")
+                    else:
+                        logger.info(f"[{sym}] LABELING & FEATURES: {pct}% complete ({window_count}/{total_windows} windows)")
 
                 if label is None:
                     # Indeterminate sample - remove/skip
