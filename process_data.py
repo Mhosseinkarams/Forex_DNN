@@ -40,6 +40,46 @@ from typing import List, Dict, Any, Tuple, Optional
 import concurrent.futures
 from tqdm import tqdm
 
+# Framework Imports
+from Configs.path_manager import PathManager
+from ML.feature_registry import FeatureRegistry
+from ML.feature_pipeline import FeaturePipeline
+from ML.data_cleaner import DataCleaner
+from ML.dataset_validator import DatasetValidator
+from ML.label_engine import LabelEngine
+from ML.market_state_labeler import MarketStateLabeler
+from ML.dataset_builder import DatasetBuilder
+
+from Market_Data_Pipeline.historical_dataset_builder import HistoricalDatasetBuilder
+from Market_Data_Pipeline.structure_engine import MarketStructureEngine
+from Market_Data_Pipeline.supply_demand_engine import SupplyDemandEngine
+from Market_Data_Pipeline.strong_candle_engine import StrongCandleEngine
+from Market_Data_Pipeline.refusal_candle_engine import RefusalCandleEngine
+from Market_Data_Pipeline.structure_graph import MarketStructureGraph
+from Collecting_Data.indicators import IndicatorEngine
+
+# Configure Logging (MainProcess gets stdout & file, subprocesses get file only to prevent screen corruption)
+if multiprocessing.current_process().name == 'MainProcess':
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8")
+        ]
+    )
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8")
+        ]
+    )
+
+logger = logging.getLogger("ProcessDataPipeline")
+
+
 # Console Progress Monitor & Logging handler
 class ProcessingProgressMonitor:
     """
@@ -168,17 +208,14 @@ class ProcessingProgressMonitor:
         sys.stdout.flush()
 
     def clear(self):
-        """Clears the progress monitor output from console."""
+        """Clears the progress monitor output from console cleanly without causing scrolls."""
         if not self.enabled or not self.active_lines_printed:
             return
         with self.lock:
             total_lines = 4 + self.num_workers
-            # Move cursor up and clear lines
-            sys.stdout.write(f"\033[{total_lines}A")
+            # Move up one line and clear it, for total_lines
             for _ in range(total_lines):
-                sys.stdout.write("\033[K\n")
-            # Move back up to leave cursor where it was
-            sys.stdout.write(f"\033[{total_lines}A")
+                sys.stdout.write("\033[1A\033[K")
             sys.stdout.flush()
             self.active_lines_printed = False
 
@@ -212,36 +249,6 @@ class ProgressAwareStreamHandler(logging.StreamHandler):
                 self.stream.flush()
         except Exception:
             self.handleError(record)
-
-
-# Framework Imports
-from Configs.path_manager import PathManager
-from ML.feature_registry import FeatureRegistry
-from ML.feature_pipeline import FeaturePipeline
-from ML.data_cleaner import DataCleaner
-from ML.dataset_validator import DatasetValidator
-from ML.label_engine import LabelEngine
-from ML.market_state_labeler import MarketStateLabeler
-from ML.dataset_builder import DatasetBuilder
-
-from Market_Data_Pipeline.historical_dataset_builder import HistoricalDatasetBuilder
-from Market_Data_Pipeline.structure_engine import MarketStructureEngine
-from Market_Data_Pipeline.supply_demand_engine import SupplyDemandEngine
-from Market_Data_Pipeline.strong_candle_engine import StrongCandleEngine
-from Market_Data_Pipeline.refusal_candle_engine import RefusalCandleEngine
-from Market_Data_Pipeline.structure_graph import MarketStructureGraph
-from Collecting_Data.indicators import IndicatorEngine
-
-# Configure Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8")
-    ]
-)
-logger = logging.getLogger("ProcessDataPipeline")
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -381,6 +388,13 @@ def process_single_symbol(
         cache_dir = PathManager.get_relative_path("cache")
     """Loads, cleans, enriches, and produces Market State and Level Break datasets for a single symbol."""
     try:
+        # Suppress standard logging output to stream handlers inside subprocess workers to keep terminal display strictly clean
+        if multiprocessing.current_process().name != 'MainProcess':
+            root_logger = logging.getLogger()
+            for h in list(root_logger.handlers):
+                if isinstance(h, logging.StreamHandler):
+                    root_logger.removeHandler(h)
+
         # Register slot dynamically if monitor is provided but slot_id is not
         if monitor and slot_id is None:
             slot_id = monitor.register_worker(threading.get_ident())
@@ -528,6 +542,13 @@ def progress_listener_worker(queue, monitor):
     Background thread running in the main parent process that listens to the progress queue
     and updates the terminal ProcessingProgressMonitor display dynamically.
     """
+    # Create a local file logger strictly dedicated to recording background worker progress step details to logs/process_data.log
+    file_logger = logging.getLogger("ProcessDataFileLogger")
+    file_logger.propagate = False
+    if not file_logger.handlers:
+        file_logger.addHandler(logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8"))
+        file_logger.setLevel(logging.INFO)
+
     try:
         while True:
             msg = queue.get()
@@ -539,8 +560,9 @@ def progress_listener_worker(queue, monitor):
                 _, symbol, phase, pct, status, log_msg = msg
                 slot = monitor.register_symbol_slot(symbol)
                 monitor.update(slot, symbol, phase, pct, status)
-                if log_msg:
-                    logger.info(log_msg)
+                # Write background progress update messages to the file logger only (leaving the terminal console clean)
+                if log_msg and file_logger:
+                    file_logger.info(log_msg)
             elif msg_type == "RELEASE":
                 _, symbol = msg
                 monitor.release_symbol_slot(symbol)
