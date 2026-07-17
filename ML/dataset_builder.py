@@ -72,6 +72,13 @@ class DatasetBuilder:
         log_interval = max(1, total_len // 10)
         count = 0
 
+        # Precompute active zone indices to avoid dataclass attribute lookups inside the high-frequency loop
+        supply_created = [z.created_idx for z in msg.supply_zones]
+        supply_broken = [z.broken_idx if (z.broken and z.broken_idx is not None) else 99999999 for z in msg.supply_zones]
+
+        demand_created = [z.created_idx for z in msg.demand_zones]
+        demand_broken = [z.broken_idx if (z.broken and z.broken_idx is not None) else 99999999 for z in msg.demand_zones]
+
         for idx in range(warmup, len(df) - lookahead_bars):
             count += 1
             row_close = df.iloc[idx]["Close"]
@@ -86,10 +93,9 @@ class DatasetBuilder:
             row_low = df.iloc[idx]["Low"]
             atr = df.iloc[idx].get("atr_14", 0.0001)
 
-            # Identify nearest active zone
-            # Active zones up to index 'idx'
-            active_supplies = [z for z in msg.supply_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
-            active_demands = [z for z in msg.demand_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
+            # Identify nearest active zone using optimized index lists
+            active_supplies = [msg.supply_zones[i] for i, (c_idx, b_idx) in enumerate(zip(supply_created, supply_broken)) if c_idx <= idx < b_idx]
+            active_demands = [msg.demand_zones[i] for i, (c_idx, b_idx) in enumerate(zip(demand_created, demand_broken)) if c_idx <= idx < b_idx]
 
             # Check proximity to supply zone (close is within 0.5 ATR below lower bound)
             near_supply = None

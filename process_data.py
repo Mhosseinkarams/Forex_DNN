@@ -568,22 +568,45 @@ def main():
         monitor._draw()
 
     if max_workers > 1 and total_symbols > 1:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_sym = {
-                executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, monitor, None): sym
-                for sym, path in discovered.items()
-            }
-            for future in concurrent.futures.as_completed(future_to_sym):
-                sym = future_to_sym[future]
-                try:
-                    df_state, df_level = future.result()
-                    if df_state is not None and not df_state.empty:
-                        all_states.append(df_state)
-                    if df_level is not None and not df_level.empty:
-                        all_levels.append(df_level)
-                except Exception as exc:
-                    logger.error(f"Symbol {sym} generated an exception during concurrent loop: {exc}")
-                monitor.increment_completed()
+        if cfg.get("use_multiprocessing", True):
+            # True ProcessPoolExecutor multiprocessing (bypasses GIL)
+            logger.info(f"Initiating true ProcessPoolExecutor parallel execution on {max_workers} CPU workers...")
+            # We must pass None as monitor to individual subprocesses because locks are not pickleable.
+            with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+                future_to_sym = {
+                    executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, None, None): sym
+                    for sym, path in discovered.items()
+                }
+                for future in concurrent.futures.as_completed(future_to_sym):
+                    sym = future_to_sym[future]
+                    try:
+                        df_state, df_level = future.result()
+                        if df_state is not None and not df_state.empty:
+                            all_states.append(df_state)
+                        if df_level is not None and not df_level.empty:
+                            all_levels.append(df_level)
+                    except Exception as exc:
+                        logger.error(f"Symbol {sym} generated an exception during concurrent multiprocessing run: {exc}", exc_info=True)
+                    monitor.increment_completed()
+        else:
+            # ThreadPoolExecutor (shares memory/monitor directly, but bound by GIL)
+            logger.info(f"Initiating ThreadPoolExecutor execution on {max_workers} thread workers...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_sym = {
+                    executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, monitor, None): sym
+                    for sym, path in discovered.items()
+                }
+                for future in concurrent.futures.as_completed(future_to_sym):
+                    sym = future_to_sym[future]
+                    try:
+                        df_state, df_level = future.result()
+                        if df_state is not None and not df_state.empty:
+                            all_states.append(df_state)
+                        if df_level is not None and not df_level.empty:
+                            all_levels.append(df_level)
+                    except Exception as exc:
+                        logger.error(f"Symbol {sym} generated an exception during thread loop: {exc}")
+                    monitor.increment_completed()
     else:
         for sym, path in discovered.items():
             df_state, df_level = process_single_symbol(sym, path, cfg, registry, cache_dir, monitor, 1)

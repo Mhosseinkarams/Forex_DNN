@@ -1,4 +1,5 @@
 import logging
+import bisect
 from typing import Dict, Any, List, Optional, Union
 import numpy as np
 import pandas as pd
@@ -96,6 +97,46 @@ class FeaturePipeline:
     def clear_cache(self) -> None:
         """Clear the calculated feature cache."""
         self._cache.clear()
+
+    def _get_row(self, df: pd.DataFrame, idx: int):
+        """
+        Thread-safe/call-safe cached lookup of a single pandas Series row
+        to bypass the extremely slow df.iloc[idx] overhead inside loops.
+        """
+        if hasattr(self, "_current_row") and getattr(self, "_current_row_idx", None) == idx and id(getattr(self, "_current_df", None)) == id(df):
+            return self._current_row
+        self._current_df = df
+        self._current_row_idx = idx
+        self._current_row = df.iloc[idx]
+        return self._current_row
+
+    def _prepare_msg_lookups(self, msg: MarketStructureGraph):
+        """
+        Builds high-performance vectorized lookup structures on the graph model on demand.
+        This avoids O(K) linear search filtering inside high-frequency execution loops.
+        """
+        if not hasattr(msg, '_lookups_prepared'):
+            msg._sh_conf_candles = [s.confirmation_candle for s in msg.swing_highs]
+            msg._sh_prices = np.array([s.price for s in msg.swing_highs])
+            msg._sh_running_max = np.maximum.accumulate(msg._sh_prices) if len(msg._sh_prices) > 0 else np.array([])
+
+            msg._sl_conf_candles = [s.confirmation_candle for s in msg.swing_lows]
+            msg._sl_prices = np.array([s.price for s in msg.swing_lows])
+            msg._sl_running_min = np.minimum.accumulate(msg._sl_prices) if len(msg._sl_prices) > 0 else np.array([])
+
+            msg._bos_indices = [b.index for b in msg.bos]
+            msg._bos_directions = np.array([b.direction for b in msg.bos])
+            msg._bos_broken_levels = np.array([b.broken_level for b in msg.bos])
+
+            msg._choch_indices = [c.index for c in msg.choch]
+
+            msg._supply_created_indices = [z.created_idx for z in msg.supply_zones]
+            msg._supply_broken_indices = [z.broken_idx if (z.broken and z.broken_idx is not None) else 99999999 for z in msg.supply_zones]
+
+            msg._demand_created_indices = [z.created_idx for z in msg.demand_zones]
+            msg._demand_broken_indices = [z.broken_idx if (z.broken and z.broken_idx is not None) else 99999999 for z in msg.demand_zones]
+
+            msg._lookups_prepared = True
 
     def extract_all(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int = -1) -> Dict[str, Any]:
         """
@@ -276,7 +317,7 @@ class FeaturePipeline:
     # --- FEATURE EXTRACTORS ---
 
     def _extract_ema50_slope(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "ema_slope_50" in row:
             return float(row["ema_slope_50"])
         # Fallback manual calculation of slope: dy over 32 bars normalized by ATR
@@ -289,19 +330,19 @@ class FeaturePipeline:
         return 0.0
 
     def _extract_ema600_slope(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "ema_slope_600" in row:
             return float(row["ema_slope_600"])
         return 0.0
 
     def _extract_ema800_slope(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "ema_slope_800" in row:
             return float(row["ema_slope_800"])
         return 0.0
 
     def _extract_ema_separation(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "ema_50" in row:
             fast = row["ema_50"]
             slow = row.get("ema_600", row.get("ema_800", fast))
@@ -313,180 +354,195 @@ class FeaturePipeline:
         return float(1.0 / (1.0 + sep))
 
     def _extract_distance_to_ema50(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "dist_ema_50" in row:
             return float(row["dist_ema_50"])
         return 0.0
 
     def _extract_distance_to_ema600(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "dist_ema_600" in row:
             return float(row["dist_ema_600"])
         return 0.0
 
     def _extract_distance_to_ema800(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "dist_ema_800" in row:
             return float(row["dist_ema_800"])
         return 0.0
 
     def _extract_candle_body(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "body_pct" in row:
             return float(row["body_pct"])
         return 0.0
 
     def _extract_upper_wick(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "upper_shadow" in row and "candle_size" in row:
             return float(row["upper_shadow"] / (row["candle_size"] + 1e-9))
         return 0.0
 
     def _extract_lower_wick(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "lower_shadow" in row and "candle_size" in row:
             return float(row["lower_shadow"] / (row["candle_size"] + 1e-9))
         return 0.0
 
     def _extract_bos_count_last_n(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        # Count BOS in last 100 bars from idx
+        self._prepare_msg_lookups(msg)
         n = 100
-        count = 0
-        for b in msg.bos:
-            if idx - n <= b.index <= idx:
-                count += 1
-        return count
+        left_pos = bisect.bisect_left(msg._bos_indices, idx - n)
+        right_pos = bisect.bisect_right(msg._bos_indices, idx)
+        return right_pos - left_pos
 
     def _extract_choch_count_last_n(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
+        self._prepare_msg_lookups(msg)
         n = 100
-        count = 0
-        for c in msg.choch:
-            if idx - n <= c.index <= idx:
-                count += 1
-        return count
+        left_pos = bisect.bisect_left(msg._choch_indices, idx - n)
+        right_pos = bisect.bisect_right(msg._choch_indices, idx)
+        return right_pos - left_pos
 
     def _extract_time_since_last_bos(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        last_b = None
-        for b in msg.bos:
-            if b.index <= idx:
-                if last_b is None or b.index > last_b.index:
-                    last_b = b
-        if last_b:
-            return float(idx - last_b.index)
+        self._prepare_msg_lookups(msg)
+        pos = bisect.bisect_right(msg._bos_indices, idx)
+        if pos > 0:
+            return float(idx - msg._bos_indices[pos - 1])
         return 999.0
 
     def _extract_time_since_last_choch(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        last_c = None
-        for c in msg.choch:
-            if c.index <= idx:
-                if last_c is None or c.index > last_c.index:
-                    last_c = c
-        if last_c:
-            return float(idx - last_c.index)
+        self._prepare_msg_lookups(msg)
+        pos = bisect.bisect_right(msg._choch_indices, idx)
+        if pos > 0:
+            return float(idx - msg._choch_indices[pos - 1])
         return 999.0
 
     def _extract_bos_direction(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        last_b = None
-        for b in msg.bos:
-            if b.index <= idx:
-                if last_b is None or b.index > last_b.index:
-                    last_b = b
-        return last_b.direction if last_b else 0
+        self._prepare_msg_lookups(msg)
+        pos = bisect.bisect_right(msg._bos_indices, idx)
+        if pos > 0:
+            return int(msg._bos_directions[pos - 1])
+        return 0
 
     def _extract_choch_direction(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        last_c = None
-        for c in msg.choch:
-            if c.index <= idx:
-                if last_c is None or c.index > last_c.index:
-                    last_c = c
-        if last_c:
+        self._prepare_msg_lookups(msg)
+        pos = bisect.bisect_right(msg._choch_indices, idx)
+        if pos > 0:
+            last_c = msg.choch[pos - 1]
             return 1 if last_c.new_trend > last_c.previous_trend else -1
         return 0
 
     def _extract_protected_high_distance(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
-        close = row["Close"]
-        atr = row.get("atr_14", 0.0001)
-        highs = [s.price for s in msg.swing_highs if s.confirmation_candle <= idx]
-        if highs:
-            return float((max(highs) - close) / atr)
+        self._prepare_msg_lookups(msg)
+        pos = bisect.bisect_right(msg._sh_conf_candles, idx)
+        if pos > 0:
+            row = self._get_row(df, idx)
+            close = row["Close"]
+            atr = row.get("atr_14", 0.0001)
+            max_val = msg._sh_running_max[pos - 1]
+            return float((max_val - close) / atr)
         return -1.0
 
     def _extract_protected_low_distance(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
-        close = row["Close"]
-        atr = row.get("atr_14", 0.0001)
-        lows = [s.price for s in msg.swing_lows if s.confirmation_candle <= idx]
-        if lows:
-            return float((close - min(lows)) / atr)
+        self._prepare_msg_lookups(msg)
+        pos = bisect.bisect_right(msg._sl_conf_candles, idx)
+        if pos > 0:
+            row = self._get_row(df, idx)
+            close = row["Close"]
+            atr = row.get("atr_14", 0.0001)
+            min_val = msg._sl_running_min[pos - 1]
+            return float((close - min_val) / atr)
         return -1.0
 
     def _extract_supply_distance(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         distance = row.get("nearest_supply_distance", np.nan)
         atr = row.get("atr_14", 0.0001)
         return float(distance / atr) if pd.notna(distance) else -1.0
 
     def _extract_supply_width(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
-        close = row["Close"]
-        active_supplies = [z for z in msg.supply_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
-        valid_supplies = [z for z in active_supplies if z.lower > close]
-        if valid_supplies:
-            nearest = min(valid_supplies, key=lambda z: z.lower)
-            return float(nearest.width * 10000.0)  # Width in pips
+        self._prepare_msg_lookups(msg)
+        created = msg._supply_created_indices
+        broken = msg._supply_broken_indices
+        if len(created) > 0:
+            # Mask active zones chronologically up to idx
+            active_supplies = []
+            for i, (c_idx, b_idx) in enumerate(zip(created, broken)):
+                if c_idx <= idx and b_idx > idx:
+                    active_supplies.append(msg.supply_zones[i])
+            row = self._get_row(df, idx)
+            close = row["Close"]
+            valid_supplies = [z for z in active_supplies if z.lower > close]
+            if valid_supplies:
+                nearest = min(valid_supplies, key=lambda z: z.lower)
+                return float(nearest.width * 10000.0)  # Width in pips
         return 0.0
 
     def _extract_supply_strength(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        return float(df.iloc[idx].get("supply_strength", 0.0))
+        row = self._get_row(df, idx)
+        return float(row.get("supply_strength", 0.0))
 
     def _extract_supply_freshness(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        return int(df.iloc[idx].get("supply_freshness", 0))
+        row = self._get_row(df, idx)
+        return int(row.get("supply_freshness", 0))
 
     def _extract_supply_touch_count(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        return int(df.iloc[idx].get("supply_touch_count", 0))
+        row = self._get_row(df, idx)
+        return int(row.get("supply_touch_count", 0))
 
     def _extract_demand_distance(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         distance = row.get("nearest_demand_distance", np.nan)
         atr = row.get("atr_14", 0.0001)
         return float(distance / atr) if pd.notna(distance) else -1.0
 
     def _extract_demand_width(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
-        close = row["Close"]
-        active_demands = [z for z in msg.demand_zones if (z.created_idx <= idx and (not z.broken or z.broken_idx > idx))]
-        valid_demands = [z for z in active_demands if z.upper < close]
-        if valid_demands:
-            nearest = max(valid_demands, key=lambda z: z.upper)
-            return float(nearest.width * 10000.0)
+        self._prepare_msg_lookups(msg)
+        created = msg._demand_created_indices
+        broken = msg._demand_broken_indices
+        if len(created) > 0:
+            active_demands = []
+            for i, (c_idx, b_idx) in enumerate(zip(created, broken)):
+                if c_idx <= idx and b_idx > idx:
+                    active_demands.append(msg.demand_zones[i])
+            row = self._get_row(df, idx)
+            close = row["Close"]
+            valid_demands = [z for z in active_demands if z.upper < close]
+            if valid_demands:
+                nearest = max(valid_demands, key=lambda z: z.upper)
+                return float(nearest.width * 10000.0)
         return 0.0
 
     def _extract_demand_strength(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        return float(df.iloc[idx].get("demand_strength", 0.0))
+        row = self._get_row(df, idx)
+        return float(row.get("demand_strength", 0.0))
 
     def _extract_demand_freshness(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        return int(df.iloc[idx].get("demand_freshness", 0))
+        row = self._get_row(df, idx)
+        return int(row.get("demand_freshness", 0))
 
     def _extract_demand_touch_count(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        return int(df.iloc[idx].get("demand_touch_count", 0))
+        row = self._get_row(df, idx)
+        return int(row.get("demand_touch_count", 0))
 
     def _extract_candle_range(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         atr = row.get("atr_14", 0.0001)
         return float((row["High"] - row["Low"]) / atr)
 
     def _extract_volume(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        return float(df.iloc[idx].get("TickVolume", 0.0))
+        row = self._get_row(df, idx)
+        return float(row.get("TickVolume", 0.0))
 
     def _extract_spread(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        return float(df.iloc[idx].get("Spread", 0.0))
+        row = self._get_row(df, idx)
+        return float(row.get("Spread", 0.0))
 
     def _extract_atr(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        return float(df.iloc[idx].get("atr_14", 0.0001) * 10000.0)  # In pips
+        row = self._get_row(df, idx)
+        return float(row.get("atr_14", 0.0001) * 10000.0)  # In pips
 
     def _extract_atr_percentile(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        # Calculate atr rolling percentile over last 200 bars
         atr_col = "atr_14"
         if atr_col in df.columns:
             start_idx = max(0, idx - 200)
@@ -501,7 +557,6 @@ class FeaturePipeline:
         atr_col = "atr_14"
         if atr_col in df.columns and idx >= 50:
             fast = df.iloc[idx][atr_col]
-            # Simple average of atr_14 over 50 bars as slow ATR proxy
             slow = df.iloc[idx-50:idx+1][atr_col].mean()
             return float(fast / (slow + 1e-9))
         return 1.0
@@ -519,16 +574,18 @@ class FeaturePipeline:
         return 0.001
 
     def _extract_hour(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        dt = pd.to_datetime(df.iloc[idx]["Datetime"])
+        row = self._get_row(df, idx)
+        dt = pd.to_datetime(row["Datetime"])
         return int(dt.hour)
 
     def _extract_weekday(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> int:
-        dt = pd.to_datetime(df.iloc[idx]["Datetime"])
+        row = self._get_row(df, idx)
+        dt = pd.to_datetime(row["Datetime"])
         return int(dt.weekday())
 
     def _extract_session(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> str:
-        # Simple timezone/session extraction (e.g. Asia/London/New York)
-        dt = pd.to_datetime(df.iloc[idx]["Datetime"])
+        row = self._get_row(df, idx)
+        dt = pd.to_datetime(row["Datetime"])
         h = dt.hour
         if 0 <= h < 8:
             return "Asian"
@@ -542,7 +599,6 @@ class FeaturePipeline:
             return "Asian"
 
     def _extract_trend_score(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        # Linear regression r2 slope confirmation over last 20 bars
         if idx >= 20:
             y = df.iloc[idx-20:idx+1]["Close"].to_numpy()
             x = np.arange(len(y))
@@ -555,7 +611,6 @@ class FeaturePipeline:
         return 0.0
 
     def _extract_range_score(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        # Ratio of high-low range over the period to total path traveled
         if idx >= 20:
             window = df.iloc[idx-20:idx+1]
             high_low = window["High"].max() - window["Low"].min()
@@ -571,52 +626,56 @@ class FeaturePipeline:
         return 1.0
 
     def _extract_distance_to_nearest_high(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
-        close = row["Close"]
-        atr = row.get("atr_14", 0.0001)
-        highs = [s.price for s in msg.swing_highs if s.confirmation_candle <= idx]
-        if highs:
-            nearest = min(highs, key=lambda h: abs(h - close))
-            return float(abs(nearest - close) / atr)
+        self._prepare_msg_lookups(msg)
+        pos = bisect.bisect_right(msg._sh_conf_candles, idx)
+        if pos > 0:
+            row = self._get_row(df, idx)
+            close = row["Close"]
+            atr = row.get("atr_14", 0.0001)
+            prices_slice = msg._sh_prices[:pos]
+            nearest_val = prices_slice[np.argmin(np.abs(prices_slice - close))]
+            return float(abs(nearest_val - close) / atr)
         return 1.0
 
     def _extract_distance_to_nearest_low(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
-        close = row["Close"]
-        atr = row.get("atr_14", 0.0001)
-        lows = [s.price for s in msg.swing_lows if s.confirmation_candle <= idx]
-        if lows:
-            nearest = min(lows, key=lambda l: abs(l - close))
-            return float(abs(nearest - close) / atr)
+        self._prepare_msg_lookups(msg)
+        pos = bisect.bisect_right(msg._sl_conf_candles, idx)
+        if pos > 0:
+            row = self._get_row(df, idx)
+            close = row["Close"]
+            atr = row.get("atr_14", 0.0001)
+            prices_slice = msg._sl_prices[:pos]
+            nearest_val = prices_slice[np.argmin(np.abs(prices_slice - close))]
+            return float(abs(nearest_val - close) / atr)
         return 1.0
 
     def _extract_distance_to_structure_break(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
-        close = row["Close"]
-        atr = row.get("atr_14", 0.0001)
-        breaks = [b.broken_level for b in msg.bos if b.index <= idx]
-        if breaks:
-            last_break = breaks[-1]
+        self._prepare_msg_lookups(msg)
+        pos = bisect.bisect_right(msg._bos_indices, idx)
+        if pos > 0:
+            row = self._get_row(df, idx)
+            close = row["Close"]
+            atr = row.get("atr_14", 0.0001)
+            last_break = msg._bos_broken_levels[pos - 1]
             return float(abs(last_break - close) / atr)
         return 1.0
 
     def _extract_distance_to_invalidation_level(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        # Use nearest low (for buy) or nearest high (for sell) as invalidation level proxy
-        row = df.iloc[idx]
-        close = row["Close"]
-        atr = row.get("atr_14", 0.0001)
-        lows = [s.price for s in msg.swing_lows if s.confirmation_candle <= idx]
-        if lows:
-            last_low = lows[-1]
+        self._prepare_msg_lookups(msg)
+        pos = bisect.bisect_right(msg._sl_conf_candles, idx)
+        if pos > 0:
+            row = self._get_row(df, idx)
+            close = row["Close"]
+            atr = row.get("atr_14", 0.0001)
+            last_low = msg._sl_prices[pos - 1]
             return float(abs(close - last_low) / atr)
         return 1.5
 
     def _extract_risk_reward_estimate(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
         from Trade_Execution.location_engine import TradeLocationEngine
         tle = TradeLocationEngine()
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         close = row["Close"]
-        # Use overall trend to decide direction
         direction = 1 if row.get("trend", 0) >= 0 else -1
         try:
             levels = tle.get_trade_levels(msg, direction, close)
@@ -625,29 +684,41 @@ class FeaturePipeline:
             return 2.0
 
     def _extract_ema50_distance_v1(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "ema_50" in row:
             return float(row["Close"] - row["ema_50"])
         return 0.0
 
     def _extract_ema50_distance_v2(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        row = df.iloc[idx]
+        row = self._get_row(df, idx)
         if "ema_50" in row and "atr_14" in row:
             return float((row["Close"] - row["ema_50"]) / (row["atr_14"] + 1e-9))
         return 0.0
 
     def _extract_strong_candle_score(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
+        row = self._get_row(df, idx)
+        if "strong_candle_score" in row:
+            return float(row["strong_candle_score"])
         res = self.strong_candle_engine.evaluate(df, idx, msg)
         return float(res.quality_score)
 
     def _extract_strong_candle_confidence(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
+        row = self._get_row(df, idx)
+        if "strong_candle_confidence" in row:
+            return float(row["strong_candle_confidence"])
         res = self.strong_candle_engine.evaluate(df, idx, msg)
         return float(res.confidence)
 
     def _extract_refusal_candle_score(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
+        row = self._get_row(df, idx)
+        if "refusal_candle_score" in row:
+            return float(row["refusal_candle_score"])
         res = self.refusal_engine.evaluate_rejection(df, idx, None, msg)
         return float(res.quality_score)
 
     def _extract_refusal_candle_confidence(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
+        row = self._get_row(df, idx)
+        if "refusal_candle_confidence" in row:
+            return float(row["refusal_candle_confidence"])
         res = self.refusal_engine.evaluate_rejection(df, idx, None, msg)
         return float(res.confidence)
