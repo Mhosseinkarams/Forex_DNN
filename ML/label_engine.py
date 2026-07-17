@@ -90,7 +90,7 @@ class LabelEngine:
         s_engine = sd_engine or SupplyDemandEngine(atr_period=14, impulse_threshold=2.0, use_fractal=False)
 
         for (sym, tf), df_ohlcv in df_dict.items():
-            logger.info(f"LabelEngine processing {sym} {tf} with {len(df_ohlcv)} bars...")
+            logger.info(f"[{sym}] LABELING & FEATURES: Started sliding window processing with {len(df_ohlcv)} bars...")
 
             # Ensure indicators are calculated
             # Let's check if indicators are present; if not, we can run a simple indicator engine
@@ -123,12 +123,17 @@ class LabelEngine:
 
             n_bars = len(df_final)
             if n_bars < self.window_size:
-                logger.warning(f"DataFrame for {sym} {tf} has fewer bars ({n_bars}) than window size ({self.window_size}). Skipping.")
+                logger.warning(f"[{sym}] DataFrame has fewer bars ({n_bars}) than window size ({self.window_size}). Skipping.")
                 continue
 
             # Sliding Window generation
             # Slide start index across df
+            total_windows = len(range(0, n_bars - self.window_size + 1, self.window_stride))
+            log_interval = max(1, total_windows // 10)
+            window_count = 0
+
             for start_idx in range(0, n_bars - self.window_size + 1, self.window_stride):
+                window_count += 1
                 end_idx = start_idx + self.window_size - 1
                 self.total_windows_processed += 1
 
@@ -136,6 +141,10 @@ class LabelEngine:
                 label, confidence, label_info = self.labeler.label_window(
                     df_final, msg, start_idx, end_idx
                 )
+
+                if window_count % log_interval == 0 or window_count == total_windows:
+                    pct = int(window_count / total_windows * 100)
+                    logger.info(f"[{sym}] LABELING & FEATURES: {pct}% complete ({window_count}/{total_windows} windows)")
 
                 if label is None:
                     # Indeterminate sample - remove/skip

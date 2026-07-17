@@ -207,21 +207,25 @@ def process_single_symbol(
         cache_level_file = os.path.join(cache_dir, f"level_break_{symbol}_{cfg['timeframe']}_w{cfg['window_size']}.parquet")
 
         if os.path.exists(cache_state_file) and os.path.exists(cache_level_file):
-            logger.info(f"Loaded cached datasets for {symbol} from cache folder.")
+            logger.info(f"[{symbol}] [CACHE] Found cached datasets. Loading directly...")
             return pd.read_parquet(cache_state_file), pd.read_parquet(cache_level_file)
 
         # 2. Load & Clean Raw Data
+        logger.info(f"[{symbol}] [1/5] READING: Loading raw candle data from {os.path.basename(file_path)}...")
         if file_path.endswith(".parquet"):
             df_raw = pd.read_parquet(file_path)
         else:
             df_raw = pd.read_csv(file_path)
 
         df_clean = clean_raw_candles(df_raw)
-        if len(df_clean) < cfg["window_size"]:
-            logger.warning(f"Symbol {symbol} has insufficient candles ({len(df_clean)}) for window {cfg['window_size']}.")
+        total_bars = len(df_clean)
+        if total_bars < cfg["window_size"]:
+            logger.warning(f"[{symbol}] Insufficient candles ({total_bars}) for window {cfg['window_size']}. Skipping.")
             return None, None
+        logger.info(f"[{symbol}] [1/5] READING: Successfully loaded and cleaned {total_bars} bars.")
 
         # 3. Enrich Candle indicators and run structures
+        logger.info(f"[{symbol}] [2/5] PROCESSING (INDICATORS/SMC/SD): Computing EMAs, Slopes, SMC swings, BOS, CHOCH, and S&D zones...")
         ind_engine = IndicatorEngine(ema_periods=[50, 600, 800], slope_period=32)
         df_enriched = ind_engine.calculate(df_clean)
 
@@ -230,6 +234,7 @@ def process_single_symbol(
 
         sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
         df_enriched = sd_engine.process(df_enriched)
+        logger.info(f"[{symbol}] [2/5] PROCESSING: Successfully completed indicators, SMC structures, and S&D mappings.")
 
         # 4. Construct Graph
         msg = MarketStructureGraph(
@@ -248,6 +253,7 @@ def process_single_symbol(
         )
 
         # 5. Strong & Refusal Candle Evaluations at each index (or added to features)
+        logger.info(f"[{symbol}] [3/5] CANDLE EVALUATION: Initiating evaluation of Strong and Refusal candles...")
         strong_eng = StrongCandleEngine()
         refusal_eng = RefusalCandleEngine()
 
@@ -256,7 +262,8 @@ def process_single_symbol(
         refusal_scores = []
         refusal_confs = []
 
-        for i in range(len(df_enriched)):
+        log_interval = max(1, total_bars // 10)
+        for i in range(total_bars):
             sc = strong_eng.evaluate(df_enriched, i, msg)
             rc = refusal_eng.evaluate_rejection(df_enriched, i, None, msg)
             strong_scores.append(sc.quality_score)
@@ -264,12 +271,18 @@ def process_single_symbol(
             refusal_scores.append(rc.quality_score)
             refusal_confs.append(rc.confidence)
 
+            if (i + 1) % log_interval == 0 or i == total_bars - 1:
+                pct = int((i + 1) / total_bars * 100)
+                logger.info(f"[{symbol}] [3/5] CANDLE EVALUATION: {pct}% complete ({i + 1}/{total_bars} bars)")
+
         df_enriched["strong_candle_score"] = strong_scores
         df_enriched["strong_candle_confidence"] = strong_confs
         df_enriched["refusal_candle_score"] = refusal_scores
         df_enriched["refusal_candle_confidence"] = refusal_confs
+        logger.info(f"[{symbol}] [3/5] CANDLE EVALUATION: Completed successfully.")
 
         # 6. Generate Market State dataset using LabelEngine
+        logger.info(f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Starting Market State labeling...")
         label_engine = LabelEngine(
             window_size=cfg["window_size"],
             window_stride=cfg["window_stride"],
@@ -282,23 +295,27 @@ def process_single_symbol(
         )
 
         # 7. Generate Level Break dataset using DatasetBuilder
+        logger.info(f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Starting Level Break labeling...")
         db_builder = DatasetBuilder(registry=registry)
         df_level = db_builder.build_level_break_dataset(df_enriched, msg)
         if not df_level.empty:
             df_level["symbol"] = symbol
             df_level["timeframe"] = cfg["timeframe"]
+        logger.info(f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Labeled data generated successfully.")
 
         # Cache the resulting datasets
+        logger.info(f"[{symbol}] [5/5] SAVING TO CACHE: Serializing processed datasets to Parquet cache files...")
         os.makedirs(cache_dir, exist_ok=True)
         if not df_state.empty:
             df_state.to_parquet(cache_state_file, index=False)
         if not df_level.empty:
             df_level.to_parquet(cache_level_file, index=False)
+        logger.info(f"[{symbol}] [5/5] SAVING TO CACHE: Saved cached datasets for {symbol} successfully.")
 
         return df_state, df_level
 
     except Exception as e:
-        logger.error(f"Error processing symbol {symbol}: {e}", exc_info=True)
+        logger.error(f"[{symbol}] Error processing symbol: {e}", exc_info=True)
         return None, None
 
 
