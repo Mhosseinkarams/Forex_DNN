@@ -31,12 +31,164 @@ import logging
 import json
 import yaml
 import time
+import threading
 from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Any, Tuple, Optional
 import concurrent.futures
 from tqdm import tqdm
+
+# Console Progress Monitor & Logging handler
+class ProcessingProgressMonitor:
+    """
+    Thread-safe console progress visualizer for the data processing pipeline.
+    Maintains a live status row for each concurrent worker using ANSI escape sequences.
+    """
+    def __init__(self, num_workers: int, total_symbols: int, enabled: bool = True):
+        self.num_workers = num_workers
+        self.total_symbols = total_symbols
+        self.completed_symbols = 0
+        self.start_time = time.time()
+        # Enable progress monitor only if terminal is interactive (tty)
+        self.enabled = enabled and sys.stdout.isatty()
+        self.lock = threading.Lock()
+
+        # State for each slot: {slot_index: {"symbol": "-", "phase": "Idle", "pct": 0, "status": "Idle", "thread_id": None}}
+        self.slots = {i: {"symbol": "-", "phase": "Idle", "pct": 0, "status": "Idle", "thread_id": None} for i in range(1, num_workers + 1)}
+        self.active_lines_printed = False
+
+    def register_worker(self, thread_id) -> int:
+        """Assigns an unassigned slot index to a thread, making it thread-safe."""
+        with self.lock:
+            # Check if thread is already registered
+            for slot, info in self.slots.items():
+                if info.get("thread_id") == thread_id:
+                    return slot
+            # Assign to first unassigned slot
+            for slot, info in self.slots.items():
+                if info.get("thread_id") is None:
+                    self.slots[slot]["thread_id"] = thread_id
+                    return slot
+            # Fallback
+            return 1
+
+    def increment_completed(self):
+        with self.lock:
+            self.completed_symbols += 1
+            if not self.enabled:
+                return
+            self._draw()
+
+    def update(self, slot_id: int, symbol: str, phase: str, pct: int, status: str):
+        if slot_id is None:
+            return
+        with self.lock:
+            self.slots[slot_id].update({
+                "symbol": symbol,
+                "phase": phase,
+                "pct": pct,
+                "status": status
+            })
+            if not self.enabled:
+                return
+            self._draw()
+
+    def _draw(self):
+        if not self.enabled:
+            return
+
+        lines = []
+        lines.append("=" * 100)
+
+        # Calculate overall progress
+        elapsed = time.time() - self.start_time
+        mins, secs = divmod(int(elapsed), 60)
+        hours, mins = divmod(mins, 60)
+        time_str = f"{hours:02d}:{mins:02d}:{secs:02d}" if hours > 0 else f"{mins:02d}:{secs:02d}"
+
+        overall_pct = int((self.completed_symbols / self.total_symbols) * 100) if self.total_symbols > 0 else 0
+        overall_filled = int((overall_pct / 100) * 30)
+        overall_bar = "█" * overall_filled + "░" * (30 - overall_filled)
+
+        lines.append(f"Pipeline Progress: {self.completed_symbols}/{self.total_symbols} symbols | [{overall_bar}] {overall_pct:3d}% | Elapsed: {time_str}")
+        lines.append("-" * 100)
+
+        for slot, info in self.slots.items():
+            sym = info["symbol"]
+            phase = info["phase"]
+            pct = info["pct"]
+            status = info["status"]
+
+            # Progress bar
+            bar_len = 20
+            filled = int((pct / 100) * bar_len)
+            bar = "█" * filled + "░" * (bar_len - filled)
+
+            line = f"  Worker {slot:02d}: [{sym: <8}] | {phase: <15} | [{bar}] {pct:3d}% | {status}"
+            lines.append(line)
+        lines.append("=" * 100)
+
+        # Draw to terminal
+        total_lines_to_print = len(lines)
+        if self.active_lines_printed:
+            # Move cursor up by total_lines_to_print
+            sys.stdout.write(f"\033[{total_lines_to_print}A")
+            for line in lines:
+                # Clear line and print
+                sys.stdout.write(f"\033[K{line}\n")
+        else:
+            for line in lines:
+                sys.stdout.write(f"{line}\n")
+            self.active_lines_printed = True
+        sys.stdout.flush()
+
+    def clear(self):
+        """Clears the progress monitor output from console."""
+        if not self.enabled or not self.active_lines_printed:
+            return
+        with self.lock:
+            total_lines = 4 + self.num_workers
+            # Move cursor up and clear lines
+            sys.stdout.write(f"\033[{total_lines}A")
+            for _ in range(total_lines):
+                sys.stdout.write("\033[K\n")
+            # Move back up to leave cursor where it was
+            sys.stdout.write(f"\033[{total_lines}A")
+            sys.stdout.flush()
+            self.active_lines_printed = False
+
+    def redraw(self):
+        """Redraws the progress monitor after being cleared."""
+        if not self.enabled:
+            return
+        with self.lock:
+            self._draw()
+
+
+class ProgressAwareStreamHandler(logging.StreamHandler):
+    """
+    Log stream handler that intercepts emitting, temporarily clears
+    the live progress monitor, prints the log, and restores the progress display.
+    """
+    def __init__(self, monitor: ProcessingProgressMonitor = None, stream=None):
+        super().__init__(stream)
+        self.monitor = monitor
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            if self.monitor and self.monitor.enabled and self.monitor.active_lines_printed:
+                self.monitor.clear()
+                self.stream.write(msg + self.terminator)
+                self.stream.flush()
+                self.monitor.redraw()
+            else:
+                self.stream.write(msg + self.terminator)
+                self.stream.flush()
+        except Exception:
+            self.handleError(record)
+
 
 # Framework Imports
 from Configs.path_manager import PathManager
@@ -196,22 +348,36 @@ def process_single_symbol(
     file_path: str,
     cfg: Dict[str, Any],
     registry: FeatureRegistry,
-    cache_dir: str = None
+    cache_dir: str = None,
+    monitor: Optional[ProcessingProgressMonitor] = None,
+    slot_id: Optional[int] = None
 ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     if cache_dir is None:
         cache_dir = PathManager.get_relative_path("cache")
     """Loads, cleans, enriches, and produces Market State and Level Break datasets for a single symbol."""
     try:
+        # Register slot dynamically if monitor is provided but slot_id is not
+        if monitor and slot_id is None:
+            slot_id = monitor.register_worker(threading.get_ident())
+
+        # Helper to route progress updates
+        def update_progress(phase: str, pct: int, status: str, log_msg: Optional[str] = None):
+            if monitor and monitor.enabled and slot_id:
+                monitor.update(slot_id, symbol, phase, pct, status)
+            elif log_msg:
+                logger.info(log_msg)
+
         # 1. Resume Caching check
         cache_state_file = os.path.join(cache_dir, f"process_{symbol}_{cfg['timeframe']}_w{cfg['window_size']}.parquet")
         cache_level_file = os.path.join(cache_dir, f"level_break_{symbol}_{cfg['timeframe']}_w{cfg['window_size']}.parquet")
 
         if os.path.exists(cache_state_file) and os.path.exists(cache_level_file):
+            update_progress("CACHE", 100, "Loaded from Cache")
             logger.info(f"[{symbol}] [CACHE] Found cached datasets. Loading directly...")
             return pd.read_parquet(cache_state_file), pd.read_parquet(cache_level_file)
 
         # 2. Load & Clean Raw Data
-        logger.info(f"[{symbol}] [1/5] READING: Loading raw candle data from {os.path.basename(file_path)}...")
+        update_progress("READING", 0, "Loading candles...", f"[{symbol}] [1/5] READING: Loading raw candle data from {os.path.basename(file_path)}...")
         if file_path.endswith(".parquet"):
             df_raw = pd.read_parquet(file_path)
         else:
@@ -222,10 +388,10 @@ def process_single_symbol(
         if total_bars < cfg["window_size"]:
             logger.warning(f"[{symbol}] Insufficient candles ({total_bars}) for window {cfg['window_size']}. Skipping.")
             return None, None
-        logger.info(f"[{symbol}] [1/5] READING: Successfully loaded and cleaned {total_bars} bars.")
+        update_progress("READING", 100, f"Loaded {total_bars} bars", f"[{symbol}] [1/5] READING: Successfully loaded and cleaned {total_bars} bars.")
 
         # 3. Enrich Candle indicators and run structures
-        logger.info(f"[{symbol}] [2/5] PROCESSING (INDICATORS/SMC/SD): Computing EMAs, Slopes, SMC swings, BOS, CHOCH, and S&D zones...")
+        update_progress("PROCESSING", 10, "Computing EMAs & SMC structures...", f"[{symbol}] [2/5] PROCESSING (INDICATORS/SMC/SD): Computing EMAs, Slopes, SMC swings, BOS, CHOCH, and S&D zones...")
         ind_engine = IndicatorEngine(ema_periods=[50, 600, 800], slope_period=32)
         df_enriched = ind_engine.calculate(df_clean)
 
@@ -234,7 +400,7 @@ def process_single_symbol(
 
         sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
         df_enriched = sd_engine.process(df_enriched)
-        logger.info(f"[{symbol}] [2/5] PROCESSING: Successfully completed indicators, SMC structures, and S&D mappings.")
+        update_progress("PROCESSING", 100, "Completed structures", f"[{symbol}] [2/5] PROCESSING: Successfully completed indicators, SMC structures, and S&D mappings.")
 
         # 4. Construct Graph
         msg = MarketStructureGraph(
@@ -253,7 +419,7 @@ def process_single_symbol(
         )
 
         # 5. Strong & Refusal Candle Evaluations at each index (or added to features)
-        logger.info(f"[{symbol}] [3/5] CANDLE EVALUATION: Initiating evaluation of Strong and Refusal candles...")
+        update_progress("CANDLE_EVAL", 0, "Evaluating candles...", f"[{symbol}] [3/5] CANDLE EVALUATION: Initiating evaluation of Strong and Refusal candles...")
         strong_eng = StrongCandleEngine()
         refusal_eng = RefusalCandleEngine()
 
@@ -273,16 +439,16 @@ def process_single_symbol(
 
             if (i + 1) % log_interval == 0 or i == total_bars - 1:
                 pct = int((i + 1) / total_bars * 100)
-                logger.info(f"[{symbol}] [3/5] CANDLE EVALUATION: {pct}% complete ({i + 1}/{total_bars} bars)")
+                update_progress("CANDLE_EVAL", pct, f"Bars {i+1}/{total_bars}", f"[{symbol}] [3/5] CANDLE EVALUATION: {pct}% complete ({i + 1}/{total_bars} bars)")
 
         df_enriched["strong_candle_score"] = strong_scores
         df_enriched["strong_candle_confidence"] = strong_confs
         df_enriched["refusal_candle_score"] = refusal_scores
         df_enriched["refusal_candle_confidence"] = refusal_confs
-        logger.info(f"[{symbol}] [3/5] CANDLE EVALUATION: Completed successfully.")
+        update_progress("CANDLE_EVAL", 100, "Completed candle evaluations", f"[{symbol}] [3/5] CANDLE EVALUATION: Completed successfully.")
 
         # 6. Generate Market State dataset using LabelEngine
-        logger.info(f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Starting Market State labeling...")
+        update_progress("LABELING_MS", 0, "Starting Market State labeling...", f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Starting Market State labeling...")
         label_engine = LabelEngine(
             window_size=cfg["window_size"],
             window_stride=cfg["window_stride"],
@@ -291,26 +457,32 @@ def process_single_symbol(
         df_state = label_engine.generate_dataset(
             data_inputs={(symbol, cfg["timeframe"]): df_enriched},
             ms_engine=ms_engine,
-            sd_engine=sd_engine
+            sd_engine=sd_engine,
+            monitor=monitor,
+            slot_id=slot_id
         )
 
         # 7. Generate Level Break dataset using DatasetBuilder
-        logger.info(f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Starting Level Break labeling...")
+        update_progress("LABELING_LVL", 0, "Starting Level Break labeling...", f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Starting Level Break labeling...")
         db_builder = DatasetBuilder(registry=registry)
-        df_level = db_builder.build_level_break_dataset(df_enriched, msg)
+        df_level = db_builder.build_level_break_dataset(
+            df_enriched, msg,
+            monitor=monitor,
+            slot_id=slot_id
+        )
         if not df_level.empty:
             df_level["symbol"] = symbol
             df_level["timeframe"] = cfg["timeframe"]
-        logger.info(f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Labeled data generated successfully.")
+        update_progress("LABELING", 100, "Completed labeling", f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Labeled data generated successfully.")
 
         # Cache the resulting datasets
-        logger.info(f"[{symbol}] [5/5] SAVING TO CACHE: Serializing processed datasets to Parquet cache files...")
+        update_progress("SAVING", 0, "Saving to Cache...", f"[{symbol}] [5/5] SAVING TO CACHE: Serializing processed datasets to Parquet cache files...")
         os.makedirs(cache_dir, exist_ok=True)
         if not df_state.empty:
             df_state.to_parquet(cache_state_file, index=False)
         if not df_level.empty:
             df_level.to_parquet(cache_level_file, index=False)
-        logger.info(f"[{symbol}] [5/5] SAVING TO CACHE: Saved cached datasets for {symbol} successfully.")
+        update_progress("SAVING", 100, "Completed saving", f"[{symbol}] [5/5] SAVING TO CACHE: Saved cached datasets for {symbol} successfully.")
 
         return df_state, df_level
 
@@ -370,18 +542,35 @@ def main():
 
     logger.info(f"Successfully discovered {len(discovered)} symbols to process: {list(discovered.keys())}")
 
+    # Resolve active workers
+    max_workers = cfg["max_workers"] if cfg["use_multiprocessing"] else 1
+    total_symbols = len(discovered)
+
+    # Initialize Progress Monitor
+    monitor = ProcessingProgressMonitor(num_workers=max_workers, total_symbols=total_symbols, enabled=True)
+
+    # Swap standard log handler with progress-aware log handler
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, ProgressAwareStreamHandler):
+            formatter = handler.formatter
+            new_handler = ProgressAwareStreamHandler(monitor=monitor, stream=sys.stdout)
+            new_handler.setFormatter(formatter)
+            root_logger.removeHandler(handler)
+            root_logger.addHandler(new_handler)
+
     # Process symbols concurrently or sequentially
     registry = FeatureRegistry(load_defaults=True)
     all_states = []
     all_levels = []
 
-    pbar = tqdm(discovered.items(), desc="Processing symbols")
-    max_workers = cfg["max_workers"] if cfg["use_multiprocessing"] else 1
+    if monitor.enabled:
+        monitor._draw()
 
-    if max_workers > 1 and len(discovered) > 1:
+    if max_workers > 1 and total_symbols > 1:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_sym = {
-                executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir): sym
+                executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, monitor, None): sym
                 for sym, path in discovered.items()
             }
             for future in concurrent.futures.as_completed(future_to_sym):
@@ -392,21 +581,20 @@ def main():
                         all_states.append(df_state)
                     if df_level is not None and not df_level.empty:
                         all_levels.append(df_level)
-                    pbar.set_postfix({"Finished": sym})
                 except Exception as exc:
                     logger.error(f"Symbol {sym} generated an exception during concurrent loop: {exc}")
-                pbar.update(1)
+                monitor.increment_completed()
     else:
         for sym, path in discovered.items():
-            pbar.set_postfix({"Current": sym})
-            df_state, df_level = process_single_symbol(sym, path, cfg, registry, cache_dir)
+            df_state, df_level = process_single_symbol(sym, path, cfg, registry, cache_dir, monitor, 1)
             if df_state is not None and not df_state.empty:
                 all_states.append(df_state)
             if df_level is not None and not df_level.empty:
                 all_levels.append(df_level)
-            pbar.update(1)
+            monitor.increment_completed()
 
-    pbar.close()
+    if monitor.enabled:
+        monitor.clear()
 
     # Consolidate and clean final datasets
     os.makedirs(cfg["output_dir"], exist_ok=True)

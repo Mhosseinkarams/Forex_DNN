@@ -48,7 +48,9 @@ class DatasetBuilder:
         msg: MarketStructureGraph,
         lookahead_bars: int = 20,
         break_threshold_atr: float = 0.5,
-        rejection_threshold_atr: float = 1.0
+        rejection_threshold_atr: float = 1.0,
+        monitor: Optional[Any] = None,
+        slot_id: Optional[int] = None
     ) -> pd.DataFrame:
         """
         Build Dataset B: Level Break Dataset.
@@ -62,7 +64,11 @@ class DatasetBuilder:
         if total_len <= 0:
             return pd.DataFrame()
 
-        logger.info(f"[{msg.symbol}] LEVEL BREAK PROCESSING: Starting level break labeling for {total_len} candles...")
+        if monitor and monitor.enabled and slot_id:
+            monitor.update(slot_id, msg.symbol, "LABELING_LVL", 0, f"Started level break labeling ({total_len} bars)")
+        else:
+            logger.info(f"[{msg.symbol}] LEVEL BREAK PROCESSING: Starting level break labeling for {total_len} candles...")
+
         log_interval = max(1, total_len // 10)
         count = 0
 
@@ -72,7 +78,10 @@ class DatasetBuilder:
 
             if count % log_interval == 0 or count == total_len:
                 pct = int(count / total_len * 100)
-                logger.info(f"[{msg.symbol}] LEVEL BREAK PROCESSING: {pct}% complete ({count}/{total_len} bars)")
+                if monitor and monitor.enabled and slot_id:
+                    monitor.update(slot_id, msg.symbol, "LABELING_LVL", pct, f"Bars {count}/{total_len}")
+                else:
+                    logger.info(f"[{msg.symbol}] LEVEL BREAK PROCESSING: {pct}% complete ({count}/{total_len} bars)")
             row_high = df.iloc[idx]["High"]
             row_low = df.iloc[idx]["Low"]
             atr = df.iloc[idx].get("atr_14", 0.0001)
