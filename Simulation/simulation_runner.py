@@ -107,9 +107,18 @@ class SimulationRunner:
     def run(self):
         logger.info(f"Starting multi-symbol simulation for {self.symbols}...")
 
+        from Collecting_Data.memory_monitor import MemoryMonitor
+        mem_monitor = MemoryMonitor()
+        mem_monitor.check("Simulation start")
+
         timeline = self.data_feed.get_global_timeline()
+        bar_count = 0
 
         for current_time in timeline:
+            bar_count += 1
+            if bar_count % 10000 == 0:
+                mem_monitor.check(f"Simulation bars processed: {bar_count}")
+
             self.clock.set_time(current_time)
             self.data_feed.seek_to_time(current_time)
 

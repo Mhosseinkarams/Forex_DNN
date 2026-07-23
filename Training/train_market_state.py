@@ -17,6 +17,10 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     print("      TRAINING MARKET STATE CLASSIFIER MODEL      ")
     print("==================================================")
 
+    from Collecting_Data.memory_monitor import MemoryMonitor
+    mem_monitor = MemoryMonitor()
+    mem_monitor.check("Training start")
+
     # Initialize Directory Layout Structure using central PathManager
     PathManager.ensure_all_dirs()
 
@@ -44,6 +48,7 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     else:
         df = pd.read_csv(dataset_path)
     print(f"Loaded dataset containing {len(df)} samples.")
+    mem_monitor.check("Dataset loaded")
 
     # Initialize child class with external YAML config
     config_path = PathManager.get_relative_path("config", "market_state.yaml") if os.path.exists(PathManager.get_relative_path("config", "market_state.yaml")) else None
@@ -115,6 +120,8 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
 
     print(f"\n--- Model Performance Summary ---")
     print(clf.get_summary())
+
+    mem_monitor.check("Training and evaluation complete")
 
     # Compatibility check: save model reproducibility companion json file (reproducibility.json)
     git_commit = clf.metadata.get("git_commit", "unknown")

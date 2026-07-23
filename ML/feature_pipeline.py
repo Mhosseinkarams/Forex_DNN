@@ -4,10 +4,26 @@ from typing import Dict, Any, List, Optional, Union
 import numpy as np
 import pandas as pd
 from datetime import datetime
+from collections import OrderedDict
 
 from ML.feature_registry import FeatureRegistry
 from Market_Data_Pipeline.structure_graph import MarketStructureGraph, StructureLevel, Zone, BOS, CHOCH
 from Market_Data_Pipeline.dataset_types import FeatureVector
+
+
+class BoundedDict(OrderedDict):
+    """
+    An OrderedDict wrapper that limits elements to maxlen to prevent memory leaks.
+    Removes oldest entries when capacity is exceeded.
+    """
+    def __init__(self, maxlen: int = 1000, *args, **kwargs):
+        self.maxlen = maxlen
+        super().__init__(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if len(self) > self.maxlen:
+            self.popitem(last=False)
 
 # New Engine Dependencies
 from Market_Data_Pipeline.strong_candle_engine import StrongCandleEngine
@@ -24,13 +40,13 @@ class FeaturePipeline:
         dynamically queries the Feature Registry for enabled features and computes
         them using registered mapping handlers.
     """
-    def __init__(self, registry: Optional[FeatureRegistry] = None):
+    def __init__(self, registry: Optional[FeatureRegistry] = None, cache_size: int = 1000):
         self.registry = registry or FeatureRegistry()
         self.strong_candle_engine = StrongCandleEngine()
         self.refusal_engine = RefusalCandleEngine()
         self._setup_extractors()
         # Initialize an instance-level cache to prevent redundant re-computation of features
-        self._cache = {}
+        self._cache = BoundedDict(maxlen=cache_size)
 
     def _setup_extractors(self):
         """
