@@ -16,6 +16,10 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     print("    TRAINING LEVEL BREAK PROBABILITY MODEL        ")
     print("==================================================")
 
+    from Collecting_Data.memory_monitor import MemoryMonitor
+    mem_monitor = MemoryMonitor()
+    mem_monitor.check("Training start")
+
     # Initialize Directory Layout Structure using central PathManager
     PathManager.ensure_all_dirs()
 
@@ -43,6 +47,7 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
     else:
         df = pd.read_csv(dataset_path)
     print(f"Loaded dataset containing {len(df)} samples.")
+    mem_monitor.check("Dataset loaded")
 
     # Initialize child class with external YAML config
     config_path = PathManager.get_relative_path("config", "level_break.yaml") if os.path.exists(PathManager.get_relative_path("config", "level_break.yaml")) else None
@@ -96,6 +101,8 @@ def run_training(dataset_path: str, model_save_path: str, random_seed: int = 42)
 
     print(f"\n--- Model Performance Summary ---")
     print(clf.get_summary())
+
+    mem_monitor.check("Training and evaluation complete")
 
 
 if __name__ == "__main__":

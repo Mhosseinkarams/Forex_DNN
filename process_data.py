@@ -383,7 +383,7 @@ def process_single_symbol(
     monitor: Optional[ProcessingProgressMonitor] = None,
     slot_id: Optional[int] = None,
     progress_queue: Optional[Any] = None
-) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+) -> Tuple[Optional[str], Optional[str]]:
     if cache_dir is None:
         cache_dir = PathManager.get_relative_path("cache")
     """Loads, cleans, enriches, and produces Market State and Level Break datasets for a single symbol."""
@@ -415,7 +415,7 @@ def process_single_symbol(
         if os.path.exists(cache_state_file) and os.path.exists(cache_level_file):
             update_progress("CACHE", 100, "Loaded from Cache")
             logger.info(f"[{symbol}] [CACHE] Found cached datasets. Loading directly...")
-            return pd.read_parquet(cache_state_file), pd.read_parquet(cache_level_file)
+            return cache_state_file, cache_level_file
 
         # 2. Load & Clean Raw Data
         update_progress("READING", 0, "Loading candles...", f"[{symbol}] [1/5] READING: Loading raw candle data from {os.path.basename(file_path)}...")
@@ -519,13 +519,25 @@ def process_single_symbol(
         # Cache the resulting datasets
         update_progress("SAVING", 0, "Saving to Cache...", f"[{symbol}] [5/5] SAVING TO CACHE: Serializing processed datasets to Parquet cache files...")
         os.makedirs(cache_dir, exist_ok=True)
+
+        saved_state_path = None
+        saved_level_path = None
+
         if not df_state.empty:
             df_state.to_parquet(cache_state_file, index=False)
+            saved_state_path = cache_state_file
         if not df_level.empty:
             df_level.to_parquet(cache_level_file, index=False)
+            saved_level_path = cache_level_file
+
         update_progress("SAVING", 100, "Completed saving", f"[{symbol}] [5/5] SAVING TO CACHE: Saved cached datasets for {symbol} successfully.")
 
-        return df_state, df_level
+        # Clean up DataFrames before returning to free memory in child worker
+        del df_raw, df_clean, df_enriched, df_state, df_level
+        import gc
+        gc.collect()
+
+        return saved_state_path, saved_level_path
 
     except Exception as e:
         logger.error(f"[{symbol}] Error processing symbol: {e}", exc_info=True)
@@ -571,6 +583,10 @@ def progress_listener_worker(queue, monitor):
 
 
 def main():
+    from Collecting_Data.memory_monitor import MemoryMonitor
+    mem_monitor = MemoryMonitor()
+    mem_monitor.check("Pipeline start")
+
     parser = argparse.ArgumentParser(description="Forex_DNN Process Historical Data Pipeline")
     parser.add_argument("--symbol", type=str, default="ALL",
                         help="Specific symbols (comma-separated, e.g. EURUSD,GBPUSD) or 'ALL'.")
@@ -640,8 +656,8 @@ def main():
 
     # Process symbols concurrently or sequentially
     registry = FeatureRegistry(load_defaults=True)
-    all_states = []
-    all_levels = []
+    state_paths = []
+    level_paths = []
 
     if monitor.enabled:
         monitor._draw()
@@ -670,11 +686,11 @@ def main():
                 for future in concurrent.futures.as_completed(future_to_sym):
                     sym = future_to_sym[future]
                     try:
-                        df_state, df_level = future.result()
-                        if df_state is not None and not df_state.empty:
-                            all_states.append(df_state)
-                        if df_level is not None and not df_level.empty:
-                            all_levels.append(df_level)
+                        state_path, level_path = future.result()
+                        if state_path:
+                            state_paths.append(state_path)
+                        if level_path:
+                            level_paths.append(level_path)
                     except Exception as exc:
                         logger.error(f"Symbol {sym} generated an exception during concurrent multiprocessing run: {exc}", exc_info=True)
                     monitor.increment_completed()
@@ -693,21 +709,21 @@ def main():
                 for future in concurrent.futures.as_completed(future_to_sym):
                     sym = future_to_sym[future]
                     try:
-                        df_state, df_level = future.result()
-                        if df_state is not None and not df_state.empty:
-                            all_states.append(df_state)
-                        if df_level is not None and not df_level.empty:
-                            all_levels.append(df_level)
+                        state_path, level_path = future.result()
+                        if state_path:
+                            state_paths.append(state_path)
+                        if level_path:
+                            level_paths.append(level_path)
                     except Exception as exc:
                         logger.error(f"Symbol {sym} generated an exception during thread loop: {exc}")
                     monitor.increment_completed()
     else:
         for sym, path in discovered.items():
-            df_state, df_level = process_single_symbol(sym, path, cfg, registry, cache_dir, monitor, 1, None)
-            if df_state is not None and not df_state.empty:
-                all_states.append(df_state)
-            if df_level is not None and not df_level.empty:
-                all_levels.append(df_level)
+            state_path, level_path = process_single_symbol(sym, path, cfg, registry, cache_dir, monitor, 1, None)
+            if state_path:
+                state_paths.append(state_path)
+            if level_path:
+                level_paths.append(level_path)
             monitor.increment_completed()
 
     if monitor.enabled:
@@ -719,86 +735,120 @@ def main():
     validator = DatasetValidator()
 
     # 1. Market State Dataset
-    if all_states:
+    master_state = None
+    if state_paths:
         logger.info("Consolidating Market State Datasets...")
-        master_state = pd.concat(all_states, ignore_index=True)
-        if "datetime" in master_state.columns:
-            master_state.sort_values(by=["datetime", "symbol"], inplace=True)
-        master_state = cleaner.clean(master_state, label_col="target")
+        mem_monitor.check("Consolidation of Market State start")
+        all_states = []
+        for path in state_paths:
+            if os.path.exists(path):
+                df = pd.read_parquet(path)
+                if not df.empty:
+                    all_states.append(df)
 
-        state_path = os.path.join(cfg["output_dir"], "market_state_dataset.parquet")
-        master_state.to_parquet(state_path, index=False)
-        logger.info(f"Saved Consolidated Market State Dataset to {state_path} ({len(master_state)} samples)")
+        if all_states:
+            master_state = pd.concat(all_states, ignore_index=True)
+            # Free individual lists/DataFrames immediately
+            del all_states
+            import gc
+            gc.collect()
 
-        # Validate
-        report = validator.validate(master_state, expected_window_size=cfg["window_size"])
-        logger.info(f"Market State Dataset Integrity Validation status: {'PASS' if report['is_valid'] else 'FAIL'}")
+            if "datetime" in master_state.columns:
+                master_state.sort_values(by=["datetime", "symbol"], inplace=True)
+            master_state = cleaner.clean(master_state, label_col="target")
 
-        # Produce RL and Trade Quality Datasets
-        # For Reinforcement Learning
-        logger.info("Preparing Reinforcement Learning (RL) Dataset...")
-        master_rl = master_state.copy()
+            state_path = os.path.join(cfg["output_dir"], "market_state_dataset.parquet")
+            master_state.to_parquet(state_path, index=False)
+            logger.info(f"Saved Consolidated Market State Dataset to {state_path} ({len(master_state)} samples)")
 
-        # Calculate a deterministic forward reward: 5-bar shift of close log difference
-        if "Close" in master_rl.columns:
-            # Shift backwards to see future
-            forward_close = master_rl.groupby("symbol")["Close"].shift(-5)
-            master_rl["reward"] = ((forward_close - master_rl["Close"]) / master_rl["Close"]).fillna(0.0)
-            master_rl["action"] = np.where(master_rl["reward"] > 0.001, 1, np.where(master_rl["reward"] < -0.001, 2, 0))
-        else:
-            master_rl["reward"] = 0.0
-            master_rl["action"] = 0
+            # Validate
+            report = validator.validate(master_state, expected_window_size=cfg["window_size"])
+            logger.info(f"Market State Dataset Integrity Validation status: {'PASS' if report['is_valid'] else 'FAIL'}")
 
-        master_rl["done"] = False
-        # Last 5 bars of each symbol are done
-        for sym in master_rl["symbol"].unique():
-            idx = master_rl[master_rl["symbol"] == sym].index
-            if len(idx) > 5:
-                master_rl.loc[idx[-5:], "done"] = True
+            # Produce RL and Trade Quality Datasets
+            # For Reinforcement Learning
+            logger.info("Preparing Reinforcement Learning (RL) Dataset...")
+            master_rl = master_state.copy()
 
-        rl_path = os.path.join(cfg["output_dir"], "future_rl_dataset.parquet")
-        master_rl.to_parquet(rl_path, index=False)
-        logger.info(f"Saved Reinforcement Learning Dataset to {rl_path} ({len(master_rl)} samples)")
+            # Calculate a deterministic forward reward: 5-bar shift of close log difference
+            if "Close" in master_rl.columns:
+                # Shift backwards to see future
+                forward_close = master_rl.groupby("symbol")["Close"].shift(-5)
+                master_rl["reward"] = ((forward_close - master_rl["Close"]) / master_rl["Close"]).fillna(0.0)
+                master_rl["action"] = np.where(master_rl["reward"] > 0.001, 1, np.where(master_rl["reward"] < -0.001, 2, 0))
+            else:
+                master_rl["reward"] = 0.0
+                master_rl["action"] = 0
 
-        # For Trade Quality
-        logger.info("Preparing Trade Quality Dataset...")
-        master_tq = master_state.copy()
+            master_rl["done"] = False
+            # Last 5 bars of each symbol are done
+            for sym in master_rl["symbol"].unique():
+                idx = master_rl[master_rl["symbol"] == sym].index
+                if len(idx) > 5:
+                    master_rl.loc[idx[-5:], "done"] = True
 
-        # Deterministic win_loss label based on forward outcome:
-        # Check if the close rises by 1.5 ATR before dropping by 1 ATR
-        if "Close" in master_tq.columns:
-            forward_close_10 = master_tq.groupby("symbol")["Close"].shift(-10).fillna(master_tq["Close"])
-            atr = master_tq.get("atr", 0.0010)
-            # If closed higher by 1.5 ATR, win_loss=1, else 0
-            master_tq["win_loss"] = np.where(forward_close_10 >= master_tq["Close"] + 1.5 * atr, 1, 0)
-            master_tq["trade_quality_score"] = np.clip((forward_close_10 - master_tq["Close"]) / (1.5 * atr + 1e-9) * 100.0, 0, 100.0)
-        else:
-            master_tq["win_loss"] = 0
-            master_tq["trade_quality_score"] = 50.0
+            rl_path = os.path.join(cfg["output_dir"], "future_rl_dataset.parquet")
+            master_rl.to_parquet(rl_path, index=False)
+            logger.info(f"Saved Reinforcement Learning Dataset to {rl_path} ({len(master_rl)} samples)")
+            del master_rl
+            gc.collect()
 
-        tq_path = os.path.join(cfg["output_dir"], "future_trade_quality_dataset.parquet")
-        master_tq.to_parquet(tq_path, index=False)
-        logger.info(f"Saved Trade Quality Dataset to {tq_path} ({len(master_tq)} samples)")
+            # For Trade Quality
+            logger.info("Preparing Trade Quality Dataset...")
+            master_tq = master_state.copy()
 
-    else:
+            # Deterministic win_loss label based on forward outcome:
+            # Check if the close rises by 1.5 ATR before dropping by 1 ATR
+            if "Close" in master_tq.columns:
+                forward_close_10 = master_tq.groupby("symbol")["Close"].shift(-10).fillna(master_tq["Close"])
+                atr = master_tq.get("atr", 0.0010)
+                # If closed higher by 1.5 ATR, win_loss=1, else 0
+                master_tq["win_loss"] = np.where(forward_close_10 >= master_tq["Close"] + 1.5 * atr, 1, 0)
+                master_tq["trade_quality_score"] = np.clip((forward_close_10 - master_tq["Close"]) / (1.5 * atr + 1e-9) * 100.0, 0, 100.0)
+            else:
+                master_tq["win_loss"] = 0
+                master_tq["trade_quality_score"] = 50.0
+
+            tq_path = os.path.join(cfg["output_dir"], "future_trade_quality_dataset.parquet")
+            master_tq.to_parquet(tq_path, index=False)
+            logger.info(f"Saved Trade Quality Dataset to {tq_path} ({len(master_tq)} samples)")
+            del master_tq
+            gc.collect()
+            mem_monitor.check("After Market State consolidation and saving")
+
+    if not state_paths or master_state is None:
         logger.warning("No Market State samples were generated!")
 
     # 2. Level Break Dataset
-    if all_levels:
+    master_level = None
+    if level_paths:
         logger.info("Consolidating Level Break Datasets...")
-        master_level = pd.concat(all_levels, ignore_index=True)
-        if "timestamp" in master_level.columns:
-            master_level.sort_values(by=["timestamp", "symbol"], inplace=True)
-        master_level = cleaner.clean(master_level, label_col="target")
+        all_levels = []
+        for path in level_paths:
+            if os.path.exists(path):
+                df = pd.read_parquet(path)
+                if not df.empty:
+                    all_levels.append(df)
+        if all_levels:
+            master_level = pd.concat(all_levels, ignore_index=True)
+            # Free individual DataFrames from memory immediately
+            del all_levels
+            import gc
+            gc.collect()
 
-        level_path = os.path.join(cfg["output_dir"], "level_break_dataset.parquet")
-        master_level.to_parquet(level_path, index=False)
-        logger.info(f"Saved Consolidated Level Break Dataset to {level_path} ({len(master_level)} samples)")
+            if "timestamp" in master_level.columns:
+                master_level.sort_values(by=["timestamp", "symbol"], inplace=True)
+            master_level = cleaner.clean(master_level, label_col="target")
 
-        # Validate
-        report_lvl = validator.validate(master_level, expected_window_size=cfg["window_size"])
-        logger.info(f"Level Break Dataset Integrity Validation status: {'PASS' if report_lvl['is_valid'] else 'FAIL'}")
-    else:
+            level_path = os.path.join(cfg["output_dir"], "level_break_dataset.parquet")
+            master_level.to_parquet(level_path, index=False)
+            logger.info(f"Saved Consolidated Level Break Dataset to {level_path} ({len(master_level)} samples)")
+
+            # Validate
+            report_lvl = validator.validate(master_level, expected_window_size=cfg["window_size"])
+            logger.info(f"Level Break Dataset Integrity Validation status: {'PASS' if report_lvl['is_valid'] else 'FAIL'}")
+
+    if not level_paths or master_level is None:
         logger.warning("No Level Break samples were generated!")
 
     # Generate metadata report
@@ -810,13 +860,20 @@ def main():
         "window_stride": cfg["window_stride"],
         "feature_registry_hash": registry.compute_hash(),
         "creation_time": datetime.now(timezone.utc).isoformat(),
-        "market_state_size": len(master_state) if all_states else 0,
-        "level_break_size": len(master_level) if all_levels else 0,
+        "market_state_size": len(master_state) if master_state is not None else 0,
+        "level_break_size": len(master_level) if master_level is not None else 0,
     }
     meta_path = os.path.join(cfg["output_dir"], "metadata.json")
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=4)
     logger.info(f"Saved central metadata log to {meta_path}")
+
+    # Clean up master frames
+    del master_state, master_level
+    import gc
+    gc.collect()
+
+    mem_monitor.check("Pipeline finished")
 
     logger.info("==================================================")
     logger.info("  DATA PROCESSING PIPELINE COMPLETED SUCCESSFULLY")
