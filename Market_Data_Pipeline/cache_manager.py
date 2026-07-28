@@ -9,6 +9,7 @@ class DatasetCacheManager:
     """
     Handles caching and resume for the HistoricalDatasetBuilder.
     Caches computed features/labels per symbol and resumes automatically if interrupted.
+    Upgraded to support 100% atomic file writes to prevent cache corruption.
     """
     def __init__(self, cache_dir: str = "cache"):
         self.cache_dir = cache_dir
@@ -31,13 +32,21 @@ class DatasetCacheManager:
         return None
 
     def cache_symbol(self, symbol: str, timeframe: str, version: str, df: pd.DataFrame) -> None:
-        """Saves processed symbol DataFrame to cache."""
+        """Saves processed symbol DataFrame to cache atomically using temporary swap."""
         cache_path = self._get_cache_path(symbol, timeframe, version)
+        temp_path = cache_path + ".tmp"
         try:
-            df.to_parquet(cache_path, index=False)
-            logger.info(f"Cached processed data for {symbol} to {cache_path}")
+            os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
+            df.to_parquet(temp_path, index=False)
+            os.replace(temp_path, cache_path)
+            logger.info(f"Cached processed data atomically for {symbol} to {cache_path}")
         except Exception as e:
             logger.error(f"Failed to save cache for {symbol} at {cache_path}: {e}")
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
 
     def clear_cache(self) -> None:
         """Clears all cache files in cache_dir."""

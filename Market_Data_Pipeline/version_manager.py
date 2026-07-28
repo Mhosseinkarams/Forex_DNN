@@ -10,7 +10,7 @@ logger = logging.getLogger("DatasetVersionManager")
 class DatasetVersionManager:
     """
     Manages dataset versions in datasets/v001, datasets/v002, etc.
-    Saves parquet, csv, and metadata files. Prevents overwriting.
+    Saves parquet, csv, and metadata files atomically to prevent corruption.
     """
     def __init__(self, output_dir: str = "datasets"):
         self.output_dir = output_dir
@@ -45,7 +45,7 @@ class DatasetVersionManager:
         manifest_json: Dict[str, Any],
         quality_report_html: Optional[str] = None
     ) -> str:
-        """Saves all required files for this dataset version."""
+        """Saves all required files for this dataset version atomically using temporary swaps."""
         version_dir = os.path.join(self.output_dir, version)
         os.makedirs(version_dir, exist_ok=True)
 
@@ -64,35 +64,54 @@ class DatasetVersionManager:
         if os.path.exists(parquet_path):
             logger.warning(f"Version {version} already exists at {version_dir}. Overwriting was requested or occurred.")
 
-        # 1. Save parquet
-        df.to_parquet(parquet_path, index=False)
-        # 2. Save csv
-        df.to_csv(csv_path, index=False)
+        # Helper for atomic dataframe saving
+        def save_df_atomically(df_to_save: pd.DataFrame, path: str, as_parquet: bool):
+            temp_path = path + ".tmp"
+            if as_parquet:
+                df_to_save.to_parquet(temp_path, index=False)
+            else:
+                df_to_save.to_csv(temp_path, index=False)
+            os.replace(temp_path, path)
 
-        # Helper to save JSON
-        def save_json(path: str, data: Dict[str, Any]):
-            with open(path, "w", encoding="utf-8") as f:
+        # Helper for atomic JSON saving
+        def save_json_atomically(path: str, data: Dict[str, Any]):
+            temp_path = path + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
+
+        # Helper for atomic HTML/text saving
+        def save_text_atomically(path: str, content: str):
+            temp_path = path + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
+
+        # 1. Save parquet atomically
+        save_df_atomically(df, parquet_path, as_parquet=True)
+        # 2. Save csv atomically
+        save_df_atomically(df, csv_path, as_parquet=False)
 
         # 3. Save metadata
-        save_json(metadata_path, metadata)
+        save_json_atomically(metadata_path, metadata)
         # 4. Save feature_registry.json
-        save_json(registry_path, feature_registry_json)
+        save_json_atomically(registry_path, feature_registry_json)
         # 5. Save engine_versions.json
-        save_json(engine_path, engine_versions_json)
+        save_json_atomically(engine_path, engine_versions_json)
         # 6. Save label_config.json
-        save_json(label_path, label_config_json)
+        save_json_atomically(label_path, label_config_json)
         # 7. Save statistics.json
-        save_json(stats_path, statistics_json)
+        save_json_atomically(stats_path, statistics_json)
         # 8. Save manifest.json
-        save_json(manifest_path, manifest_json)
+        save_json_atomically(manifest_path, manifest_json)
 
         # 9. Save dataset_quality_report.html
         if quality_report_html:
-            # Reports contain Unicode symbols; relying on the Windows active
-            # code page makes dataset generation fail on many locales.
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(quality_report_html)
+            save_text_atomically(html_path, quality_report_html)
 
-        logger.info(f"Successfully saved dataset version {version} in {version_dir}")
+        logger.info(f"Successfully saved dataset version {version} atomically in {version_dir}")
         return version_dir

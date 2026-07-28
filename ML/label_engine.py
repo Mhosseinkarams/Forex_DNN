@@ -217,16 +217,18 @@ class LabelEngine:
         extra_metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """
-        Saves the generated DataFrame to a CSV file, and writes a detailed
-        dataset reproducibility manifest containing all critical hyper-parameters.
+        Saves the generated DataFrame to a CSV file atomically, and writes a detailed
+        dataset reproducibility manifest containing all critical hyper-parameters atomically.
         """
         # Ensure directories exist
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         os.makedirs(os.path.dirname(os.path.abspath(manifest_path)), exist_ok=True)
 
-        # 1. Save CSV
-        df.to_csv(output_path, index=False)
-        logger.info(f"Dataset CSV successfully saved to: {output_path}")
+        # 1. Save CSV atomically using temp swap
+        temp_out = output_path + ".tmp"
+        df.to_csv(temp_out, index=False)
+        os.replace(temp_out, output_path)
+        logger.info(f"Dataset CSV successfully saved atomically to: {output_path}")
 
         # 2. Compute date range
         date_range = {"start": None, "end": None}
@@ -271,7 +273,10 @@ class LabelEngine:
         if extra_metadata:
             manifest["extra_metadata"] = extra_metadata
 
-        with open(manifest_path, "w") as f:
+        # Save manifest atomically using temp swap
+        temp_manifest = manifest_path + ".tmp"
+        with open(temp_manifest, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=4)
+        os.replace(temp_manifest, manifest_path)
 
-        logger.info(f"Dataset manifest successfully saved to: {manifest_path}")
+        logger.info(f"Dataset manifest successfully saved atomically to: {manifest_path}")
