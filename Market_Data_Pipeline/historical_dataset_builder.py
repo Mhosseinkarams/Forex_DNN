@@ -667,13 +667,27 @@ class HistoricalDatasetBuilder:
         # Print beautiful quality report
         self._print_quality_report(metadata, len(df_final.columns), elapsed_time, samples_per_sec, constant_columns, symbol_dist)
 
-        # Write duplicate dataset outputs inside output_dir for legacy backward compatibility
+        # Write duplicate dataset outputs inside output_dir for legacy backward compatibility atomically
         print("Saving Dataset copy to output folder...")
         os.makedirs(self.output_dir, exist_ok=True)
-        df_final.to_parquet(os.path.join(self.output_dir, f"dataset_{version_str}.parquet"), index=False)
-        df_final.to_csv(os.path.join(self.output_dir, f"dataset_{version_str}.csv"), index=False)
-        with open(os.path.join(self.output_dir, f"dataset_{version_str}_metadata.json"), "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=4)
+
+        def save_df_atomically(df_to_save, path, as_parquet=True):
+            temp_path = path + ".tmp"
+            if as_parquet:
+                df_to_save.to_parquet(temp_path, index=False)
+            else:
+                df_to_save.to_csv(temp_path, index=False)
+            os.replace(temp_path, path)
+
+        def save_json_atomically(path, data):
+            temp_path = path + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+            os.replace(temp_path, path)
+
+        save_df_atomically(df_final, os.path.join(self.output_dir, f"dataset_{version_str}.parquet"), as_parquet=True)
+        save_df_atomically(df_final, os.path.join(self.output_dir, f"dataset_{version_str}.csv"), as_parquet=False)
+        save_json_atomically(os.path.join(self.output_dir, f"dataset_{version_str}_metadata.json"), metadata)
 
         return df_final, metadata
 

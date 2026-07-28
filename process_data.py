@@ -7,6 +7,8 @@ Prepares ALL historical data for machine learning by running data validation,
 cleaning, indicator calculation, market structure detection, S/D zone mapping,
 strong/refusal candle evaluation, sliding-window labeling, and caching.
 
+Supports robust stage-by-stage checkpointing and automatic resume after crashes.
+
 Produces 4 distinct ML datasets:
 1. market_state_dataset.parquet
 2. level_break_dataset.parquet
@@ -33,6 +35,7 @@ import yaml
 import time
 import threading
 import multiprocessing
+import shutil
 from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
@@ -49,6 +52,7 @@ from ML.dataset_validator import DatasetValidator
 from ML.label_engine import LabelEngine
 from ML.market_state_labeler import MarketStateLabeler
 from ML.dataset_builder import DatasetBuilder
+from ML.checkpoint_manager import CheckpointManager
 
 from Market_Data_Pipeline.historical_dataset_builder import HistoricalDatasetBuilder
 from Market_Data_Pipeline.structure_engine import MarketStructureEngine
@@ -374,6 +378,14 @@ def clean_raw_candles(df: pd.DataFrame) -> pd.DataFrame:
     return df_clean
 
 
+def save_parquet_atomically(df: pd.DataFrame, path: str) -> None:
+    """Saves a pandas DataFrame to parquet format atomically using a temporary swap."""
+    temp_path = f"{path}.tmp"
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    df.to_parquet(temp_path, index=False)
+    os.replace(temp_path, path)
+
+
 def process_single_symbol(
     symbol: str,
     file_path: str,
@@ -384,9 +396,10 @@ def process_single_symbol(
     slot_id: Optional[int] = None,
     progress_queue: Optional[Any] = None
 ) -> Tuple[Optional[str], Optional[str]]:
-    if cache_dir is None:
-        cache_dir = PathManager.get_relative_path("cache")
-    """Loads, cleans, enriches, and produces Market State and Level Break datasets for a single symbol."""
+    """
+    Loads, cleans, enriches, and produces Market State and Level Break datasets for a single symbol
+    utilizing robust stage-by-stage checkpointing and automatic resume after crashes.
+    """
     try:
         # Suppress standard logging output to stream handlers inside subprocess workers to keep terminal display strictly clean
         if multiprocessing.current_process().name != 'MainProcess':
@@ -408,136 +421,299 @@ def process_single_symbol(
             elif log_msg:
                 logger.info(log_msg)
 
-        # 1. Resume Caching check
-        cache_state_file = os.path.join(cache_dir, f"process_{symbol}_{cfg['timeframe']}_w{cfg['window_size']}.parquet")
-        cache_level_file = os.path.join(cache_dir, f"level_break_{symbol}_{cfg['timeframe']}_w{cfg['window_size']}.parquet")
+        # Setup Stage Directories and Checkpoint Manager
+        stages_dir = PathManager.get_path("temporary", "stages")
+        checkpoint_dir = PathManager.get_path("temporary", "checkpoints")
+        stages = ["CLEAN", "ENRICH", "EVAL", "STATE", "LEVEL"]
 
-        if os.path.exists(cache_state_file) and os.path.exists(cache_level_file):
-            update_progress("CACHE", 100, "Loaded from Cache")
-            logger.info(f"[{symbol}] [CACHE] Found cached datasets. Loading directly...")
-            return cache_state_file, cache_level_file
-
-        # 2. Load & Clean Raw Data
-        update_progress("READING", 0, "Loading candles...", f"[{symbol}] [1/5] READING: Loading raw candle data from {os.path.basename(file_path)}...")
-        if file_path.endswith(".parquet"):
-            df_raw = pd.read_parquet(file_path)
-        else:
-            df_raw = pd.read_csv(file_path)
-
-        df_clean = clean_raw_candles(df_raw)
-        total_bars = len(df_clean)
-        if total_bars < cfg["window_size"]:
-            logger.warning(f"[{symbol}] Insufficient candles ({total_bars}) for window {cfg['window_size']}. Skipping.")
-            return None, None
-        update_progress("READING", 100, f"Loaded {total_bars} bars", f"[{symbol}] [1/5] READING: Successfully loaded and cleaned {total_bars} bars.")
-
-        # 3. Enrich Candle indicators and run structures
-        update_progress("PROCESSING", 10, "Computing EMAs & SMC structures...", f"[{symbol}] [2/5] PROCESSING (INDICATORS/SMC/SD): Computing EMAs, Slopes, SMC swings, BOS, CHOCH, and S&D zones...")
-        ind_engine = IndicatorEngine(ema_periods=[50, 600, 800], slope_period=32)
-        df_enriched = ind_engine.calculate(df_clean)
-
-        ms_engine = MarketStructureEngine(lookback=3)
-        df_enriched = ms_engine.process(df_enriched)
-
-        sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
-        df_enriched = sd_engine.process(df_enriched)
-        update_progress("PROCESSING", 100, "Completed structures", f"[{symbol}] [2/5] PROCESSING: Successfully completed indicators, SMC structures, and S&D mappings.")
-
-        # 4. Construct Graph
-        msg = MarketStructureGraph(
+        cp_mgr = CheckpointManager(
             symbol=symbol,
             timeframe=cfg["timeframe"],
-            swing_highs=[s for s in ms_engine.swings if s.level_type == "SwingHigh"],
-            swing_lows=[s for s in ms_engine.swings if s.level_type == "SwingLow"],
-            protected_high=ms_engine.protected_high,
-            protected_low=ms_engine.protected_low,
-            bos=list(ms_engine.bos_list),
-            choch=list(ms_engine.choch_list),
-            supply_zones=[z for z in sd_engine.zones if z.type == "Supply"],
-            demand_zones=[z for z in sd_engine.zones if z.type == "Demand"],
-            trend_direction="Bull" if df_enriched.iloc[-1].get("trend", 0) == 1 else ("Bear" if df_enriched.iloc[-1].get("trend", 0) == -1 else "Neutral"),
-            atr=float(df_enriched.iloc[-1].get("atr_14", 0.0001))
-        )
-
-        # 5. Strong & Refusal Candle Evaluations at each index (or added to features)
-        update_progress("CANDLE_EVAL", 0, "Evaluating candles...", f"[{symbol}] [3/5] CANDLE EVALUATION: Initiating evaluation of Strong and Refusal candles...")
-        strong_eng = StrongCandleEngine()
-        refusal_eng = RefusalCandleEngine()
-
-        strong_scores = []
-        strong_confs = []
-        refusal_scores = []
-        refusal_confs = []
-
-        log_interval = max(1, total_bars // 10)
-        for i in range(total_bars):
-            sc = strong_eng.evaluate(df_enriched, i, msg)
-            rc = refusal_eng.evaluate_rejection(df_enriched, i, None, msg)
-            strong_scores.append(sc.quality_score)
-            strong_confs.append(sc.confidence)
-            refusal_scores.append(rc.quality_score)
-            refusal_confs.append(rc.confidence)
-
-            if (i + 1) % log_interval == 0 or i == total_bars - 1:
-                pct = int((i + 1) / total_bars * 100)
-                update_progress("CANDLE_EVAL", pct, f"Bars {i+1}/{total_bars}", f"[{symbol}] [3/5] CANDLE EVALUATION: {pct}% complete ({i + 1}/{total_bars} bars)")
-
-        df_enriched["strong_candle_score"] = strong_scores
-        df_enriched["strong_candle_confidence"] = strong_confs
-        df_enriched["refusal_candle_score"] = refusal_scores
-        df_enriched["refusal_candle_confidence"] = refusal_confs
-        update_progress("CANDLE_EVAL", 100, "Completed candle evaluations", f"[{symbol}] [3/5] CANDLE EVALUATION: Completed successfully.")
-
-        # 6. Generate Market State dataset using LabelEngine
-        update_progress("LABELING_MS", 0, "Starting Market State labeling...", f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Starting Market State labeling...")
-        label_engine = LabelEngine(
             window_size=cfg["window_size"],
-            window_stride=cfg["window_stride"],
-            registry=registry
-        )
-        df_state = label_engine.generate_dataset(
-            data_inputs={(symbol, cfg["timeframe"]): df_enriched},
-            ms_engine=ms_engine,
-            sd_engine=sd_engine,
-            monitor=monitor,
-            slot_id=slot_id
+            stages=stages,
+            checkpoint_dir=checkpoint_dir
         )
 
-        # 7. Generate Level Break dataset using DatasetBuilder
-        update_progress("LABELING_LVL", 0, "Starting Level Break labeling...", f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Starting Level Break labeling...")
-        db_builder = DatasetBuilder(registry=registry)
-        df_level = db_builder.build_level_break_dataset(
-            df_enriched, msg,
-            monitor=monitor,
-            slot_id=slot_id
-        )
-        if not df_level.empty:
-            df_level["symbol"] = symbol
-            df_level["timeframe"] = cfg["timeframe"]
-        update_progress("LABELING", 100, "Completed labeling", f"[{symbol}] [4/5] LABELING & FEATURE EXTRACTION: Labeled data generated successfully.")
+        # Resume logic loop across sequential unfinished stages
+        while True:
+            next_stage = cp_mgr.get_next_unfinished_stage()
+            if next_stage is None:
+                # All stages have successfully completed
+                break
 
-        # Cache the resulting datasets
-        update_progress("SAVING", 0, "Saving to Cache...", f"[{symbol}] [5/5] SAVING TO CACHE: Serializing processed datasets to Parquet cache files...")
-        os.makedirs(cache_dir, exist_ok=True)
+            # ----------------- STAGE 1: CLEAN -----------------
+            if next_stage == "CLEAN":
+                cp_mgr.mark_stage_started("CLEAN")
+                update_progress("CLEANING", 0, "Loading & cleaning raw candles...", f"[{symbol}] [Stage CLEAN] Loading raw candles from {os.path.basename(file_path)}...")
 
-        saved_state_path = None
-        saved_level_path = None
+                # 1. Load raw candle data
+                if file_path.endswith(".parquet"):
+                    df_raw = pd.read_parquet(file_path)
+                else:
+                    df_raw = pd.read_csv(file_path)
 
-        if not df_state.empty:
-            df_state.to_parquet(cache_state_file, index=False)
-            saved_state_path = cache_state_file
-        if not df_level.empty:
-            df_level.to_parquet(cache_level_file, index=False)
-            saved_level_path = cache_level_file
+                # 2. Execute
+                df_clean = clean_raw_candles(df_raw)
+                total_bars = len(df_clean)
 
-        update_progress("SAVING", 100, "Completed saving", f"[{symbol}] [5/5] SAVING TO CACHE: Saved cached datasets for {symbol} successfully.")
+                # 3. Validate
+                if total_bars < cfg["window_size"]:
+                    raise ValueError(f"Insufficient candles ({total_bars}) for window size {cfg['window_size']}.")
+                essential = ["Datetime", "Open", "High", "Low", "Close"]
+                for col in essential:
+                    if col not in df_clean.columns:
+                        raise ValueError(f"Missing essential column '{col}' in cleaned raw data.")
 
-        # Clean up DataFrames before returning to free memory in child worker
-        del df_raw, df_clean, df_enriched, df_state, df_level
-        import gc
-        gc.collect()
+                # 4. Save Atomic
+                clean_out_path = os.path.join(stages_dir, f"{symbol}_clean.parquet")
+                save_parquet_atomically(df_clean, clean_out_path)
 
-        return saved_state_path, saved_level_path
+                # 5. Update checkpoint
+                cp_mgr.mark_stage_completed("CLEAN", clean_out_path)
+
+                # 6 & 7. Release memory & GC
+                del df_raw, df_clean
+                import gc
+                gc.collect()
+
+                update_progress("CLEANING", 100, f"Cleaned {total_bars} bars", f"[{symbol}] [Stage CLEAN] Finished. Cleaned {total_bars} bars.")
+
+            # ----------------- STAGE 2: ENRICH -----------------
+            elif next_stage == "ENRICH":
+                cp_mgr.mark_stage_started("ENRICH")
+                update_progress("PROCESSING", 0, "Computing EMAs & SMC structures...", f"[{symbol}] [Stage ENRICH] Computing indicators, SMC structures, and S&D zones...")
+
+                # 1. Load required data
+                clean_in_path = cp_mgr.get_stage_output("CLEAN")
+                df_clean = pd.read_parquet(clean_in_path)
+
+                # 2. Execute
+                ind_engine = IndicatorEngine(ema_periods=[50, 600, 800], slope_period=32)
+                df_enriched = ind_engine.calculate(df_clean)
+
+                ms_engine = MarketStructureEngine(lookback=3)
+                df_enriched = ms_engine.process(df_enriched)
+
+                sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
+                df_enriched = sd_engine.process(df_enriched)
+
+                # 3. Validate
+                if df_enriched.empty:
+                    raise ValueError("Enriched DataFrame is empty.")
+                required_cols = ["ema_50", "ema_600", "ema_800", "atr_14", "trend"]
+                for col in required_cols:
+                    if col not in df_enriched.columns:
+                        raise ValueError(f"Missing indicator/SMC column '{col}' in enriched data.")
+
+                # 4. Save Atomic
+                enrich_out_path = os.path.join(stages_dir, f"{symbol}_enriched.parquet")
+                save_parquet_atomically(df_enriched, enrich_out_path)
+
+                # 5. Update checkpoint
+                cp_mgr.mark_stage_completed("ENRICH", enrich_out_path)
+
+                # 6 & 7. Release memory & GC
+                del df_clean, df_enriched
+                import gc
+                gc.collect()
+
+                update_progress("PROCESSING", 100, "Completed structures", f"[{symbol}] [Stage ENRICH] Finished indicators and SMC structures.")
+
+            # ----------------- STAGE 3: EVAL -----------------
+            elif next_stage == "EVAL":
+                cp_mgr.mark_stage_started("EVAL")
+                update_progress("CANDLE_EVAL", 0, "Evaluating candles...", f"[{symbol}] [Stage EVAL] Starting Strong/Refusal candle evaluation...")
+
+                # 1. Load required data
+                enrich_in_path = cp_mgr.get_stage_output("ENRICH")
+                df_enriched = pd.read_parquet(enrich_in_path)
+                total_bars = len(df_enriched)
+
+                # Local reconstruction for evaluation engine
+                ms_engine = MarketStructureEngine(lookback=3)
+                df_struct = ms_engine.process(df_enriched)
+                sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
+                df_final_struct = sd_engine.process(df_struct)
+
+                msg = MarketStructureGraph(
+                    symbol=symbol,
+                    timeframe=cfg["timeframe"],
+                    swing_highs=[s for s in ms_engine.swings if s.level_type == "SwingHigh"],
+                    swing_lows=[s for s in ms_engine.swings if s.level_type == "SwingLow"],
+                    protected_high=ms_engine.protected_high,
+                    protected_low=ms_engine.protected_low,
+                    bos=list(ms_engine.bos_list),
+                    choch=list(ms_engine.choch_list),
+                    supply_zones=[z for z in sd_engine.zones if z.type == "Supply"],
+                    demand_zones=[z for z in sd_engine.zones if z.type == "Demand"],
+                    trend_direction="Bull" if df_final_struct.iloc[-1].get("trend", 0) == 1 else ("Bear" if df_final_struct.iloc[-1].get("trend", 0) == -1 else "Neutral"),
+                    atr=float(df_final_struct.iloc[-1].get("atr_14", 0.0001))
+                )
+
+                # 2. Execute
+                strong_eng = StrongCandleEngine()
+                refusal_eng = RefusalCandleEngine()
+
+                strong_scores = []
+                strong_confs = []
+                refusal_scores = []
+                refusal_confs = []
+
+                log_interval = max(1, total_bars // 10)
+                for i in range(total_bars):
+                    sc = strong_eng.evaluate(df_final_struct, i, msg)
+                    rc = refusal_eng.evaluate_rejection(df_final_struct, i, None, msg)
+                    strong_scores.append(sc.quality_score)
+                    strong_confs.append(sc.confidence)
+                    refusal_scores.append(rc.quality_score)
+                    refusal_confs.append(rc.confidence)
+
+                    if (i + 1) % log_interval == 0 or i == total_bars - 1:
+                        pct = int((i + 1) / total_bars * 100)
+                        update_progress("CANDLE_EVAL", pct, f"Bars {i+1}/{total_bars}", f"[{symbol}] [Stage EVAL] Candle evaluation progress: {pct}%")
+
+                df_evaluated = df_enriched.copy()
+                df_evaluated["strong_candle_score"] = strong_scores
+                df_evaluated["strong_candle_confidence"] = strong_confs
+                df_evaluated["refusal_candle_score"] = refusal_scores
+                df_evaluated["refusal_candle_confidence"] = refusal_confs
+
+                # 3. Validate
+                required_eval_cols = ["strong_candle_score", "strong_candle_confidence", "refusal_candle_score", "refusal_candle_confidence"]
+                for col in required_eval_cols:
+                    if col not in df_evaluated.columns:
+                        raise ValueError(f"Missing evaluation column '{col}' in evaluated data.")
+
+                # 4. Save Atomic
+                eval_out_path = os.path.join(stages_dir, f"{symbol}_evaluated.parquet")
+                save_parquet_atomically(df_evaluated, eval_out_path)
+
+                # 5. Update checkpoint
+                cp_mgr.mark_stage_completed("EVAL", eval_out_path)
+
+                # 6 & 7. Release memory & GC
+                del df_enriched, df_evaluated, df_struct, df_final_struct, msg
+                import gc
+                gc.collect()
+
+                update_progress("CANDLE_EVAL", 100, "Completed candle evaluations", f"[{symbol}] [Stage EVAL] Finished Strong/Refusal candle evaluations.")
+
+            # ----------------- STAGE 4: STATE -----------------
+            elif next_stage == "STATE":
+                cp_mgr.mark_stage_started("STATE")
+                update_progress("LABELING_MS", 0, "Starting Market State labeling...", f"[{symbol}] [Stage STATE] Commencing Market State sliding-window labeling...")
+
+                # 1. Load required data
+                eval_in_path = cp_mgr.get_stage_output("EVAL")
+                df_evaluated = pd.read_parquet(eval_in_path)
+
+                # Local reconstruction
+                ms_engine = MarketStructureEngine(lookback=3)
+                df_struct = ms_engine.process(df_evaluated)
+                sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
+                df_final_struct = sd_engine.process(df_struct)
+
+                # 2. Execute
+                label_engine = LabelEngine(
+                    window_size=cfg["window_size"],
+                    window_stride=cfg["window_stride"],
+                    registry=registry
+                )
+                df_state = label_engine.generate_dataset(
+                    data_inputs={(symbol, cfg["timeframe"]): df_final_struct},
+                    ms_engine=ms_engine,
+                    sd_engine=sd_engine,
+                    monitor=monitor,
+                    slot_id=slot_id
+                )
+
+                # 3. Validate
+                if not df_state.empty:
+                    required_state_cols = ["target", "confidence", "symbol"]
+                    for col in required_state_cols:
+                        if col not in df_state.columns:
+                            raise ValueError(f"Missing column '{col}' in generated Market State dataset.")
+
+                # 4. Save Atomic
+                state_out_path = os.path.join(stages_dir, f"{symbol}_state.parquet")
+                save_parquet_atomically(df_state, state_out_path)
+
+                # 5. Update checkpoint
+                cp_mgr.mark_stage_completed("STATE", state_out_path)
+
+                # 6 & 7. Release memory & GC
+                del df_evaluated, df_struct, df_final_struct, df_state, label_engine
+                import gc
+                gc.collect()
+
+                update_progress("LABELING_MS", 100, "Completed market state labeling", f"[{symbol}] [Stage STATE] Finished Market State labeling.")
+
+            # ----------------- STAGE 5: LEVEL -----------------
+            elif next_stage == "LEVEL":
+                cp_mgr.mark_stage_started("LEVEL")
+                update_progress("LABELING_LVL", 0, "Starting Level Break labeling...", f"[{symbol}] [Stage LEVEL] Commencing Level Break proximity and outcome labeling...")
+
+                # 1. Load required data
+                eval_in_path = cp_mgr.get_stage_output("EVAL")
+                df_evaluated = pd.read_parquet(eval_in_path)
+
+                # Local reconstruction
+                ms_engine = MarketStructureEngine(lookback=3)
+                df_struct = ms_engine.process(df_evaluated)
+                sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
+                df_final_struct = sd_engine.process(df_struct)
+
+                msg = MarketStructureGraph(
+                    symbol=symbol,
+                    timeframe=cfg["timeframe"],
+                    swing_highs=[s for s in ms_engine.swings if s.level_type == "SwingHigh"],
+                    swing_lows=[s for s in ms_engine.swings if s.level_type == "SwingLow"],
+                    protected_high=ms_engine.protected_high,
+                    protected_low=ms_engine.protected_low,
+                    bos=list(ms_engine.bos_list),
+                    choch=list(ms_engine.choch_list),
+                    supply_zones=[z for z in sd_engine.zones if z.type == "Supply"],
+                    demand_zones=[z for z in sd_engine.zones if z.type == "Demand"],
+                    trend_direction="Bull" if df_final_struct.iloc[-1].get("trend", 0) == 1 else ("Bear" if df_final_struct.iloc[-1].get("trend", 0) == -1 else "Neutral"),
+                    atr=float(df_final_struct.iloc[-1].get("atr_14", 0.0001))
+                )
+
+                # 2. Execute
+                db_builder = DatasetBuilder(registry=registry)
+                df_level = db_builder.build_level_break_dataset(
+                    df_final_struct, msg,
+                    monitor=monitor,
+                    slot_id=slot_id
+                )
+                if not df_level.empty:
+                    df_level["symbol"] = symbol
+                    df_level["timeframe"] = cfg["timeframe"]
+
+                # 3. Validate
+                if not df_level.empty:
+                    required_level_cols = ["target", "zone_type", "symbol"]
+                    for col in required_level_cols:
+                        if col not in df_level.columns:
+                            raise ValueError(f"Missing column '{col}' in generated Level Break dataset.")
+
+                # 4. Save Atomic
+                level_out_path = os.path.join(stages_dir, f"{symbol}_level.parquet")
+                save_parquet_atomically(df_level, level_out_path)
+
+                # 5. Update checkpoint
+                cp_mgr.mark_stage_completed("LEVEL", level_out_path)
+
+                # 6 & 7. Release memory & GC
+                del df_evaluated, df_struct, df_final_struct, msg, df_level, db_builder
+                import gc
+                gc.collect()
+
+                update_progress("LABELING_LVL", 100, "Completed level break labeling", f"[{symbol}] [Stage LEVEL] Finished Level Break labeling.")
+
+        # Finally, return completed stage outputs
+        state_final_path = cp_mgr.get_stage_output("STATE")
+        level_final_path = cp_mgr.get_stage_output("LEVEL")
+        return state_final_path, level_final_path
 
     except Exception as e:
         logger.error(f"[{symbol}] Error processing symbol: {e}", exc_info=True)
@@ -621,13 +797,18 @@ def main():
     logger.info(f"Timeframe        : {cfg['timeframe']}")
     logger.info(f"Window Size/Stride: {cfg['window_size']} / {cfg['window_stride']}")
 
-    # Clear cache if forced
-    cache_dir = PathManager.get_relative_path("cache")
-    if args.force and os.path.exists(cache_dir):
-        logger.info("Force flag enabled. Flushing cache directory...")
-        import shutil
-        shutil.rmtree(cache_dir)
-        os.makedirs(cache_dir, exist_ok=True)
+    # Flush directories if forced
+    stages_dir = PathManager.get_path("temporary", "stages")
+    checkpoint_dir = PathManager.get_path("temporary", "checkpoints")
+
+    if args.force:
+        logger.info("Force flag enabled. Flushing checkpoints, stages, and cache directories...")
+        shutil.rmtree(stages_dir, ignore_errors=True)
+        shutil.rmtree(checkpoint_dir, ignore_errors=True)
+        shutil.rmtree(PathManager.get_path("cache"), ignore_errors=True)
+
+    os.makedirs(stages_dir, exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Discover historical candle files
     discovered = discover_historical_files(cfg["input_dir"], args.symbol, cfg["timeframe"])
@@ -680,7 +861,7 @@ def main():
 
             with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
                 future_to_sym = {
-                    executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, None, None, progress_queue): sym
+                    executor.submit(process_single_symbol, sym, path, cfg, registry, None, None, None, progress_queue): sym
                     for sym, path in discovered.items()
                 }
                 for future in concurrent.futures.as_completed(future_to_sym):
@@ -703,7 +884,7 @@ def main():
             logger.info(f"Initiating ThreadPoolExecutor execution on {max_workers} thread workers...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_sym = {
-                    executor.submit(process_single_symbol, sym, path, cfg, registry, cache_dir, monitor, None, None): sym
+                    executor.submit(process_single_symbol, sym, path, cfg, registry, None, monitor, None, None): sym
                     for sym, path in discovered.items()
                 }
                 for future in concurrent.futures.as_completed(future_to_sym):
@@ -719,7 +900,7 @@ def main():
                     monitor.increment_completed()
     else:
         for sym, path in discovered.items():
-            state_path, level_path = process_single_symbol(sym, path, cfg, registry, cache_dir, monitor, 1, None)
+            state_path, level_path = process_single_symbol(sym, path, cfg, registry, None, monitor, 1, None)
             if state_path:
                 state_paths.append(state_path)
             if level_path:
@@ -758,7 +939,7 @@ def main():
             master_state = cleaner.clean(master_state, label_col="target")
 
             state_path = os.path.join(cfg["output_dir"], "market_state_dataset.parquet")
-            master_state.to_parquet(state_path, index=False)
+            save_parquet_atomically(master_state, state_path)
             logger.info(f"Saved Consolidated Market State Dataset to {state_path} ({len(master_state)} samples)")
 
             # Validate
@@ -788,7 +969,7 @@ def main():
                     master_rl.loc[idx[-5:], "done"] = True
 
             rl_path = os.path.join(cfg["output_dir"], "future_rl_dataset.parquet")
-            master_rl.to_parquet(rl_path, index=False)
+            save_parquet_atomically(master_rl, rl_path)
             logger.info(f"Saved Reinforcement Learning Dataset to {rl_path} ({len(master_rl)} samples)")
             del master_rl
             gc.collect()
@@ -810,7 +991,7 @@ def main():
                 master_tq["trade_quality_score"] = 50.0
 
             tq_path = os.path.join(cfg["output_dir"], "future_trade_quality_dataset.parquet")
-            master_tq.to_parquet(tq_path, index=False)
+            save_parquet_atomically(master_tq, tq_path)
             logger.info(f"Saved Trade Quality Dataset to {tq_path} ({len(master_tq)} samples)")
             del master_tq
             gc.collect()
@@ -841,7 +1022,7 @@ def main():
             master_level = cleaner.clean(master_level, label_col="target")
 
             level_path = os.path.join(cfg["output_dir"], "level_break_dataset.parquet")
-            master_level.to_parquet(level_path, index=False)
+            save_parquet_atomically(master_level, level_path)
             logger.info(f"Saved Consolidated Level Break Dataset to {level_path} ({len(master_level)} samples)")
 
             # Validate
