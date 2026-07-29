@@ -1,0 +1,10 @@
+{
+    "layers": {
+        "swings": true,
+        "structure": true,
+        "zones": true,
+        "levels": true,
+        "signals": true,
+        "ml": true
+    }
+}

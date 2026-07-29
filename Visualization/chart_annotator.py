@@ -16,6 +16,8 @@ from Market_Data_Pipeline.state_engine import StateContext
 from Visualization.debug_config import DebugConfig
 from Visualization.render_types import DrawInstruction
 from Visualization.draw_instruction_writer import DrawInstructionWriter
+from Market_Data_Pipeline.strong_candle_engine import StrongCandleEngine
+from Market_Data_Pipeline.refusal_candle_engine import RefusalCandleEngine
 
 logger = logging.getLogger("VisualizationEngine")
 
