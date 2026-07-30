@@ -378,6 +378,18 @@ class ChartAnnotationEngine:
         """
         import matplotlib.patches as patches
 
+        # Dynamically determine the visible window limits on the Matplotlib axes
+        # to prevent automatic horizontal axes expansion and vertical scaling squishing.
+        x_min, x_max = ax.get_xlim()
+        if (x_min == 0.0 and x_max == 1.0) or (abs(x_max - x_min) < 2.0):
+            start_i = 0
+            end_i = len(df) if df is not None else 99999999
+            is_zoomed = False
+        else:
+            start_i = max(0, int(np.floor(x_min)) - 5)
+            end_i = int(np.ceil(x_max)) + 5
+            is_zoomed = True
+
         # Title/State text overlay
         if state_ctx and self.config.is_enabled("structure"):
             text_str = (
@@ -395,56 +407,67 @@ class ChartAnnotationEngine:
         # 1. Swings (dots/markers)
         if self.config.is_enabled("swings"):
             for swing in msg.swing_highs:
-                ax.plot(swing.index, swing.price, 'v', color='red', markersize=6, alpha=0.7)
-                ax.text(swing.index, swing.price + (msg.atr * 0.1), f"H:{swing.index}", color='red', fontsize=6)
+                if not is_zoomed or (start_i <= swing.index <= end_i):
+                    ax.plot(swing.index, swing.price, 'v', color='red', markersize=6, alpha=0.7)
+                    ax.text(swing.index, swing.price + (msg.atr * 0.1), f"H:{swing.index}", color='red', fontsize=6)
             for swing in msg.swing_lows:
-                ax.plot(swing.index, swing.price, '^', color='green', markersize=6, alpha=0.7)
-                ax.text(swing.index, swing.price - (msg.atr * 0.1), f"L:{swing.index}", color='green', fontsize=6)
+                if not is_zoomed or (start_i <= swing.index <= end_i):
+                    ax.plot(swing.index, swing.price, '^', color='green', markersize=6, alpha=0.7)
+                    ax.text(swing.index, swing.price - (msg.atr * 0.1), f"L:{swing.index}", color='green', fontsize=6)
 
-            if msg.protected_high:
+            if msg.protected_high and (not is_zoomed or (start_i <= msg.protected_high.index <= end_i)):
                 ax.plot(msg.protected_high.index, msg.protected_high.price, 'o', color='darkred', markersize=8, label='Protected High')
-            if msg.protected_low:
+            if msg.protected_low and (not is_zoomed or (start_i <= msg.protected_low.index <= end_i)):
                 ax.plot(msg.protected_low.index, msg.protected_low.price, 'o', color='darkgreen', markersize=8, label='Protected Low')
 
         # 2. Structure Breaks (BOS / CHOCH lines)
         if self.config.is_enabled("structure"):
             for b in msg.bos:
-                color = 'blue' if b.direction == 1 else 'magenta'
-                label_text = "BOS (Bull)" if b.direction == 1 else "BOS (Bear)"
-                ax.axhline(y=b.broken_level, color=color, linestyle='--', alpha=0.5)
-                ax.text(b.index, b.broken_level, label_text, color=color, fontsize=8, alpha=0.8)
+                if not is_zoomed or (start_i <= b.index <= end_i):
+                    color = 'blue' if b.direction == 1 else 'magenta'
+                    label_text = "BOS (Bull)" if b.direction == 1 else "BOS (Bear)"
+                    if is_zoomed:
+                        ax.hlines(y=b.broken_level, xmin=max(start_i, b.index), xmax=end_i, colors=color, linestyles='--', alpha=0.5)
+                    else:
+                        ax.axhline(y=b.broken_level, color=color, linestyle='--', alpha=0.5)
+                    ax.text(b.index, b.broken_level, label_text, color=color, fontsize=8, alpha=0.8)
 
             for c in msg.choch:
-                color = 'cyan' if c.new_trend == 1 else 'orange'
-                label_text = "CHOCH (Bull)" if c.new_trend == 1 else "CHOCH (Bear)"
-                ax.plot(c.index, c.price, 'x', color=color, markersize=10, markeredgewidth=2)
-                ax.text(c.index, c.price, label_text, color=color, fontsize=8, alpha=0.8)
+                if not is_zoomed or (start_i <= c.index <= end_i):
+                    color = 'cyan' if c.new_trend == 1 else 'orange'
+                    label_text = "CHOCH (Bull)" if c.new_trend == 1 else "CHOCH (Bear)"
+                    ax.plot(c.index, c.price, 'x', color=color, markersize=10, markeredgewidth=2)
+                    ax.text(c.index, c.price, label_text, color=color, fontsize=8, alpha=0.8)
 
         # 3. Supply & Demand Zones (rectangles)
         if self.config.is_enabled("zones"):
             for z in msg.supply_zones:
                 if z.broken:
                     continue
-                rect = patches.Rectangle(
-                    (z.created_idx, z.lower),
-                    100,  # Arbitrary lookahead width for notebook
-                    z.upper - z.lower,
-                    linewidth=1, edgecolor='red', facecolor='red', alpha=0.1
-                )
-                ax.add_patch(rect)
-                ax.text(z.created_idx, z.upper, f"Supply (Str: {z.strength_score:.1f})", color='red', fontsize=7, alpha=0.7)
+                if not is_zoomed or (z.created_idx <= end_i):
+                    rect_width = (end_i - z.created_idx) if is_zoomed else 100
+                    rect = patches.Rectangle(
+                        (z.created_idx, z.lower),
+                        rect_width,
+                        z.upper - z.lower,
+                        linewidth=1, edgecolor='red', facecolor='red', alpha=0.1
+                    )
+                    ax.add_patch(rect)
+                    ax.text(z.created_idx, z.upper, f"Supply (Str: {z.strength_score:.1f})", color='red', fontsize=7, alpha=0.7)
 
             for z in msg.demand_zones:
                 if z.broken:
                     continue
-                rect = patches.Rectangle(
-                    (z.created_idx, z.lower),
-                    100,  # Arbitrary lookahead width for notebook
-                    z.upper - z.lower,
-                    linewidth=1, edgecolor='blue', facecolor='blue', alpha=0.1
-                )
-                ax.add_patch(rect)
-                ax.text(z.created_idx, z.lower, f"Demand (Str: {z.strength_score:.1f})", color='blue', fontsize=7, alpha=0.7)
+                if not is_zoomed or (z.created_idx <= end_i):
+                    rect_width = (end_i - z.created_idx) if is_zoomed else 100
+                    rect = patches.Rectangle(
+                        (z.created_idx, z.lower),
+                        rect_width,
+                        z.upper - z.lower,
+                        linewidth=1, edgecolor='blue', facecolor='blue', alpha=0.1
+                    )
+                    ax.add_patch(rect)
+                    ax.text(z.created_idx, z.lower, f"Demand (Str: {z.strength_score:.1f})", color='blue', fontsize=7, alpha=0.7)
 
         # 4. Trade Levels (Candidate, Stop Loss, Take Profit)
         if self.config.is_enabled("levels") and trade_levels:
@@ -491,9 +514,11 @@ class ChartAnnotationEngine:
             strong_engine = StrongCandleEngine()
             refusal_engine = RefusalCandleEngine()
 
-            # Evaluate and draw last 100 bars for display
-            start_i = max(0, len(df) - 100)
-            for i in range(start_i, len(df)):
+            # Evaluate and draw visible bars for display
+            eval_start = max(0, start_i)
+            eval_end = min(len(df), end_i)
+
+            for i in range(eval_start, eval_end):
                 sc = strong_engine.evaluate(df, i, msg)
                 if sc.classification in ["VERY_STRONG", "STRONG", "EXPANSION", "CLIMAX", "EXHAUSTION"]:
                     col = "green" if sc.bullish else "red"
