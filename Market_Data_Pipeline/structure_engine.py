@@ -127,7 +127,7 @@ class MarketStructureEngine:
         for t in range(n_bars):
             idx = t - self.lookback
             if idx >= self.lookback:
-                # Process Pivot High
+                # Process Pivot High Confirmation
                 if piv_highs[idx]:
                     pivPrice = highs[idx]
                     pivTime = times[idx] if isinstance(times[idx], datetime) else (pd.to_datetime(times[idx]) if times[idx] is not None else None)
@@ -150,54 +150,11 @@ class MarketStructureEngine:
                     self.swings.append(swing)
                     self.last_swing_high = swing
 
-                    # Breakout Check (BOS/CHoCH)
-                    if g_phLevel > 0 and pivPrice > g_phLevel:
-                        tag = "CHoCH" if g_trend == -1 else "BOS"
-                        g_trend = 1
-
-                        distance = float(pivPrice - g_phLevel)
-                        norm_dist = float(distance / atr_vals[t]) if atr_vals[t] > 0 else 0.0
-
-                        if tag == "BOS":
-                            bos_obj = BOS(
-                                index=t,
-                                direction=1,
-                                broken_level=float(g_phLevel),
-                                timestamp=times[t],
-                                strength=self.lookback,
-                                distance=distance,
-                                atr_normalized_distance=norm_dist,
-                                break_candle=t,
-                                impulse_size=distance,
-                                atr_normalized_impulse=norm_dist,
-                                break_strength=1.0
-                            )
-                            self.bos_list.append(bos_obj)
-                            self.bos_count += 1
-                            self.last_bos_idx = t
-                        else:
-                            choch_obj = CHOCH(
-                                index=t,
-                                previous_trend=-1,
-                                new_trend=1,
-                                timestamp=times[t],
-                                price=float(pivPrice),
-                                strength=self.lookback,
-                                confirmation_score=1.0
-                            )
-                            self.choch_list.append(choch_obj)
-                            self.choch_count += 1
-                            self.last_choch_idx = t
-
-                        # Protected Levels updates
-                        if self.last_swing_low:
-                            self.protected_low = self.last_swing_low
-                            self.protected_low.level_type = "ProtectedLow"
-
+                    # Establish newly confirmed swing high level as active
                     g_phLevel = pivPrice
                     g_phIdx = idx
 
-                # Process Pivot Low
+                # Process Pivot Low Confirmation
                 if piv_lows[idx]:
                     pivPrice = lows[idx]
                     pivTime = times[idx] if isinstance(times[idx], datetime) else (pd.to_datetime(times[idx]) if times[idx] is not None else None)
@@ -220,64 +177,128 @@ class MarketStructureEngine:
                     self.swings.append(swing)
                     self.last_swing_low = swing
 
-                    # Breakdown Check
-                    if g_plLevel > 0 and pivPrice < g_plLevel:
-                        tag = "CHoCH" if g_trend == 1 else "BOS"
-                        g_trend = -1
-
-                        distance = float(g_plLevel - pivPrice)
-                        norm_dist = float(distance / atr_vals[t]) if atr_vals[t] > 0 else 0.0
-
-                        if tag == "BOS":
-                            bos_obj = BOS(
-                                index=t,
-                                direction=-1,
-                                broken_level=float(g_plLevel),
-                                timestamp=times[t],
-                                strength=self.lookback,
-                                distance=distance,
-                                atr_normalized_distance=norm_dist,
-                                break_candle=t,
-                                impulse_size=distance,
-                                atr_normalized_impulse=norm_dist,
-                                break_strength=1.0
-                            )
-                            self.bos_list.append(bos_obj)
-                            self.bos_count += 1
-                            self.last_bos_idx = t
-                        else:
-                            choch_obj = CHOCH(
-                                index=t,
-                                previous_trend=1,
-                                new_trend=-1,
-                                timestamp=times[t],
-                                price=float(pivPrice),
-                                strength=self.lookback,
-                                confirmation_score=1.0
-                            )
-                            self.choch_list.append(choch_obj)
-                            self.choch_count += 1
-                            self.last_choch_idx = t
-
-                        # Protected Levels updates
-                        if self.last_swing_high:
-                            self.protected_high = self.last_swing_high
-                            self.protected_high.level_type = "ProtectedHigh"
-
+                    # Establish newly confirmed swing low level as active
                     g_plLevel = pivPrice
                     g_plIdx = idx
+
+            # Sequential Point-in-time Breakout / Breakdown Evaluation on every bar t
+            if g_phLevel > 0 and highs[t] > g_phLevel:
+                # Bullish Breakout
+                is_choch = (g_trend == -1)
+                tag = "CHoCH" if is_choch else "BOS"
+                g_trend = 1
+
+                distance = float(highs[t] - g_phLevel)
+                norm_dist = float(distance / atr_vals[t]) if atr_vals[t] > 0 else 0.0
+
+                if not is_choch:
+                    bos_obj = BOS(
+                        index=t,
+                        direction=1,
+                        broken_level=float(g_phLevel),
+                        timestamp=times[t] if times[t] is not None else None,
+                        strength=self.lookback,
+                        distance=distance,
+                        atr_normalized_distance=norm_dist,
+                        break_candle=t,
+                        impulse_size=distance,
+                        atr_normalized_impulse=norm_dist,
+                        break_strength=1.0
+                    )
+                    self.bos_list.append(bos_obj)
+                    self.bos_count += 1
+                    self.last_bos_idx = t
+                    bos_arr[t] = 1
+                else:
+                    choch_obj = CHOCH(
+                        index=t,
+                        previous_trend=-1,
+                        new_trend=1,
+                        timestamp=times[t] if times[t] is not None else None,
+                        price=float(highs[t]),
+                        strength=self.lookback,
+                        confirmation_score=1.0
+                    )
+                    self.choch_list.append(choch_obj)
+                    self.choch_count += 1
+                    self.last_choch_idx = t
+                    choch_arr[t] = 1
+
+                # Deactivate broken level (mitigation)
+                g_phLevel = 0.0
+
+                # Mark swing high level as broken
+                if self.last_swing_high:
+                    self.last_swing_high.broken = True
+
+                # Protected Levels updates
+                if self.last_swing_low:
+                    self.protected_low = self.last_swing_low
+                    self.protected_low.level_type = "ProtectedLow"
+
+            if g_plLevel > 0 and lows[t] < g_plLevel:
+                # Bearish Breakdown
+                is_choch = (g_trend == 1)
+                tag = "CHoCH" if is_choch else "BOS"
+                g_trend = -1
+
+                distance = float(g_plLevel - lows[t])
+                norm_dist = float(distance / atr_vals[t]) if atr_vals[t] > 0 else 0.0
+
+                if not is_choch:
+                    bos_obj = BOS(
+                        index=t,
+                        direction=-1,
+                        broken_level=float(g_plLevel),
+                        timestamp=times[t] if times[t] is not None else None,
+                        strength=self.lookback,
+                        distance=distance,
+                        atr_normalized_distance=norm_dist,
+                        break_candle=t,
+                        impulse_size=distance,
+                        atr_normalized_impulse=norm_dist,
+                        break_strength=1.0
+                    )
+                    self.bos_list.append(bos_obj)
+                    self.bos_count += 1
+                    self.last_bos_idx = t
+                    bos_arr[t] = -1
+                else:
+                    choch_obj = CHOCH(
+                        index=t,
+                        previous_trend=1,
+                        new_trend=-1,
+                        timestamp=times[t] if times[t] is not None else None,
+                        price=float(lows[t]),
+                        strength=self.lookback,
+                        confirmation_score=1.0
+                    )
+                    self.choch_list.append(choch_obj)
+                    self.choch_count += 1
+                    self.last_choch_idx = t
+                    choch_arr[t] = -1
+
+                # Deactivate broken level (mitigation)
+                g_plLevel = 0.0
+
+                # Mark swing low level as broken
+                if self.last_swing_low:
+                    self.last_swing_low.broken = True
+
+                # Protected Levels updates
+                if self.last_swing_high:
+                    self.protected_high = self.last_swing_high
+                    self.protected_high.level_type = "ProtectedHigh"
 
             # Populate point-in-time state arrays
             trend_arr[t] = g_trend
             bos_cnt_arr[t] = self.bos_count
             choch_cnt_arr[t] = self.choch_count
 
-            if self.last_bos_idx != -1:
-                bos_arr[self.last_bos_idx] = self.bos_list[-1].direction if self.bos_list else 0
-                last_bos_dir_arr[t] = self.bos_list[-1].direction if self.bos_list else 0
-            if self.last_choch_idx != -1:
-                choch_arr[self.last_choch_idx] = self.choch_list[-1].new_trend if self.choch_list else 0
-                last_choch_dir_arr[t] = self.choch_list[-1].new_trend if self.choch_list else 0
+            if self.bos_list:
+                last_bos_dir_arr[t] = self.bos_list[-1].direction
+            if self.choch_list:
+                last_choch_dir_arr[t] = self.choch_list[-1].new_trend
 
             # Update confirmed swing high/low prices on historical array
             if g_phIdx != -1:
