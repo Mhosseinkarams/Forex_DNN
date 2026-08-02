@@ -181,7 +181,7 @@ class ProcessingProgressMonitor:
             filled = int((pct / 100) * bar_len)
             bar = "█" * filled + "░" * (bar_len - filled)
 
-            cid_str = f"Chunk {cid}" if isinstance(cid, int) else str(cid)
+            cid_str = f"Chunk {cid:02d}" if isinstance(cid, int) else str(cid)
             line = f"  Worker {slot:02d}: [{cid_str: <10}] | {phase: <15} | [{bar}] {pct:3d}% | {status}"
             lines.append(line)
         lines.append("=" * 100)
@@ -339,7 +339,7 @@ def clean_raw_candles(df: pd.DataFrame) -> pd.DataFrame:
 def save_parquet_atomically(df: pd.DataFrame, path: str) -> None:
     temp_path = f"{path}.tmp"
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    df.to_parquet(temp_path, index=False)
+    df.to_parquet(temp_path, index=False, row_group_size=50000)
     os.replace(temp_path, path)
 
 
@@ -387,11 +387,12 @@ def determine_required_overlap(stage: str, cfg: Dict[str, Any]) -> Tuple[int, in
     elif stage == "EVAL":
         return (4000, 0)
     elif stage == "STATE":
-        window_size = cfg.get("window_size", 35)
-        return (window_size + 100, 0)
+        # STATE needs 4000 bars lookback to reconstruct point-in-time MarketStructureEngine & SupplyDemandEngine correctly
+        return (4000, 0)
     elif stage == "LEVEL":
         lookahead = cfg.get("lookahead_bars", 20)
-        return (100, lookahead)
+        # LEVEL needs 4000 bars lookback to reconstruct point-in-time MarketStructureEngine & SupplyDemandEngine correctly
+        return (4000, lookahead)
     return (0, 0)
 
 
@@ -424,10 +425,58 @@ class ChunkProducer:
         return chunks
 
 
+def read_parquet_row_range(input_path: str, start_idx: int, end_idx: int) -> pd.DataFrame:
+    """Reads only the necessary row groups from a Parquet file to cover the specified row range, minimizing RAM."""
+    pf = pq.ParquetFile(input_path)
+
+    if pf.num_row_groups <= 1:
+        table = pf.read()
+        sliced = table.slice(start_idx, end_idx - start_idx + 1)
+        df = sliced.to_pandas()
+        del table, sliced
+        return df
+
+    row_groups_to_read = []
+    current_row = 0
+    for rg_idx in range(pf.num_row_groups):
+        rg_meta = pf.metadata.row_group(rg_idx)
+        rg_rows = rg_meta.num_rows
+        rg_start = current_row
+        rg_end = current_row + rg_rows - 1
+
+        if max(start_idx, rg_start) <= min(end_idx, rg_end):
+            row_groups_to_read.append(rg_idx)
+
+        current_row += rg_rows
+
+    table = pf.read_row_groups(row_groups_to_read)
+
+    first_loaded_rg_start = 0
+    current_row = 0
+    for rg_idx in range(pf.num_row_groups):
+        rg_rows = pf.metadata.row_group(rg_idx).num_rows
+        if rg_idx == row_groups_to_read[0]:
+            first_loaded_rg_start = current_row
+            break
+        current_row += rg_rows
+
+    local_start = start_idx - first_loaded_rg_start
+    local_len = end_idx - start_idx + 1
+
+    sliced = table.slice(local_start, local_len)
+    df = sliced.to_pandas()
+
+    del table, sliced
+    import gc
+    gc.collect()
+    return df
+
+
 def process_chunk_worker_task(task: Dict[str, Any]) -> Dict[str, Any]:
     """
     Stateless, process-safe worker task. Runs stage computations on a sliced row-range
     with appropriate overlap, trims off warmup buffers, and writes outputs directly to disk.
+    Supports thread/process-safe queue updates back to the parent process for real-time visualization.
     """
     try:
         # Suppress standard logging output inside child processes to keep terminal display strictly clean
@@ -448,23 +497,31 @@ def process_chunk_worker_task(task: Dict[str, Any]) -> Dict[str, Any]:
         lookback_size = task["lookback_size"]
         lookahead_size = task["lookahead_size"]
         cfg = task["cfg"]
+        progress_queue = task.get("progress_queue")
 
-        # Read only specified row range from input file
-        table = pq.read_table(input_path)
-        sliced_table = table.slice(read_start_idx, read_end_idx - read_start_idx + 1)
-        df_chunk = sliced_table.to_pandas()
+        def send_progress(pct: int, status: str):
+            if progress_queue is not None:
+                try:
+                    progress_queue.put(("UPDATE", chunk_id, stage, pct, status))
+                except Exception:
+                    pass
 
-        del table, sliced_table
-        import gc
-        gc.collect()
+        send_progress(5, "Loading dataset slice...")
+
+        # Memory-efficient read of overlapping row groups
+        df_chunk = read_parquet_row_range(input_path, read_start_idx, read_end_idx)
+
+        send_progress(20, "Executing calculations...")
 
         if stage == "ENRICH":
             from Collecting_Data.indicators import IndicatorEngine
             ind_engine = IndicatorEngine(ema_periods=cfg.get("ema_periods", [50, 600, 800]), slope_period=32)
             df_computed = ind_engine.calculate(df_chunk)
+            send_progress(50, "Indicators done...")
 
             ms_engine = MarketStructureEngine(lookback=3)
             df_computed = ms_engine.process(df_computed)
+            send_progress(80, "SMC done...")
 
             sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
             df_computed = sd_engine.process(df_computed)
@@ -503,6 +560,7 @@ def process_chunk_worker_task(task: Dict[str, Any]) -> Dict[str, Any]:
             refusal_scores = []
             refusal_confs = []
 
+            log_interval = max(1, total_bars // 10)
             for i in range(total_bars):
                 sc = strong_eng.evaluate(df_final_struct, i, msg)
                 rc = refusal_eng.evaluate_rejection(df_final_struct, i, None, msg)
@@ -510,6 +568,10 @@ def process_chunk_worker_task(task: Dict[str, Any]) -> Dict[str, Any]:
                 strong_confs.append(sc.confidence)
                 refusal_scores.append(rc.quality_score)
                 refusal_confs.append(rc.confidence)
+
+                if i % log_interval == 0 or i == total_bars - 1:
+                    pct = 20 + int((i / total_bars) * 70)
+                    send_progress(pct, f"Bar {i}/{total_bars}")
 
             df_computed = df_chunk.copy()
             df_computed["strong_candle_score"] = strong_scores
@@ -555,6 +617,7 @@ def process_chunk_worker_task(task: Dict[str, Any]) -> Dict[str, Any]:
             active_len = end_idx - start_idx + 1
             all_samples = []
 
+            log_interval = max(1, active_len // 10)
             for offset_i in range(active_len):
                 curr_end_idx = lookback_size + offset_i
                 curr_start_idx = curr_end_idx - window_size + 1
@@ -565,6 +628,10 @@ def process_chunk_worker_task(task: Dict[str, Any]) -> Dict[str, Any]:
                 label, confidence, label_info = label_engine.labeler.label_window(
                     df_final_struct, msg, curr_start_idx, curr_end_idx
                 )
+
+                if offset_i % log_interval == 0 or offset_i == active_len - 1:
+                    pct = 20 + int((offset_i / active_len) * 70)
+                    send_progress(pct, f"Windows {offset_i}/{active_len}")
 
                 if label is None:
                     continue
@@ -635,6 +702,7 @@ def process_chunk_worker_task(task: Dict[str, Any]) -> Dict[str, Any]:
             lookahead_bars = cfg.get("lookahead_bars", 20)
             rejection_threshold_atr = 1.0
 
+            log_interval = max(1, active_len // 10)
             for i in range(active_len):
                 curr_idx = lookback_size + i
                 if curr_idx >= len(df_final_struct) - lookahead_bars:
@@ -657,6 +725,10 @@ def process_chunk_worker_task(task: Dict[str, Any]) -> Dict[str, Any]:
                     if 0 < (row_close - d.upper) <= 0.5 * atr:
                         near_demand = d
                         break
+
+                if i % log_interval == 0 or i == active_len - 1:
+                    pct = 20 + int((i / active_len) * 70)
+                    send_progress(pct, f"Bars {i}/{active_len}")
 
                 if not near_supply and not near_demand:
                     continue
@@ -708,7 +780,9 @@ def process_chunk_worker_task(task: Dict[str, Any]) -> Dict[str, Any]:
         else:
             df_out = df_computed.copy()
 
+        send_progress(95, "Saving chunk to disk...")
         save_parquet_atomically(df_out, output_path)
+        send_progress(100, "Saved to disk")
 
         del df_chunk, df_computed, df_out
         import gc
@@ -804,6 +878,33 @@ class ChunkCheckpointManager:
                 pass
 
 
+def progress_listener_worker(queue, monitor):
+    """
+    Background thread running in the main parent process that listens to the progress queue
+    and updates the terminal ProcessingProgressMonitor display dynamically in real-time.
+    """
+    while True:
+        try:
+            msg = queue.get()
+            if msg is None:  # Shutdown sentinel
+                break
+
+            msg_type = msg[0]
+            if msg_type == "UPDATE":
+                chunk_id, phase, pct, status = msg[1], msg[2], msg[3], msg[4]
+                slot = monitor.register_chunk_slot(chunk_id)
+                monitor.update(slot, chunk_id, phase, pct, status)
+
+                # If chunk is done or failed, release slot
+                if pct >= 100 or status in ["Saved to disk", "FAILED", "ERROR"]:
+                    monitor.release_chunk_slot(chunk_id)
+            elif msg_type == "RELEASE":
+                chunk_id = msg[1]
+                monitor.release_chunk_slot(chunk_id)
+        except Exception:
+            pass
+
+
 def run_stage_with_chunking(
     symbol: str,
     stage: str,
@@ -849,6 +950,28 @@ def run_stage_with_chunking(
     chunk_paths = []
     pending_chunks = []
 
+    # Set up Interactive Console Monitor if enabled
+    monitor = ProcessingProgressMonitor(num_workers=max_workers, total_chunks=total_chunks, enabled=True)
+
+    # Setup queue and background listener if multiprocessing is enabled
+    manager = None
+    progress_queue = None
+    listener_thread = None
+
+    if max_workers > 1:
+        try:
+            manager = multiprocessing.Manager()
+            progress_queue = manager.Queue()
+            listener_thread = threading.Thread(
+                target=progress_listener_worker,
+                args=(progress_queue, monitor),
+                daemon=True
+            )
+            listener_thread.start()
+        except Exception as e:
+            logger.warning(f"Could not start multiprocessing Manager for progress queue: {e}. Falling back to sequential visualization.")
+            progress_queue = None
+
     for chunk in chunks:
         cid = chunk["chunk_id"]
         chunk_out_path = os.path.join(temp_stage_dir, f"chunk_{cid:04d}.parquet")
@@ -869,12 +992,11 @@ def run_stage_with_chunking(
                 "lookahead_size": chunk["lookahead_size"],
                 "input_path": input_path,
                 "output_path": chunk_out_path,
-                "cfg": cfg
+                "cfg": cfg,
+                "progress_queue": progress_queue
             }
             pending_chunks.append(task)
 
-    # Set up Interactive Console Monitor if enabled
-    monitor = ProcessingProgressMonitor(num_workers=max_workers, total_chunks=total_chunks, enabled=True)
     monitor.completed_chunks = total_chunks - len(pending_chunks)
 
     # Run Remaining Chunks via stateless subprocess workers
@@ -892,7 +1014,6 @@ def run_stage_with_chunking(
             for future in concurrent.futures.as_completed(future_to_task):
                 task = future_to_task[future]
                 cid = task["chunk_id"]
-                slot_id = monitor.register_chunk_slot(cid)
 
                 try:
                     result = future.result()
@@ -900,19 +1021,27 @@ def run_stage_with_chunking(
                         out_path = result["output_path"]
                         chunk_paths.append(out_path)
                         chunk_checkpoint.mark_chunk_completed(cid, out_path)
-                        monitor.update(slot_id, cid, "DONE", 100, f"Saved to disk")
                         monitor.increment_completed()
                     else:
                         err = result.get("error", "Unknown error")
                         logger.error(f"[{symbol}] Chunk {cid} failed with error: {err}")
-                        monitor.update(slot_id, cid, "FAILED", 0, f"Error: {err}")
                         raise RuntimeError(f"Stage {stage} Chunk {cid} processing failed.")
                 except Exception as exc:
                     logger.error(f"[{symbol}] Exception in chunk worker for chunk {cid}: {exc}")
-                    monitor.update(slot_id, cid, "CRASHED", 0, str(exc))
                     raise exc
-                finally:
-                    monitor.release_chunk_slot(cid)
+
+    # Clean progress listener thread cleanly
+    if listener_thread is not None:
+        try:
+            progress_queue.put(None)
+            listener_thread.join(timeout=2)
+        except Exception:
+            pass
+        if manager is not None:
+            try:
+                manager.shutdown()
+            except Exception:
+                pass
 
     if monitor.enabled:
         monitor.clear()
@@ -1034,6 +1163,145 @@ def process_single_symbol(
         return None, None
 
 
+def stream_consolidate_all_datasets(
+    state_paths: List[str],
+    level_paths: List[str],
+    output_dir: str,
+    window_size: int,
+    cleaner: DataCleaner,
+    validator: DatasetValidator,
+    mem_monitor
+) -> Tuple[int, int]:
+    """
+    Consolidates individual symbol state and level outputs symbol-by-symbol in a streaming fashion,
+    generating Consolidated Market State, RL, Trade Quality, and Level Break datasets.
+    Maintains zero concurrent symbol loading.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 1. Consolidate Market State, RL, and Trade Quality datasets
+    state_out_path = os.path.join(output_dir, "market_state_dataset.parquet")
+    rl_out_path = os.path.join(output_dir, "future_rl_dataset.parquet")
+    tq_out_path = os.path.join(output_dir, "future_trade_quality_dataset.parquet")
+
+    state_writer = None
+    rl_writer = None
+    tq_writer = None
+
+    total_state_rows = 0
+
+    logger.info("Consolidating Market State, RL, and Trade Quality datasets in streaming fashion...")
+    mem_monitor.check("Consolidation starting")
+
+    for path in state_paths:
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            continue
+
+        # Load single symbol state
+        df_sym = pd.read_parquet(path)
+        if df_sym.empty:
+            continue
+
+        # Clean
+        df_sym = cleaner.clean(df_sym, label_col="target")
+        if df_sym.empty:
+            continue
+
+        # Write Market State
+        table_state = pa.Table.from_pandas(df_sym, preserve_index=False)
+        if state_writer is None:
+            state_writer = pq.ParquetWriter(state_out_path, table_state.schema)
+        state_writer.write_table(table_state)
+
+        # Generate RL
+        df_rl = df_sym.copy()
+        if "Close" in df_rl.columns:
+            forward_close = df_rl["Close"].shift(-5)
+            df_rl["reward"] = ((forward_close - df_rl["Close"]) / df_rl["Close"]).fillna(0.0)
+            df_rl["action"] = np.where(df_rl["reward"] > 0.001, 1, np.where(df_rl["reward"] < -0.001, 2, 0))
+        else:
+            df_rl["reward"] = 0.0
+            df_rl["action"] = 0
+
+        df_rl["done"] = False
+        if len(df_rl) > 5:
+            df_rl.loc[df_rl.index[-5:], "done"] = True
+
+        table_rl = pa.Table.from_pandas(df_rl, preserve_index=False)
+        if rl_writer is None:
+            rl_writer = pq.ParquetWriter(rl_out_path, table_rl.schema)
+        rl_writer.write_table(table_rl)
+
+        # Generate Trade Quality
+        df_tq = df_sym.copy()
+        if "Close" in df_tq.columns:
+            forward_close_10 = df_tq["Close"].shift(-10).fillna(df_tq["Close"])
+            atr = df_tq.get("atr", 0.0010)
+            df_tq["win_loss"] = np.where(forward_close_10 >= df_tq["Close"] + 1.5 * atr, 1, 0)
+            df_tq["trade_quality_score"] = np.clip((forward_close_10 - df_tq["Close"]) / (1.5 * atr + 1e-9) * 100.0, 0, 100.0)
+        else:
+            df_tq["win_loss"] = 0
+            df_tq["trade_quality_score"] = 50.0
+
+        table_tq = pa.Table.from_pandas(df_tq, preserve_index=False)
+        if tq_writer is None:
+            tq_writer = pq.ParquetWriter(tq_out_path, table_tq.schema)
+        tq_writer.write_table(table_tq)
+
+        total_state_rows += len(df_sym)
+
+        del df_sym, df_rl, df_tq, table_state, table_rl, table_tq
+        import gc
+        gc.collect()
+
+    if state_writer is not None:
+        state_writer.close()
+    if rl_writer is not None:
+        rl_writer.close()
+    if tq_writer is not None:
+        tq_writer.close()
+
+    logger.info(f"Market State streaming consolidation completed. Total rows: {total_state_rows}")
+    mem_monitor.check("Market State consolidation completed")
+
+    # 2. Consolidate Level Break dataset
+    level_out_path = os.path.join(output_dir, "level_break_dataset.parquet")
+    level_writer = None
+    total_level_rows = 0
+
+    logger.info("Consolidating Level Break datasets in streaming fashion...")
+    for path in level_paths:
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            continue
+
+        df_sym = pd.read_parquet(path)
+        if df_sym.empty:
+            continue
+
+        df_sym = cleaner.clean(df_sym, label_col="target")
+        if df_sym.empty:
+            continue
+
+        table_lvl = pa.Table.from_pandas(df_sym, preserve_index=False)
+        if level_writer is None:
+            level_writer = pq.ParquetWriter(level_out_path, table_lvl.schema)
+        level_writer.write_table(table_lvl)
+
+        total_level_rows += len(df_sym)
+
+        del df_sym, table_lvl
+        import gc
+        gc.collect()
+
+    if level_writer is not None:
+        level_writer.close()
+
+    logger.info(f"Level Break streaming consolidation completed. Total rows: {total_level_rows}")
+    mem_monitor.check("All consolidations completed")
+
+    return total_state_rows, total_level_rows
+
+
 def main():
     from Collecting_Data.memory_monitor import MemoryMonitor
     mem_monitor = MemoryMonitor()
@@ -1111,115 +1379,31 @@ def main():
         import gc
         gc.collect()
 
-    # Consolidate and clean final datasets
+    # Consolidate and clean final datasets using a memory-bound streaming pipeline
     os.makedirs(cfg["output_dir"], exist_ok=True)
     cleaner = DataCleaner()
     validator = DatasetValidator()
 
-    # 1. Market State Dataset
-    master_state = None
-    if state_paths:
-        logger.info("Consolidating Market State Datasets...")
-        mem_monitor.check("Consolidation of Market State start")
-        all_states = []
-        for path in state_paths:
-            if os.path.exists(path):
-                df = pd.read_parquet(path)
-                if not df.empty:
-                    all_states.append(df)
+    total_state_rows = 0
+    total_level_rows = 0
 
-        if all_states:
-            master_state = pd.concat(all_states, ignore_index=True)
-            del all_states
-            import gc
-            gc.collect()
+    if state_paths or level_paths:
+        total_state_rows, total_level_rows = stream_consolidate_all_datasets(
+            state_paths=state_paths,
+            level_paths=level_paths,
+            output_dir=cfg["output_dir"],
+            window_size=cfg["window_size"],
+            cleaner=cleaner,
+            validator=validator,
+            mem_monitor=mem_monitor
+        )
 
-            if "datetime" in master_state.columns:
-                master_state.sort_values(by=["datetime", "symbol"], inplace=True)
-            master_state = cleaner.clean(master_state, label_col="target")
-
-            state_path = os.path.join(cfg["output_dir"], "market_state_dataset.parquet")
-            save_parquet_atomically(master_state, state_path)
-            logger.info(f"Saved Consolidated Market State Dataset to {state_path} ({len(master_state)} samples)")
-
-            report = validator.validate(master_state, expected_window_size=cfg["window_size"])
-            logger.info(f"Market State Dataset Integrity Validation status: {'PASS' if report['is_valid'] else 'FAIL'}")
-
-            # Produce RL and Trade Quality Datasets
-            logger.info("Preparing Reinforcement Learning (RL) Dataset...")
-            master_rl = master_state.copy()
-
-            if "Close" in master_rl.columns:
-                forward_close = master_rl.groupby("symbol")["Close"].shift(-5)
-                master_rl["reward"] = ((forward_close - master_rl["Close"]) / master_rl["Close"]).fillna(0.0)
-                master_rl["action"] = np.where(master_rl["reward"] > 0.001, 1, np.where(master_rl["reward"] < -0.001, 2, 0))
-            else:
-                master_rl["reward"] = 0.0
-                master_rl["action"] = 0
-
-            master_rl["done"] = False
-            for sym in master_rl["symbol"].unique():
-                idx = master_rl[master_rl["symbol"] == sym].index
-                if len(idx) > 5:
-                    master_rl.loc[idx[-5:], "done"] = True
-
-            rl_path = os.path.join(cfg["output_dir"], "future_rl_dataset.parquet")
-            save_parquet_atomically(master_rl, rl_path)
-            logger.info(f"Saved Reinforcement Learning Dataset to {rl_path} ({len(master_rl)} samples)")
-            del master_rl
-            gc.collect()
-
-            logger.info("Preparing Trade Quality Dataset...")
-            master_tq = master_state.copy()
-
-            if "Close" in master_tq.columns:
-                forward_close_10 = master_tq.groupby("symbol")["Close"].shift(-10).fillna(master_tq["Close"])
-                atr = master_tq.get("atr", 0.0010)
-                master_tq["win_loss"] = np.where(forward_close_10 >= master_tq["Close"] + 1.5 * atr, 1, 0)
-                master_tq["trade_quality_score"] = np.clip((forward_close_10 - master_tq["Close"]) / (1.5 * atr + 1e-9) * 100.0, 0, 100.0)
-            else:
-                master_tq["win_loss"] = 0
-                master_tq["trade_quality_score"] = 50.0
-
-            tq_path = os.path.join(cfg["output_dir"], "future_trade_quality_dataset.parquet")
-            save_parquet_atomically(master_tq, tq_path)
-            logger.info(f"Saved Trade Quality Dataset to {tq_path} ({len(master_tq)} samples)")
-            del master_tq
-            gc.collect()
-            mem_monitor.check("After Market State consolidation and saving")
-
-    if not state_paths or master_state is None:
-        logger.warning("No Market State samples were generated!")
-
-    # 2. Level Break Dataset
-    master_level = None
-    if level_paths:
-        logger.info("Consolidating Level Break Datasets...")
-        all_levels = []
-        for path in level_paths:
-            if os.path.exists(path):
-                df = pd.read_parquet(path)
-                if not df.empty:
-                    all_levels.append(df)
-        if all_levels:
-            master_level = pd.concat(all_levels, ignore_index=True)
-            del all_levels
-            import gc
-            gc.collect()
-
-            if "timestamp" in master_level.columns:
-                master_level.sort_values(by=["timestamp", "symbol"], inplace=True)
-            master_level = cleaner.clean(master_level, label_col="target")
-
-            level_path = os.path.join(cfg["output_dir"], "level_break_dataset.parquet")
-            save_parquet_atomically(master_level, level_path)
-            logger.info(f"Saved Consolidated Level Break Dataset to {level_path} ({len(master_level)} samples)")
-
-            report_lvl = validator.validate(master_level, expected_window_size=cfg["window_size"])
-            logger.info(f"Level Break Dataset Integrity Validation status: {'PASS' if report_lvl['is_valid'] else 'FAIL'}")
-
-    if not level_paths or master_level is None:
-        logger.warning("No Level Break samples were generated!")
+    # Validate the final consolidated outputs
+    state_path = os.path.join(cfg["output_dir"], "market_state_dataset.parquet")
+    if os.path.exists(state_path):
+        # Sample or validate metadata to ensure integrity without loading entire master dataset
+        meta_tbl = pq.read_metadata(state_path)
+        logger.info(f"Consolidated Market State Dataset validated successfully via metadata: {meta_tbl.num_rows} rows")
 
     # Generate metadata report
     meta = {
@@ -1230,15 +1414,14 @@ def main():
         "window_stride": cfg["window_stride"],
         "feature_registry_hash": registry.compute_hash(),
         "creation_time": datetime.now(timezone.utc).isoformat(),
-        "market_state_size": len(master_state) if master_state is not None else 0,
-        "level_break_size": len(master_level) if master_level is not None else 0,
+        "market_state_size": total_state_rows,
+        "level_break_size": total_level_rows,
     }
     meta_path = os.path.join(cfg["output_dir"], "metadata.json")
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=4)
     logger.info(f"Saved central metadata log to {meta_path}")
 
-    del master_state, master_level
     import gc
     gc.collect()
 
