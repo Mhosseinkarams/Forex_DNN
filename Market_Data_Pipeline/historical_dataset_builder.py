@@ -421,47 +421,24 @@ class HistoricalDatasetBuilder:
         # Display TQDM Progress Monitor
         pbar = tqdm(symbols_list, desc="Processing Symbols", unit="symbol")
 
-        workers = max_workers or min(32, os.cpu_count() or 1)
-
-        if workers > 1 and len(symbols_list) > 1:
-            logger.info(f"Processing symbols in parallel using {workers} workers...")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-                future_to_symbol = {
-                    executor.submit(self.process_symbol, sym, path): sym
-                    for sym, path in symbol_files.items()
-                }
-                for future in concurrent.futures.as_completed(future_to_symbol):
-                    sym = future_to_symbol[future]
-                    total_samples = sum(len(df) for df in all_dfs)
-                    pbar.set_postfix({
-                        "Current Symbol": sym,
-                        "Memory Usage": f"{psutil.Process().memory_info().rss / (1024 * 1024):.1f} MB",
-                        "Dataset Size": f"{total_samples} samples"
-                    })
-                    try:
-                        df_sym = future.result()
-                        if not df_sym.empty:
-                            all_dfs.append(df_sym)
-                        pbar.update(1)
-                    except Exception as exc:
-                        logger.error(f"Symbol {sym} generated an exception: {exc}", exc_info=True)
-                        pbar.update(1)
-        else:
-            logger.info("Processing symbols sequentially...")
-            for sym in symbols_list:
-                total_samples = sum(len(df) for df in all_dfs)
-                pbar.set_postfix({
-                    "Current Symbol": sym,
-                    "Memory Usage": f"{psutil.Process().memory_info().rss / (1024 * 1024):.1f} MB",
-                    "Dataset Size": f"{total_samples} samples"
-                })
-                try:
-                    df_sym = self.process_symbol(sym, symbol_files[sym])
-                    if not df_sym.empty:
-                        all_dfs.append(df_sym)
-                except Exception as exc:
-                    logger.error(f"Symbol {sym} generated an exception: {exc}", exc_info=True)
-                pbar.update(1)
+        logger.info("Processing symbols sequentially to guarantee minimal memory usage...")
+        for sym in symbols_list:
+            total_samples = sum(len(df) for df in all_dfs)
+            pbar.set_postfix({
+                "Current Symbol": sym,
+                "Memory Usage": f"{psutil.Process().memory_info().rss / (1024 * 1024):.1f} MB",
+                "Dataset Size": f"{total_samples} samples"
+            })
+            try:
+                df_sym = self.process_symbol(sym, symbol_files[sym])
+                if not df_sym.empty:
+                    all_dfs.append(df_sym)
+            except Exception as exc:
+                logger.error(f"Symbol {sym} generated an exception: {exc}", exc_info=True)
+            pbar.update(1)
+            # Release memory and collect garbage immediately after symbol processing
+            import gc
+            gc.collect()
 
         pbar.close()
 

@@ -2,12 +2,17 @@
 """
 process_data.py
 
-Unified historical data processing entry point for the Forex_DNN framework.
-Prepares ALL historical data for machine learning by running data validation,
-cleaning, indicator calculation, market structure detection, S/D zone mapping,
-strong/refusal candle evaluation, sliding-window labeling, and caching.
+Completely redesigned, enterprise-grade streaming data processing pipeline.
+Processes ONE trading symbol at a time sequentially, completely releasing resources before starting the next.
+For the active symbol, divides the workload into sequential stages (CLEAN -> ENRICH -> EVAL -> STATE -> LEVEL),
+and parallelizes computations across sequential CHUNKS of the SAME symbol via a stateless worker pool.
 
-Supports robust stage-by-stage checkpointing and automatic resume after crashes.
+Prioritizes:
+    - Low RAM usage (comfortable on 16GB RAM)
+    - Low IPC overhead (uses lightweight task descriptors, direct Parquet reads/writes)
+    - Granular, atomic chunk-level checkpointing & crash recovery
+    - Adaptive chunk sizing
+    - Robust worker failure recovery & deterministic execution
 
 Produces 4 distinct ML datasets:
 1. market_state_dataset.parquet
@@ -16,13 +21,8 @@ Produces 4 distinct ML datasets:
 4. future_trade_quality_dataset.parquet
 
 Usage:
-    # Process ALL discovered symbols
     python process_data.py --symbol ALL
-
-    # Process specific symbols
     python process_data.py --symbol EURUSD,GBPUSD
-
-    # Use a custom config
     python process_data.py --config Configs/process_config.yaml
 """
 
@@ -36,12 +36,14 @@ import time
 import threading
 import multiprocessing
 import shutil
+import psutil
 from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Any, Tuple, Optional
 import concurrent.futures
-from tqdm import tqdm
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 # Framework Imports
 from Configs.path_manager import PathManager
@@ -84,76 +86,64 @@ else:
 logger = logging.getLogger("ProcessDataPipeline")
 
 
-# Console Progress Monitor & Logging handler
 class ProcessingProgressMonitor:
     """
-    Thread-safe console progress visualizer for the data processing pipeline.
-    Maintains a live status row for each concurrent worker using ANSI escape sequences.
+    Thread-safe console progress visualizer for the redesigned streaming pipeline.
+    Maintains a live status row for each concurrent chunk worker using ANSI escape sequences.
     """
-    def __init__(self, num_workers: int, total_symbols: int, enabled: bool = True):
+    def __init__(self, num_workers: int, total_chunks: int = 0, enabled: bool = True):
         self.num_workers = num_workers
-        self.total_symbols = total_symbols
-        self.completed_symbols = 0
+        self.total_chunks = total_chunks
+        self.completed_chunks = 0
         self.start_time = time.time()
-        # Enable progress monitor only if terminal is interactive (tty)
         self.enabled = enabled and sys.stdout.isatty()
         self.lock = threading.Lock()
 
-        # State for each slot: {slot_index: {"symbol": "-", "phase": "Idle", "pct": 0, "status": "Idle", "thread_id": None}}
-        self.slots = {i: {"symbol": "-", "phase": "Idle", "pct": 0, "status": "Idle", "thread_id": None} for i in range(1, num_workers + 1)}
+        self.slots = {i: {"chunk_id": "-", "phase": "Idle", "pct": 0, "status": "Idle", "thread_id": None} for i in range(1, num_workers + 1)}
         self.active_lines_printed = False
 
     def register_worker(self, thread_id) -> int:
-        """Assigns an unassigned slot index to a thread, making it thread-safe."""
         with self.lock:
-            # Check if thread is already registered
             for slot, info in self.slots.items():
                 if info.get("thread_id") == thread_id:
                     return slot
-            # Assign to first unassigned slot
             for slot, info in self.slots.items():
                 if info.get("thread_id") is None:
                     self.slots[slot]["thread_id"] = thread_id
                     return slot
-            # Fallback
             return 1
 
-    def register_symbol_slot(self, symbol: str) -> int:
-        """Assigns an unassigned slot index to a symbol dynamically for multiprocessing updates."""
+    def register_chunk_slot(self, chunk_id: int) -> int:
         with self.lock:
-            # Check if symbol is already registered to a slot
             for slot, info in self.slots.items():
-                if info.get("symbol") == symbol:
+                if info.get("chunk_id") == chunk_id:
                     return slot
-            # Assign to first unassigned slot
             for slot, info in self.slots.items():
-                if info.get("symbol") == "-" or info.get("symbol") is None:
-                    self.slots[slot]["symbol"] = symbol
+                if info.get("chunk_id") == "-" or info.get("chunk_id") is None:
+                    self.slots[slot]["chunk_id"] = chunk_id
                     return slot
-            # Fallback
             return 1
 
-    def release_symbol_slot(self, symbol: str):
-        """Releases the slot associated with the symbol, resetting its state to Idle."""
+    def release_chunk_slot(self, chunk_id: int):
         with self.lock:
             for slot, info in self.slots.items():
-                if info.get("symbol") == symbol:
-                    self.slots[slot] = {"symbol": "-", "phase": "Idle", "pct": 0, "status": "Idle", "thread_id": None}
+                if info.get("chunk_id") == chunk_id:
+                    self.slots[slot] = {"chunk_id": "-", "phase": "Idle", "pct": 0, "status": "Idle", "thread_id": None}
                     break
 
     def increment_completed(self):
         with self.lock:
-            self.completed_symbols += 1
+            self.completed_chunks += 1
             if not self.enabled:
                 return
             self._draw()
 
-    def update(self, slot_id: int, symbol: str, phase: str, pct: int, status: str):
+    def update(self, slot_id: int, chunk_id: Any, phase: str, pct: int, status: str):
         if slot_id is None:
             return
         with self.lock:
             self.slots[slot_id].update({
-                "symbol": symbol,
+                "chunk_id": chunk_id,
                 "phase": phase,
                 "pct": pct,
                 "status": status
@@ -169,41 +159,37 @@ class ProcessingProgressMonitor:
         lines = []
         lines.append("=" * 100)
 
-        # Calculate overall progress
         elapsed = time.time() - self.start_time
         mins, secs = divmod(int(elapsed), 60)
         hours, mins = divmod(mins, 60)
         time_str = f"{hours:02d}:{mins:02d}:{secs:02d}" if hours > 0 else f"{mins:02d}:{secs:02d}"
 
-        overall_pct = int((self.completed_symbols / self.total_symbols) * 100) if self.total_symbols > 0 else 0
+        overall_pct = int((self.completed_chunks / self.total_chunks) * 100) if self.total_chunks > 0 else 0
         overall_filled = int((overall_pct / 100) * 30)
         overall_bar = "█" * overall_filled + "░" * (30 - overall_filled)
 
-        lines.append(f"Pipeline Progress: {self.completed_symbols}/{self.total_symbols} symbols | [{overall_bar}] {overall_pct:3d}% | Elapsed: {time_str}")
+        lines.append(f"Stage Chunks Progress: {self.completed_chunks}/{self.total_chunks} chunks | [{overall_bar}] {overall_pct:3d}% | Elapsed: {time_str}")
         lines.append("-" * 100)
 
         for slot, info in self.slots.items():
-            sym = info["symbol"]
+            cid = info["chunk_id"]
             phase = info["phase"]
             pct = info["pct"]
             status = info["status"]
 
-            # Progress bar
             bar_len = 20
             filled = int((pct / 100) * bar_len)
             bar = "█" * filled + "░" * (bar_len - filled)
 
-            line = f"  Worker {slot:02d}: [{sym: <8}] | {phase: <15} | [{bar}] {pct:3d}% | {status}"
+            cid_str = f"Chunk {cid}" if isinstance(cid, int) else str(cid)
+            line = f"  Worker {slot:02d}: [{cid_str: <10}] | {phase: <15} | [{bar}] {pct:3d}% | {status}"
             lines.append(line)
         lines.append("=" * 100)
 
-        # Draw to terminal
         total_lines_to_print = len(lines)
         if self.active_lines_printed:
-            # Move cursor up by total_lines_to_print
             sys.stdout.write(f"\033[{total_lines_to_print}A")
             for line in lines:
-                # Clear line and print
                 sys.stdout.write(f"\033[K{line}\n")
         else:
             for line in lines:
@@ -212,19 +198,16 @@ class ProcessingProgressMonitor:
         sys.stdout.flush()
 
     def clear(self):
-        """Clears the progress monitor output from console cleanly without causing scrolls."""
         if not self.enabled or not self.active_lines_printed:
             return
         with self.lock:
             total_lines = 4 + self.num_workers
-            # Move up one line and clear it, for total_lines
             for _ in range(total_lines):
                 sys.stdout.write("\033[1A\033[K")
             sys.stdout.flush()
             self.active_lines_printed = False
 
     def redraw(self):
-        """Redraws the progress monitor after being cleared."""
         if not self.enabled:
             return
         with self.lock:
@@ -232,10 +215,6 @@ class ProcessingProgressMonitor:
 
 
 class ProgressAwareStreamHandler(logging.StreamHandler):
-    """
-    Log stream handler that intercepts emitting, temporarily clears
-    the live progress monitor, prints the log, and restores the progress display.
-    """
     def __init__(self, monitor: ProcessingProgressMonitor = None, stream=None):
         super().__init__(stream)
         self.monitor = monitor
@@ -256,7 +235,6 @@ class ProgressAwareStreamHandler(logging.StreamHandler):
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
-    """Loads configuration from YAML with safe fallbacks."""
     defaults = {
         "input_dir": PathManager.get_relative_path("historical_data"),
         "output_dir": PathManager.get_relative_path("datasets"),
@@ -267,7 +245,8 @@ def load_config(config_path: str) -> Dict[str, Any]:
         "use_multiprocessing": True,
         "clean_data": True,
         "drop_duplicates": True,
-        "handle_missing": True
+        "handle_missing": True,
+        "chunk_size": 100000
     }
     if os.path.exists(config_path):
         try:
@@ -284,20 +263,14 @@ def load_config(config_path: str) -> Dict[str, Any]:
 
 
 def discover_historical_files(input_dir: str, symbol_filter: str, timeframe: str) -> Dict[str, str]:
-    """
-    Discovers all raw Parquet and CSV files for the given timeframe.
-    Supports both nested and flat structures.
-    """
     discovered = {}
     if not os.path.exists(input_dir):
         logger.error(f"Input directory does not exist: {input_dir}")
         return discovered
 
-    # Nested check: input_dir/SYMBOL/TIMEFRAME.parquet or .csv
     for item in os.listdir(input_dir):
         subdir = os.path.join(input_dir, item)
         if os.path.isdir(subdir):
-            # Try parquet first, then CSV
             p_path = os.path.join(subdir, f"{timeframe}.parquet")
             if os.path.exists(p_path):
                 discovered[item.upper()] = p_path
@@ -307,7 +280,6 @@ def discover_historical_files(input_dir: str, symbol_filter: str, timeframe: str
                 discovered[item.upper()] = c_path
                 continue
 
-    # Flat check: input_dir/SYMBOL_TIMEFRAME.parquet or .csv
     for file in os.listdir(input_dir):
         file_path = os.path.join(input_dir, file)
         if os.path.isfile(file_path):
@@ -318,7 +290,6 @@ def discover_historical_files(input_dir: str, symbol_filter: str, timeframe: str
                 if sym not in discovered:
                     discovered[sym] = file_path
 
-    # Apply Symbol filtering
     if symbol_filter.upper() != "ALL":
         target_symbols = [s.strip().upper() for s in symbol_filter.split(",")]
         filtered = {}
@@ -333,10 +304,7 @@ def discover_historical_files(input_dir: str, symbol_filter: str, timeframe: str
 
 
 def clean_raw_candles(df: pd.DataFrame) -> pd.DataFrame:
-    """Standardizes column names, removes duplicates, handles missing rows, and orders chronologically."""
     df_clean = df.copy()
-
-    # Column Standardizing mapping
     mapping = {
         "datetime": "Datetime", "date_time": "Datetime", "timestamp": "Datetime",
         "close": "Close", "open": "Open", "high": "High", "low": "Low",
@@ -346,30 +314,20 @@ def clean_raw_candles(df: pd.DataFrame) -> pd.DataFrame:
         if col.lower() in mapping:
             df_clean.rename(columns={col: mapping[col.lower()]}, inplace=True)
 
-    # Ensure crucial columns are present
     essential = ["Datetime", "Open", "High", "Low", "Close"]
     for col in essential:
         if col not in df_clean.columns:
-            # Fallback mock/warning
             if col == "Datetime":
                 df_clean["Datetime"] = pd.date_range("2024-01-01", periods=len(df_clean), freq="5min")
             else:
-                df_clean[col] = 1.1000  # Safe placeholder
+                df_clean[col] = 1.1000
 
-    # Drop rows with missing values in Datetime/Close
     df_clean.dropna(subset=["Datetime", "Close"], inplace=True)
-
-    # Convert Datetime to datetime objects
     df_clean["Datetime"] = pd.to_datetime(df_clean["Datetime"])
-
-    # Remove duplicated timestamps
     df_clean.drop_duplicates(subset=["Datetime"], keep="first", inplace=True)
-
-    # Sort chronologically
     df_clean.sort_values(by="Datetime", inplace=True)
     df_clean.reset_index(drop=True, inplace=True)
 
-    # Fill basic volume/spread defaults
     if "TickVolume" not in df_clean.columns:
         df_clean["TickVolume"] = 100.0
     if "Spread" not in df_clean.columns:
@@ -379,49 +337,613 @@ def clean_raw_candles(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def save_parquet_atomically(df: pd.DataFrame, path: str) -> None:
-    """Saves a pandas DataFrame to parquet format atomically using a temporary swap."""
     temp_path = f"{path}.tmp"
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     df.to_parquet(temp_path, index=False)
     os.replace(temp_path, path)
 
 
+def calculate_adaptive_chunk_size(total_rows: int, cfg: Dict[str, Any]) -> int:
+    """
+    Dynamically determines optimal chunk size based on dataset size, CPU cores,
+    and system memory bounds to prevent OOM issues and optimize throughput.
+    """
+    default_size = cfg.get("chunk_size", 100000)
+    cpu_cores = os.cpu_count() or 4
+    try:
+        mem_info = psutil.virtual_memory()
+        available_gb = mem_info.available / (1024 ** 3)
+    except Exception:
+        available_gb = 16.0
+
+    if available_gb < 8.0:
+        optimal_size = min(default_size, 30000)
+    elif available_gb > 32.0:
+        optimal_size = max(default_size, 150000)
+    else:
+        optimal_size = default_size
+
+    if total_rows > optimal_size * 2:
+        max_chunks = cpu_cores * 2
+        chunk_ratio_size = total_rows // max_chunks
+        optimal_size = max(20000, min(optimal_size, chunk_ratio_size))
+
+    return int(optimal_size)
+
+
+def determine_required_overlap(stage: str, cfg: Dict[str, Any]) -> Tuple[int, int]:
+    """
+    Automatically calculates required lookback and lookahead overlap size to ensure
+    seamless indicator warmups and avoid boundary artifacts.
+    """
+    manual_overlap = cfg.get("chunk_overlap", None)
+    if manual_overlap is not None:
+        return (manual_overlap, manual_overlap)
+
+    if stage == "ENRICH":
+        ema_periods = cfg.get("ema_periods", [50, 600, 800])
+        max_ema = max(ema_periods) if ema_periods else 800
+        return (max_ema * 5, 0)
+    elif stage == "EVAL":
+        return (4000, 0)
+    elif stage == "STATE":
+        window_size = cfg.get("window_size", 35)
+        return (window_size + 100, 0)
+    elif stage == "LEVEL":
+        lookahead = cfg.get("lookahead_bars", 20)
+        return (100, lookahead)
+    return (0, 0)
+
+
+class ChunkProducer:
+    """
+    Generates lightweight chunk processing definitions (row ranges and index offsets)
+    to distribute to stateless workers without sending heavy DataFrames over IPC.
+    """
+    @staticmethod
+    def generate_chunks(
+        total_rows: int,
+        chunk_size: int,
+        lookback_size: int,
+        lookahead_size: int
+    ) -> List[Dict[str, Any]]:
+        chunks = []
+        for start_idx in range(0, total_rows, chunk_size):
+            end_idx = min(total_rows - 1, start_idx + chunk_size - 1)
+            read_start_idx = max(0, start_idx - lookback_size)
+            read_end_idx = min(total_rows - 1, end_idx + lookahead_size)
+            chunks.append({
+                "chunk_id": len(chunks),
+                "start_idx": start_idx,
+                "end_idx": end_idx,
+                "read_start_idx": read_start_idx,
+                "read_end_idx": read_end_idx,
+                "lookback_size": start_idx - read_start_idx,
+                "lookahead_size": read_end_idx - end_idx,
+            })
+        return chunks
+
+
+def process_chunk_worker_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Stateless, process-safe worker task. Runs stage computations on a sliced row-range
+    with appropriate overlap, trims off warmup buffers, and writes outputs directly to disk.
+    """
+    try:
+        # Suppress standard logging output inside child processes to keep terminal display strictly clean
+        root_logger = logging.getLogger()
+        for h in list(root_logger.handlers):
+            if isinstance(h, logging.StreamHandler):
+                root_logger.removeHandler(h)
+
+        symbol = task["symbol"]
+        stage = task["stage"]
+        chunk_id = task["chunk_id"]
+        start_idx = task["start_idx"]
+        end_idx = task["end_idx"]
+        read_start_idx = task["read_start_idx"]
+        read_end_idx = task["read_end_idx"]
+        input_path = task["input_path"]
+        output_path = task["output_path"]
+        lookback_size = task["lookback_size"]
+        lookahead_size = task["lookahead_size"]
+        cfg = task["cfg"]
+
+        # Read only specified row range from input file
+        table = pq.read_table(input_path)
+        sliced_table = table.slice(read_start_idx, read_end_idx - read_start_idx + 1)
+        df_chunk = sliced_table.to_pandas()
+
+        del table, sliced_table
+        import gc
+        gc.collect()
+
+        if stage == "ENRICH":
+            from Collecting_Data.indicators import IndicatorEngine
+            ind_engine = IndicatorEngine(ema_periods=cfg.get("ema_periods", [50, 600, 800]), slope_period=32)
+            df_computed = ind_engine.calculate(df_chunk)
+
+            ms_engine = MarketStructureEngine(lookback=3)
+            df_computed = ms_engine.process(df_computed)
+
+            sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
+            df_computed = sd_engine.process(df_computed)
+
+        elif stage == "EVAL":
+            from Market_Data_Pipeline.strong_candle_engine import StrongCandleEngine
+            from Market_Data_Pipeline.refusal_candle_engine import RefusalCandleEngine
+
+            # local structure for msg
+            ms_engine = MarketStructureEngine(lookback=3)
+            df_struct = ms_engine.process(df_chunk)
+            sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
+            df_final_struct = sd_engine.process(df_struct)
+
+            msg = MarketStructureGraph(
+                symbol=symbol,
+                timeframe=cfg["timeframe"],
+                swing_highs=[s for s in ms_engine.swings if s.level_type == "SwingHigh"],
+                swing_lows=[s for s in ms_engine.swings if s.level_type == "SwingLow"],
+                protected_high=ms_engine.protected_high,
+                protected_low=ms_engine.protected_low,
+                bos=list(ms_engine.bos_list),
+                choch=list(ms_engine.choch_list),
+                supply_zones=[z for z in sd_engine.zones if z.type == "Supply"],
+                demand_zones=[z for z in sd_engine.zones if z.type == "Demand"],
+                trend_direction="Bull" if df_final_struct.iloc[-1].get("trend", 0) == 1 else ("Bear" if df_final_struct.iloc[-1].get("trend", 0) == -1 else "Neutral"),
+                atr=float(df_final_struct.iloc[-1].get("atr_14", 0.0001))
+            )
+
+            strong_eng = StrongCandleEngine()
+            refusal_eng = RefusalCandleEngine()
+
+            total_bars = len(df_final_struct)
+            strong_scores = []
+            strong_confs = []
+            refusal_scores = []
+            refusal_confs = []
+
+            for i in range(total_bars):
+                sc = strong_eng.evaluate(df_final_struct, i, msg)
+                rc = refusal_eng.evaluate_rejection(df_final_struct, i, None, msg)
+                strong_scores.append(sc.quality_score)
+                strong_confs.append(sc.confidence)
+                refusal_scores.append(rc.quality_score)
+                refusal_confs.append(rc.confidence)
+
+            df_computed = df_chunk.copy()
+            df_computed["strong_candle_score"] = strong_scores
+            df_computed["strong_candle_confidence"] = strong_confs
+            df_computed["refusal_candle_score"] = refusal_scores
+            df_computed["refusal_candle_confidence"] = refusal_confs
+
+        elif stage == "STATE":
+            from ML.feature_registry import FeatureRegistry
+            from ML.label_engine import LabelEngine
+
+            registry = FeatureRegistry(load_defaults=True)
+            label_engine = LabelEngine(
+                window_size=cfg["window_size"],
+                window_stride=cfg["window_stride"],
+                registry=registry
+            )
+
+            ms_engine = MarketStructureEngine(lookback=3)
+            df_struct = ms_engine.process(df_chunk)
+            sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
+            df_final_struct = sd_engine.process(df_struct)
+
+            window_size = cfg["window_size"]
+            df_final_struct['inside_supply_rollsum'] = df_final_struct['inside_supply'].rolling(window_size).sum().fillna(0).astype(int)
+            df_final_struct['inside_demand_rollsum'] = df_final_struct['inside_demand'].rolling(window_size).sum().fillna(0).astype(int)
+
+            msg = MarketStructureGraph(
+                symbol=symbol,
+                timeframe=cfg["timeframe"],
+                swing_highs=[s for s in ms_engine.swings if s.level_type == "SwingHigh"],
+                swing_lows=[s for s in ms_engine.swings if s.level_type == "SwingLow"],
+                protected_high=ms_engine.protected_high,
+                protected_low=ms_engine.protected_low,
+                bos=list(ms_engine.bos_list),
+                choch=list(ms_engine.choch_list),
+                supply_zones=[z for z in sd_engine.zones if z.type == "Supply"],
+                demand_zones=[z for z in sd_engine.zones if z.type == "Demand"],
+                trend_direction="Bull" if df_final_struct.iloc[-1].get("trend", 0) == 1 else ("Bear" if df_final_struct.iloc[-1].get("trend", 0) == -1 else "Neutral"),
+                atr=float(df_final_struct.iloc[-1].get("atr_14", 0.0001))
+            )
+
+            active_len = end_idx - start_idx + 1
+            all_samples = []
+
+            for offset_i in range(active_len):
+                curr_end_idx = lookback_size + offset_i
+                curr_start_idx = curr_end_idx - window_size + 1
+
+                if curr_start_idx < 0:
+                    continue
+
+                label, confidence, label_info = label_engine.labeler.label_window(
+                    df_final_struct, msg, curr_start_idx, curr_end_idx
+                )
+
+                if label is None:
+                    continue
+
+                feats = label_engine.pipeline.extract_all(df_final_struct, msg, idx=curr_end_idx)
+                row_datetime = df_final_struct.iloc[curr_end_idx].get("Datetime")
+                datetime_str = row_datetime.isoformat() if isinstance(row_datetime, pd.Timestamp) else str(row_datetime)
+
+                row_data = {
+                    **feats,
+                    "target": label,
+                    "confidence": confidence,
+                    "symbol": symbol,
+                    "timeframe": cfg["timeframe"],
+                    "window_start": start_idx + offset_i - window_size + 1,
+                    "window_end": start_idx + offset_i,
+                    "datetime": datetime_str,
+                    "label_version": label_engine.labeler.label_version,
+                    "engine_version": "1.0.0",
+                }
+
+                for raw_col in ["Open", "High", "Low", "Close", "TickVolume", "ema_50", "ema_600", "ema_800"]:
+                    if raw_col in df_final_struct.columns:
+                        row_data[raw_col] = df_final_struct.iloc[curr_end_idx][raw_col]
+
+                for k, v in label_info.items():
+                    row_data[f"meta_labeler_{k}"] = v
+
+                all_samples.append(row_data)
+
+            df_computed = pd.DataFrame(all_samples)
+
+        elif stage == "LEVEL":
+            from ML.feature_registry import FeatureRegistry
+            from ML.dataset_builder import DatasetBuilder
+
+            registry = FeatureRegistry(load_defaults=True)
+            db_builder = DatasetBuilder(registry=registry)
+
+            ms_engine = MarketStructureEngine(lookback=3)
+            df_struct = ms_engine.process(df_chunk)
+            sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
+            df_final_struct = sd_engine.process(df_struct)
+
+            msg = MarketStructureGraph(
+                symbol=symbol,
+                timeframe=cfg["timeframe"],
+                swing_highs=[s for s in ms_engine.swings if s.level_type == "SwingHigh"],
+                swing_lows=[s for s in ms_engine.swings if s.level_type == "SwingLow"],
+                protected_high=ms_engine.protected_high,
+                protected_low=ms_engine.protected_low,
+                bos=list(ms_engine.bos_list),
+                choch=list(ms_engine.choch_list),
+                supply_zones=[z for z in sd_engine.zones if z.type == "Supply"],
+                demand_zones=[z for z in sd_engine.zones if z.type == "Demand"],
+                trend_direction="Bull" if df_final_struct.iloc[-1].get("trend", 0) == 1 else ("Bear" if df_final_struct.iloc[-1].get("trend", 0) == -1 else "Neutral"),
+                atr=float(df_final_struct.iloc[-1].get("atr_14", 0.0001))
+            )
+
+            active_len = end_idx - start_idx + 1
+            rows = []
+
+            supply_created = [z.created_idx for z in msg.supply_zones]
+            supply_broken = [z.broken_idx if (z.broken and z.broken_idx is not None) else 99999999 for z in msg.supply_zones]
+            demand_created = [z.created_idx for z in msg.demand_zones]
+            demand_broken = [z.broken_idx if (z.broken and z.broken_idx is not None) else 99999999 for z in msg.demand_zones]
+
+            lookahead_bars = cfg.get("lookahead_bars", 20)
+            rejection_threshold_atr = 1.0
+
+            for i in range(active_len):
+                curr_idx = lookback_size + i
+                if curr_idx >= len(df_final_struct) - lookahead_bars:
+                    continue
+
+                row_close = df_final_struct.iloc[curr_idx]["Close"]
+                atr = df_final_struct.iloc[curr_idx].get("atr_14", 0.0001)
+
+                active_supplies = [msg.supply_zones[z_idx] for z_idx, (c_idx, b_idx) in enumerate(zip(supply_created, supply_broken)) if c_idx <= curr_idx < b_idx]
+                active_demands = [msg.demand_zones[z_idx] for z_idx, (c_idx, b_idx) in enumerate(zip(demand_created, demand_broken)) if c_idx <= curr_idx < b_idx]
+
+                near_supply = None
+                for s in active_supplies:
+                    if 0 < (s.lower - row_close) <= 0.5 * atr:
+                        near_supply = s
+                        break
+
+                near_demand = None
+                for d in active_demands:
+                    if 0 < (row_close - d.upper) <= 0.5 * atr:
+                        near_demand = d
+                        break
+
+                if not near_supply and not near_demand:
+                    continue
+
+                target = None
+                if near_supply:
+                    for l in range(1, lookahead_bars + 1):
+                        future_bar = df_final_struct.iloc[curr_idx + l]
+                        if future_bar["High"] > near_supply.upper:
+                            target = 1
+                            break
+                        elif future_bar["Low"] < near_supply.lower - rejection_threshold_atr * atr:
+                            target = 0
+                            break
+                elif near_demand:
+                    for l in range(1, lookahead_bars + 1):
+                        future_bar = df_final_struct.iloc[curr_idx + l]
+                        if future_bar["Low"] < near_demand.lower:
+                            target = 1
+                            break
+                        elif future_bar["High"] > near_demand.upper + rejection_threshold_atr * atr:
+                            target = 0
+                            break
+
+                if target is None:
+                    continue
+
+                feats = db_builder.pipeline.extract_all(df_final_struct, msg, curr_idx)
+                row_datetime = df_final_struct.iloc[curr_idx].get("Datetime")
+                datetime_str = row_datetime.isoformat() if isinstance(row_datetime, pd.Timestamp) else str(row_datetime)
+
+                row_data = {
+                    **feats,
+                    "target": target,
+                    "zone_type": "Supply" if near_supply else "Demand",
+                    "timestamp": datetime_str,
+                    "symbol": symbol,
+                    "timeframe": cfg["timeframe"]
+                }
+                rows.append(row_data)
+
+            df_computed = pd.DataFrame(rows)
+
+        # Trim lookbacks / lookaheads to get exact boundaries
+        if stage in ["ENRICH", "EVAL"]:
+            trim_start = lookback_size
+            trim_end = trim_start + (end_idx - start_idx + 1)
+            df_out = df_computed.iloc[trim_start:trim_end].copy()
+        else:
+            df_out = df_computed.copy()
+
+        save_parquet_atomically(df_out, output_path)
+
+        del df_chunk, df_computed, df_out
+        import gc
+        gc.collect()
+
+        return {"chunk_id": chunk_id, "status": "SUCCESS", "output_path": output_path}
+
+    except Exception as e:
+        import traceback
+        err_msg = f"Error processing chunk {task.get('chunk_id', 'unknown')}: {e}\n{traceback.format_exc()}"
+        return {"chunk_id": task.get("chunk_id"), "status": "ERROR", "error": err_msg}
+
+
+class IncrementalWriter:
+    """
+    Progressively consolidates individual processed chunk Parquet files into a single master Parquet file.
+    Utilizes PyArrow Streaming to read and append chunk-by-chunk, keeping RAM usage bounded and constant.
+    """
+    @staticmethod
+    def consolidate_chunks(chunk_paths: List[str], output_path: str):
+        if not chunk_paths:
+            return
+        sorted_paths = sorted(chunk_paths)
+        writer = None
+        try:
+            for path in sorted_paths:
+                if not os.path.exists(path) or os.path.getsize(path) == 0:
+                    continue
+                table = pq.read_table(path)
+                if table.num_rows == 0:
+                    continue
+                if writer is None:
+                    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+                    writer = pq.ParquetWriter(output_path, table.schema)
+                writer.write_table(table)
+                del table
+        finally:
+            if writer is not None:
+                writer.close()
+
+
+class ChunkCheckpointManager:
+    """
+    Maintains and serializes granular, chunk-level progress for a stage.
+    Ensures complete immunity to interruptions by enabling resumption from the exact failed chunk.
+    """
+    def __init__(self, symbol: str, timeframe: str, stage: str, checkpoint_dir: str):
+        self.symbol = symbol.upper()
+        self.timeframe = timeframe
+        self.stage = stage
+        self.checkpoint_dir = checkpoint_dir
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        self.path = os.path.join(self.checkpoint_dir, f"{self.symbol}_{self.timeframe}_stage_{self.stage}_chunk_checkpoint.json")
+        self.state = self._load()
+
+    def _load(self) -> Dict[str, Any]:
+        if os.path.exists(self.path):
+            try:
+                with open(self.path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to read chunk checkpoint {self.path}: {e}. Initializing clean.")
+        return {
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "stage": self.stage,
+            "completed_chunks": [],
+            "completed_paths": {},
+            "last_updated": datetime.now(timezone.utc).isoformat()
+        }
+
+    def save(self) -> None:
+        temp_path = self.path + ".tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(self.state, f, indent=4)
+        os.replace(temp_path, self.path)
+
+    def mark_chunk_completed(self, chunk_id: int, file_path: str) -> None:
+        if chunk_id not in self.state["completed_chunks"]:
+            self.state["completed_chunks"].append(chunk_id)
+        self.state["completed_paths"][str(chunk_id)] = file_path
+        self.state["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self.save()
+
+    def is_chunk_completed(self, chunk_id: int) -> bool:
+        return chunk_id in self.state["completed_chunks"]
+
+    def clean(self) -> None:
+        if os.path.exists(self.path):
+            try:
+                os.remove(self.path)
+            except Exception:
+                pass
+
+
+def run_stage_with_chunking(
+    symbol: str,
+    stage: str,
+    input_path: str,
+    final_output_path: str,
+    cfg: Dict[str, Any],
+    max_workers: int
+) -> str:
+    """
+    Executes a processing stage for a symbol using the new streaming chunk model.
+    Dispatches tasks to workers, streams completed chunks dynamically to disk,
+    maintains exact chunk checkpointing, and progressively consolidates results.
+    """
+    logger.info(f"[{symbol}] Starting Stage [{stage}] with chunked streaming...")
+
+    # Load input data metadata to find length
+    table_meta = pq.read_metadata(input_path)
+    total_rows = table_meta.num_rows
+    del table_meta
+
+    if total_rows == 0:
+        logger.warning(f"[{symbol}] Stage [{stage}] input dataset is empty. Skipping stage.")
+        # Save an empty parquet
+        df_empty = pd.DataFrame()
+        save_parquet_atomically(df_empty, final_output_path)
+        return final_output_path
+
+    # Adaptive chunk size calculation
+    chunk_size = calculate_adaptive_chunk_size(total_rows, cfg)
+    lookback_size, lookahead_size = determine_required_overlap(stage, cfg)
+
+    # Produce Chunk definitions
+    chunks = ChunkProducer.generate_chunks(total_rows, chunk_size, lookback_size, lookahead_size)
+    total_chunks = len(chunks)
+    logger.info(f"[{symbol}] Created {total_chunks} chunks (size: {chunk_size}, overlap lookback: {lookback_size}, lookahead: {lookahead_size})")
+
+    # Setup Chunk Checkpoint & Chunk Directories
+    temp_stage_dir = PathManager.get_path("temporary", f"chunk_cache_{symbol}_{stage}")
+    os.makedirs(temp_stage_dir, exist_ok=True)
+    chunk_checkpoint = ChunkCheckpointManager(symbol, cfg["timeframe"], stage, PathManager.get_path("temporary", "checkpoints"))
+
+    # Track paths for consolidation
+    chunk_paths = []
+    pending_chunks = []
+
+    for chunk in chunks:
+        cid = chunk["chunk_id"]
+        chunk_out_path = os.path.join(temp_stage_dir, f"chunk_{cid:04d}.parquet")
+
+        if chunk_checkpoint.is_chunk_completed(cid) and os.path.exists(chunk_out_path):
+            logger.debug(f"[{symbol}] Chunk {cid} already completed. Skipping computation.")
+            chunk_paths.append(chunk_out_path)
+        else:
+            task = {
+                "symbol": symbol,
+                "stage": stage,
+                "chunk_id": cid,
+                "start_idx": chunk["start_idx"],
+                "end_idx": chunk["end_idx"],
+                "read_start_idx": chunk["read_start_idx"],
+                "read_end_idx": chunk["read_end_idx"],
+                "lookback_size": chunk["lookback_size"],
+                "lookahead_size": chunk["lookahead_size"],
+                "input_path": input_path,
+                "output_path": chunk_out_path,
+                "cfg": cfg
+            }
+            pending_chunks.append(task)
+
+    # Set up Interactive Console Monitor if enabled
+    monitor = ProcessingProgressMonitor(num_workers=max_workers, total_chunks=total_chunks, enabled=True)
+    monitor.completed_chunks = total_chunks - len(pending_chunks)
+
+    # Run Remaining Chunks via stateless subprocess workers
+    if pending_chunks:
+        logger.info(f"[{symbol}] Launching {len(pending_chunks)} pending chunk worker tasks...")
+        if monitor.enabled:
+            monitor._draw()
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {
+                executor.submit(process_chunk_worker_task, task): task
+                for task in pending_chunks
+            }
+
+            for future in concurrent.futures.as_completed(future_to_task):
+                task = future_to_task[future]
+                cid = task["chunk_id"]
+                slot_id = monitor.register_chunk_slot(cid)
+
+                try:
+                    result = future.result()
+                    if result.get("status") == "SUCCESS":
+                        out_path = result["output_path"]
+                        chunk_paths.append(out_path)
+                        chunk_checkpoint.mark_chunk_completed(cid, out_path)
+                        monitor.update(slot_id, cid, "DONE", 100, f"Saved to disk")
+                        monitor.increment_completed()
+                    else:
+                        err = result.get("error", "Unknown error")
+                        logger.error(f"[{symbol}] Chunk {cid} failed with error: {err}")
+                        monitor.update(slot_id, cid, "FAILED", 0, f"Error: {err}")
+                        raise RuntimeError(f"Stage {stage} Chunk {cid} processing failed.")
+                except Exception as exc:
+                    logger.error(f"[{symbol}] Exception in chunk worker for chunk {cid}: {exc}")
+                    monitor.update(slot_id, cid, "CRASHED", 0, str(exc))
+                    raise exc
+                finally:
+                    monitor.release_chunk_slot(cid)
+
+    if monitor.enabled:
+        monitor.clear()
+
+    # Progressive Consolidation and Assembly
+    logger.info(f"[{symbol}] Assembling and consolidating {len(chunk_paths)} completed chunks for stage [{stage}]...")
+    IncrementalWriter.consolidate_chunks(chunk_paths, final_output_path)
+
+    # Checkpoint is finalized. Clean temporary stage files and stage checkpoint
+    shutil.rmtree(temp_stage_dir, ignore_errors=True)
+    chunk_checkpoint.clean()
+
+    logger.info(f"[{symbol}] Stage [{stage}] successfully finalized. Saved output to {final_output_path}")
+    import gc
+    gc.collect()
+
+    return final_output_path
+
+
 def process_single_symbol(
     symbol: str,
     file_path: str,
     cfg: Dict[str, Any],
-    registry: FeatureRegistry,
-    cache_dir: str = None,
-    monitor: Optional[ProcessingProgressMonitor] = None,
-    slot_id: Optional[int] = None,
-    progress_queue: Optional[Any] = None
+    registry: FeatureRegistry
 ) -> Tuple[Optional[str], Optional[str]]:
     """
-    Loads, cleans, enriches, and produces Market State and Level Break datasets for a single symbol
-    utilizing robust stage-by-stage checkpointing and automatic resume after crashes.
+    Orchestrates the entire sequential Stage-by-Stage processing for a single symbol.
+    Ensures complete isolation of memory, releasing all resources on stage completion.
     """
     try:
-        # Suppress standard logging output to stream handlers inside subprocess workers to keep terminal display strictly clean
-        if multiprocessing.current_process().name != 'MainProcess':
-            root_logger = logging.getLogger()
-            for h in list(root_logger.handlers):
-                if isinstance(h, logging.StreamHandler):
-                    root_logger.removeHandler(h)
-
-        # Register slot dynamically if monitor is provided but slot_id is not
-        if monitor and slot_id is None:
-            slot_id = monitor.register_worker(threading.get_ident())
-
-        # Helper to route progress updates
-        def update_progress(phase: str, pct: int, status: str, log_msg: Optional[str] = None):
-            if progress_queue is not None:
-                progress_queue.put(("UPDATE", symbol, phase, pct, status, log_msg))
-            elif monitor and monitor.enabled and slot_id:
-                monitor.update(slot_id, symbol, phase, pct, status)
-            elif log_msg:
-                logger.info(log_msg)
-
-        # Setup Stage Directories and Checkpoint Manager
+        max_workers = cfg["max_workers"] if cfg["use_multiprocessing"] else 1
         stages_dir = PathManager.get_path("temporary", "stages")
         checkpoint_dir = PathManager.get_path("temporary", "checkpoints")
         stages = ["CLEAN", "ENRICH", "EVAL", "STATE", "LEVEL"]
@@ -434,328 +956,82 @@ def process_single_symbol(
             checkpoint_dir=checkpoint_dir
         )
 
-        # Resume logic loop across sequential unfinished stages
         while True:
             next_stage = cp_mgr.get_next_unfinished_stage()
             if next_stage is None:
-                # All stages have successfully completed
                 break
 
             # ----------------- STAGE 1: CLEAN -----------------
             if next_stage == "CLEAN":
                 cp_mgr.mark_stage_started("CLEAN")
-                update_progress("CLEANING", 0, "Loading & cleaning raw candles...", f"[{symbol}] [Stage CLEAN] Loading raw candles from {os.path.basename(file_path)}...")
+                logger.info(f"[{symbol}] [Stage CLEAN] Loading raw candles from {os.path.basename(file_path)}...")
 
-                # 1. Load raw candle data
+                # Standard cleaning runs quickly in parent process to produce the baseline Parquet
                 if file_path.endswith(".parquet"):
                     df_raw = pd.read_parquet(file_path)
                 else:
                     df_raw = pd.read_csv(file_path)
 
-                # 2. Execute
                 df_clean = clean_raw_candles(df_raw)
                 total_bars = len(df_clean)
 
-                # 3. Validate
                 if total_bars < cfg["window_size"]:
                     raise ValueError(f"Insufficient candles ({total_bars}) for window size {cfg['window_size']}.")
-                essential = ["Datetime", "Open", "High", "Low", "Close"]
-                for col in essential:
-                    if col not in df_clean.columns:
-                        raise ValueError(f"Missing essential column '{col}' in cleaned raw data.")
 
-                # 4. Save Atomic
                 clean_out_path = os.path.join(stages_dir, f"{symbol}_clean.parquet")
                 save_parquet_atomically(df_clean, clean_out_path)
 
-                # 5. Update checkpoint
                 cp_mgr.mark_stage_completed("CLEAN", clean_out_path)
 
-                # 6 & 7. Release memory & GC
                 del df_raw, df_clean
                 import gc
                 gc.collect()
-
-                update_progress("CLEANING", 100, f"Cleaned {total_bars} bars", f"[{symbol}] [Stage CLEAN] Finished. Cleaned {total_bars} bars.")
+                logger.info(f"[{symbol}] [Stage CLEAN] Successfully finished. Processed {total_bars} bars.")
 
             # ----------------- STAGE 2: ENRICH -----------------
             elif next_stage == "ENRICH":
                 cp_mgr.mark_stage_started("ENRICH")
-                update_progress("PROCESSING", 0, "Computing EMAs & SMC structures...", f"[{symbol}] [Stage ENRICH] Computing indicators, SMC structures, and S&D zones...")
-
-                # 1. Load required data
                 clean_in_path = cp_mgr.get_stage_output("CLEAN")
-                df_clean = pd.read_parquet(clean_in_path)
-
-                # 2. Execute
-                ind_engine = IndicatorEngine(ema_periods=[50, 600, 800], slope_period=32)
-                df_enriched = ind_engine.calculate(df_clean)
-
-                ms_engine = MarketStructureEngine(lookback=3)
-                df_enriched = ms_engine.process(df_enriched)
-
-                sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
-                df_enriched = sd_engine.process(df_enriched)
-
-                # 3. Validate
-                if df_enriched.empty:
-                    raise ValueError("Enriched DataFrame is empty.")
-                required_cols = ["ema_50", "ema_600", "ema_800", "atr_14", "trend"]
-                for col in required_cols:
-                    if col not in df_enriched.columns:
-                        raise ValueError(f"Missing indicator/SMC column '{col}' in enriched data.")
-
-                # 4. Save Atomic
                 enrich_out_path = os.path.join(stages_dir, f"{symbol}_enriched.parquet")
-                save_parquet_atomically(df_enriched, enrich_out_path)
 
-                # 5. Update checkpoint
+                # Run chunked stage execution
+                run_stage_with_chunking(symbol, "ENRICH", clean_in_path, enrich_out_path, cfg, max_workers)
                 cp_mgr.mark_stage_completed("ENRICH", enrich_out_path)
-
-                # 6 & 7. Release memory & GC
-                del df_clean, df_enriched
-                import gc
-                gc.collect()
-
-                update_progress("PROCESSING", 100, "Completed structures", f"[{symbol}] [Stage ENRICH] Finished indicators and SMC structures.")
 
             # ----------------- STAGE 3: EVAL -----------------
             elif next_stage == "EVAL":
                 cp_mgr.mark_stage_started("EVAL")
-                update_progress("CANDLE_EVAL", 0, "Evaluating candles...", f"[{symbol}] [Stage EVAL] Starting Strong/Refusal candle evaluation...")
-
-                # 1. Load required data
                 enrich_in_path = cp_mgr.get_stage_output("ENRICH")
-                df_enriched = pd.read_parquet(enrich_in_path)
-                total_bars = len(df_enriched)
-
-                # Local reconstruction for evaluation engine
-                ms_engine = MarketStructureEngine(lookback=3)
-                df_struct = ms_engine.process(df_enriched)
-                sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
-                df_final_struct = sd_engine.process(df_struct)
-
-                msg = MarketStructureGraph(
-                    symbol=symbol,
-                    timeframe=cfg["timeframe"],
-                    swing_highs=[s for s in ms_engine.swings if s.level_type == "SwingHigh"],
-                    swing_lows=[s for s in ms_engine.swings if s.level_type == "SwingLow"],
-                    protected_high=ms_engine.protected_high,
-                    protected_low=ms_engine.protected_low,
-                    bos=list(ms_engine.bos_list),
-                    choch=list(ms_engine.choch_list),
-                    supply_zones=[z for z in sd_engine.zones if z.type == "Supply"],
-                    demand_zones=[z for z in sd_engine.zones if z.type == "Demand"],
-                    trend_direction="Bull" if df_final_struct.iloc[-1].get("trend", 0) == 1 else ("Bear" if df_final_struct.iloc[-1].get("trend", 0) == -1 else "Neutral"),
-                    atr=float(df_final_struct.iloc[-1].get("atr_14", 0.0001))
-                )
-
-                # 2. Execute
-                strong_eng = StrongCandleEngine()
-                refusal_eng = RefusalCandleEngine()
-
-                strong_scores = []
-                strong_confs = []
-                refusal_scores = []
-                refusal_confs = []
-
-                log_interval = max(1, total_bars // 10)
-                for i in range(total_bars):
-                    sc = strong_eng.evaluate(df_final_struct, i, msg)
-                    rc = refusal_eng.evaluate_rejection(df_final_struct, i, None, msg)
-                    strong_scores.append(sc.quality_score)
-                    strong_confs.append(sc.confidence)
-                    refusal_scores.append(rc.quality_score)
-                    refusal_confs.append(rc.confidence)
-
-                    if (i + 1) % log_interval == 0 or i == total_bars - 1:
-                        pct = int((i + 1) / total_bars * 100)
-                        update_progress("CANDLE_EVAL", pct, f"Bars {i+1}/{total_bars}", f"[{symbol}] [Stage EVAL] Candle evaluation progress: {pct}%")
-
-                df_evaluated = df_enriched.copy()
-                df_evaluated["strong_candle_score"] = strong_scores
-                df_evaluated["strong_candle_confidence"] = strong_confs
-                df_evaluated["refusal_candle_score"] = refusal_scores
-                df_evaluated["refusal_candle_confidence"] = refusal_confs
-
-                # 3. Validate
-                required_eval_cols = ["strong_candle_score", "strong_candle_confidence", "refusal_candle_score", "refusal_candle_confidence"]
-                for col in required_eval_cols:
-                    if col not in df_evaluated.columns:
-                        raise ValueError(f"Missing evaluation column '{col}' in evaluated data.")
-
-                # 4. Save Atomic
                 eval_out_path = os.path.join(stages_dir, f"{symbol}_evaluated.parquet")
-                save_parquet_atomically(df_evaluated, eval_out_path)
 
-                # 5. Update checkpoint
+                run_stage_with_chunking(symbol, "EVAL", enrich_in_path, eval_out_path, cfg, max_workers)
                 cp_mgr.mark_stage_completed("EVAL", eval_out_path)
-
-                # 6 & 7. Release memory & GC
-                del df_enriched, df_evaluated, df_struct, df_final_struct, msg
-                import gc
-                gc.collect()
-
-                update_progress("CANDLE_EVAL", 100, "Completed candle evaluations", f"[{symbol}] [Stage EVAL] Finished Strong/Refusal candle evaluations.")
 
             # ----------------- STAGE 4: STATE -----------------
             elif next_stage == "STATE":
                 cp_mgr.mark_stage_started("STATE")
-                update_progress("LABELING_MS", 0, "Starting Market State labeling...", f"[{symbol}] [Stage STATE] Commencing Market State sliding-window labeling...")
-
-                # 1. Load required data
                 eval_in_path = cp_mgr.get_stage_output("EVAL")
-                df_evaluated = pd.read_parquet(eval_in_path)
-
-                # Local reconstruction
-                ms_engine = MarketStructureEngine(lookback=3)
-                df_struct = ms_engine.process(df_evaluated)
-                sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
-                df_final_struct = sd_engine.process(df_struct)
-
-                # 2. Execute
-                label_engine = LabelEngine(
-                    window_size=cfg["window_size"],
-                    window_stride=cfg["window_stride"],
-                    registry=registry
-                )
-                df_state = label_engine.generate_dataset(
-                    data_inputs={(symbol, cfg["timeframe"]): df_final_struct},
-                    ms_engine=ms_engine,
-                    sd_engine=sd_engine,
-                    monitor=monitor,
-                    slot_id=slot_id
-                )
-
-                # 3. Validate
-                if not df_state.empty:
-                    required_state_cols = ["target", "confidence", "symbol"]
-                    for col in required_state_cols:
-                        if col not in df_state.columns:
-                            raise ValueError(f"Missing column '{col}' in generated Market State dataset.")
-
-                # 4. Save Atomic
                 state_out_path = os.path.join(stages_dir, f"{symbol}_state.parquet")
-                save_parquet_atomically(df_state, state_out_path)
 
-                # 5. Update checkpoint
+                run_stage_with_chunking(symbol, "STATE", eval_in_path, state_out_path, cfg, max_workers)
                 cp_mgr.mark_stage_completed("STATE", state_out_path)
-
-                # 6 & 7. Release memory & GC
-                del df_evaluated, df_struct, df_final_struct, df_state, label_engine
-                import gc
-                gc.collect()
-
-                update_progress("LABELING_MS", 100, "Completed market state labeling", f"[{symbol}] [Stage STATE] Finished Market State labeling.")
 
             # ----------------- STAGE 5: LEVEL -----------------
             elif next_stage == "LEVEL":
                 cp_mgr.mark_stage_started("LEVEL")
-                update_progress("LABELING_LVL", 0, "Starting Level Break labeling...", f"[{symbol}] [Stage LEVEL] Commencing Level Break proximity and outcome labeling...")
-
-                # 1. Load required data
                 eval_in_path = cp_mgr.get_stage_output("EVAL")
-                df_evaluated = pd.read_parquet(eval_in_path)
-
-                # Local reconstruction
-                ms_engine = MarketStructureEngine(lookback=3)
-                df_struct = ms_engine.process(df_evaluated)
-                sd_engine = SupplyDemandEngine(atr_period=14, impulse_threshold=2.0)
-                df_final_struct = sd_engine.process(df_struct)
-
-                msg = MarketStructureGraph(
-                    symbol=symbol,
-                    timeframe=cfg["timeframe"],
-                    swing_highs=[s for s in ms_engine.swings if s.level_type == "SwingHigh"],
-                    swing_lows=[s for s in ms_engine.swings if s.level_type == "SwingLow"],
-                    protected_high=ms_engine.protected_high,
-                    protected_low=ms_engine.protected_low,
-                    bos=list(ms_engine.bos_list),
-                    choch=list(ms_engine.choch_list),
-                    supply_zones=[z for z in sd_engine.zones if z.type == "Supply"],
-                    demand_zones=[z for z in sd_engine.zones if z.type == "Demand"],
-                    trend_direction="Bull" if df_final_struct.iloc[-1].get("trend", 0) == 1 else ("Bear" if df_final_struct.iloc[-1].get("trend", 0) == -1 else "Neutral"),
-                    atr=float(df_final_struct.iloc[-1].get("atr_14", 0.0001))
-                )
-
-                # 2. Execute
-                db_builder = DatasetBuilder(registry=registry)
-                df_level = db_builder.build_level_break_dataset(
-                    df_final_struct, msg,
-                    monitor=monitor,
-                    slot_id=slot_id
-                )
-                if not df_level.empty:
-                    df_level["symbol"] = symbol
-                    df_level["timeframe"] = cfg["timeframe"]
-
-                # 3. Validate
-                if not df_level.empty:
-                    required_level_cols = ["target", "zone_type", "symbol"]
-                    for col in required_level_cols:
-                        if col not in df_level.columns:
-                            raise ValueError(f"Missing column '{col}' in generated Level Break dataset.")
-
-                # 4. Save Atomic
                 level_out_path = os.path.join(stages_dir, f"{symbol}_level.parquet")
-                save_parquet_atomically(df_level, level_out_path)
 
-                # 5. Update checkpoint
+                run_stage_with_chunking(symbol, "LEVEL", eval_in_path, level_out_path, cfg, max_workers)
                 cp_mgr.mark_stage_completed("LEVEL", level_out_path)
 
-                # 6 & 7. Release memory & GC
-                del df_evaluated, df_struct, df_final_struct, msg, df_level, db_builder
-                import gc
-                gc.collect()
-
-                update_progress("LABELING_LVL", 100, "Completed level break labeling", f"[{symbol}] [Stage LEVEL] Finished Level Break labeling.")
-
-        # Finally, return completed stage outputs
         state_final_path = cp_mgr.get_stage_output("STATE")
         level_final_path = cp_mgr.get_stage_output("LEVEL")
         return state_final_path, level_final_path
 
     except Exception as e:
         logger.error(f"[{symbol}] Error processing symbol: {e}", exc_info=True)
-        if progress_queue is not None:
-            progress_queue.put(("UPDATE", symbol, "ERROR", 0, str(e), f"[{symbol}] Error: {e}"))
         return None, None
-    finally:
-        if progress_queue is not None:
-            progress_queue.put(("RELEASE", symbol))
-
-
-def progress_listener_worker(queue, monitor):
-    """
-    Background thread running in the main parent process that listens to the progress queue
-    and updates the terminal ProcessingProgressMonitor display dynamically.
-    """
-    # Create a local file logger strictly dedicated to recording background worker progress step details to logs/process_data.log
-    file_logger = logging.getLogger("ProcessDataFileLogger")
-    file_logger.propagate = False
-    if not file_logger.handlers:
-        file_logger.addHandler(logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8"))
-        file_logger.setLevel(logging.INFO)
-
-    try:
-        while True:
-            msg = queue.get()
-            if msg is None:  # Shutdown sentinel
-                break
-
-            msg_type = msg[0]
-            if msg_type == "UPDATE":
-                _, symbol, phase, pct, status, log_msg = msg
-                slot = monitor.register_symbol_slot(symbol)
-                monitor.update(slot, symbol, phase, pct, status)
-                # Write background progress update messages to the file logger only (leaving the terminal console clean)
-                if log_msg and file_logger:
-                    file_logger.info(log_msg)
-            elif msg_type == "RELEASE":
-                _, symbol = msg
-                monitor.release_symbol_slot(symbol)
-    except Exception as e:
-        logger.error(f"Error in progress listener thread: {e}", exc_info=True)
 
 
 def main():
@@ -763,7 +1039,7 @@ def main():
     mem_monitor = MemoryMonitor()
     mem_monitor.check("Pipeline start")
 
-    parser = argparse.ArgumentParser(description="Forex_DNN Process Historical Data Pipeline")
+    parser = argparse.ArgumentParser(description="Forex_DNN Redesigned Streaming Data Pipeline")
     parser.add_argument("--symbol", type=str, default="ALL",
                         help="Specific symbols (comma-separated, e.g. EURUSD,GBPUSD) or 'ALL'.")
     parser.add_argument("--timeframe", type=str, default="M5",
@@ -779,7 +1055,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Load Configs
     cfg = load_config(args.config)
     if args.input_dir:
         cfg["input_dir"] = args.input_dir
@@ -789,7 +1064,7 @@ def main():
         cfg["timeframe"] = args.timeframe
 
     logger.info("==================================================")
-    logger.info("   Forex_DNN Centralized Data Processing Pipeline ")
+    logger.info("  Forex_DNN Redesigned High-Performance Pipeline  ")
     logger.info("==================================================")
     logger.info(f"Target Directory : {cfg['input_dir']}")
     logger.info(f"Output Directory : {cfg['output_dir']}")
@@ -797,7 +1072,6 @@ def main():
     logger.info(f"Timeframe        : {cfg['timeframe']}")
     logger.info(f"Window Size/Stride: {cfg['window_size']} / {cfg['window_stride']}")
 
-    # Flush directories if forced
     stages_dir = PathManager.get_path("temporary", "stages")
     checkpoint_dir = PathManager.get_path("temporary", "checkpoints")
 
@@ -810,7 +1084,6 @@ def main():
     os.makedirs(stages_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # Discover historical candle files
     discovered = discover_historical_files(cfg["input_dir"], args.symbol, cfg["timeframe"])
     if not discovered:
         logger.error("No historical files matching the configuration criteria were discovered. Terminating.")
@@ -818,97 +1091,25 @@ def main():
 
     logger.info(f"Successfully discovered {len(discovered)} symbols to process: {list(discovered.keys())}")
 
-    # Resolve active workers
-    max_workers = cfg["max_workers"] if cfg["use_multiprocessing"] else 1
-    total_symbols = len(discovered)
-
-    # Initialize Progress Monitor
-    monitor = ProcessingProgressMonitor(num_workers=max_workers, total_symbols=total_symbols, enabled=True)
-
-    # Swap standard log handler with progress-aware log handler
-    root_logger = logging.getLogger()
-    for handler in list(root_logger.handlers):
-        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, ProgressAwareStreamHandler):
-            formatter = handler.formatter
-            new_handler = ProgressAwareStreamHandler(monitor=monitor, stream=sys.stdout)
-            new_handler.setFormatter(formatter)
-            root_logger.removeHandler(handler)
-            root_logger.addHandler(new_handler)
-
-    # Process symbols concurrently or sequentially
+    # Process each symbol SEQUENTIALLY to keep memory usage completely bounded
     registry = FeatureRegistry(load_defaults=True)
     state_paths = []
     level_paths = []
 
-    if monitor.enabled:
-        monitor._draw()
+    for idx, (sym, path) in enumerate(discovered.items(), 1):
+        logger.info(f"\n[{idx}/{len(discovered)}] PROCESSING SYMBOL: {sym} sequentially...")
+        mem_monitor.check(f"Before processing symbol {sym}")
 
-    if max_workers > 1 and total_symbols > 1:
-        if cfg.get("use_multiprocessing", True):
-            # True ProcessPoolExecutor multiprocessing (bypasses GIL)
-            logger.info(f"Initiating true ProcessPoolExecutor parallel execution on {max_workers} CPU workers...")
+        state_path, level_path = process_single_symbol(sym, path, cfg, registry)
+        if state_path:
+            state_paths.append(state_path)
+        if level_path:
+            level_paths.append(level_path)
 
-            # Start background thread to listen to progress updates from worker processes
-            manager = multiprocessing.Manager()
-            progress_queue = manager.Queue()
-
-            listener_thread = threading.Thread(
-                target=progress_listener_worker,
-                args=(progress_queue, monitor),
-                daemon=True
-            )
-            listener_thread.start()
-
-            with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-                future_to_sym = {
-                    executor.submit(process_single_symbol, sym, path, cfg, registry, None, None, None, progress_queue): sym
-                    for sym, path in discovered.items()
-                }
-                for future in concurrent.futures.as_completed(future_to_sym):
-                    sym = future_to_sym[future]
-                    try:
-                        state_path, level_path = future.result()
-                        if state_path:
-                            state_paths.append(state_path)
-                        if level_path:
-                            level_paths.append(level_path)
-                    except Exception as exc:
-                        logger.error(f"Symbol {sym} generated an exception during concurrent multiprocessing run: {exc}", exc_info=True)
-                    monitor.increment_completed()
-
-            # Stop the progress listener thread cleanly
-            progress_queue.put(None)
-            listener_thread.join(timeout=5)
-        else:
-            # ThreadPoolExecutor (shares memory/monitor directly, but bound by GIL)
-            logger.info(f"Initiating ThreadPoolExecutor execution on {max_workers} thread workers...")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_sym = {
-                    executor.submit(process_single_symbol, sym, path, cfg, registry, None, monitor, None, None): sym
-                    for sym, path in discovered.items()
-                }
-                for future in concurrent.futures.as_completed(future_to_sym):
-                    sym = future_to_sym[future]
-                    try:
-                        state_path, level_path = future.result()
-                        if state_path:
-                            state_paths.append(state_path)
-                        if level_path:
-                            level_paths.append(level_path)
-                    except Exception as exc:
-                        logger.error(f"Symbol {sym} generated an exception during thread loop: {exc}")
-                    monitor.increment_completed()
-    else:
-        for sym, path in discovered.items():
-            state_path, level_path = process_single_symbol(sym, path, cfg, registry, None, monitor, 1, None)
-            if state_path:
-                state_paths.append(state_path)
-            if level_path:
-                level_paths.append(level_path)
-            monitor.increment_completed()
-
-    if monitor.enabled:
-        monitor.clear()
+        mem_monitor.check(f"After processing symbol {sym}")
+        # Explicit garbage collection after each symbol to fully release resources
+        import gc
+        gc.collect()
 
     # Consolidate and clean final datasets
     os.makedirs(cfg["output_dir"], exist_ok=True)
@@ -929,7 +1130,6 @@ def main():
 
         if all_states:
             master_state = pd.concat(all_states, ignore_index=True)
-            # Free individual lists/DataFrames immediately
             del all_states
             import gc
             gc.collect()
@@ -942,18 +1142,14 @@ def main():
             save_parquet_atomically(master_state, state_path)
             logger.info(f"Saved Consolidated Market State Dataset to {state_path} ({len(master_state)} samples)")
 
-            # Validate
             report = validator.validate(master_state, expected_window_size=cfg["window_size"])
             logger.info(f"Market State Dataset Integrity Validation status: {'PASS' if report['is_valid'] else 'FAIL'}")
 
             # Produce RL and Trade Quality Datasets
-            # For Reinforcement Learning
             logger.info("Preparing Reinforcement Learning (RL) Dataset...")
             master_rl = master_state.copy()
 
-            # Calculate a deterministic forward reward: 5-bar shift of close log difference
             if "Close" in master_rl.columns:
-                # Shift backwards to see future
                 forward_close = master_rl.groupby("symbol")["Close"].shift(-5)
                 master_rl["reward"] = ((forward_close - master_rl["Close"]) / master_rl["Close"]).fillna(0.0)
                 master_rl["action"] = np.where(master_rl["reward"] > 0.001, 1, np.where(master_rl["reward"] < -0.001, 2, 0))
@@ -962,7 +1158,6 @@ def main():
                 master_rl["action"] = 0
 
             master_rl["done"] = False
-            # Last 5 bars of each symbol are done
             for sym in master_rl["symbol"].unique():
                 idx = master_rl[master_rl["symbol"] == sym].index
                 if len(idx) > 5:
@@ -974,16 +1169,12 @@ def main():
             del master_rl
             gc.collect()
 
-            # For Trade Quality
             logger.info("Preparing Trade Quality Dataset...")
             master_tq = master_state.copy()
 
-            # Deterministic win_loss label based on forward outcome:
-            # Check if the close rises by 1.5 ATR before dropping by 1 ATR
             if "Close" in master_tq.columns:
                 forward_close_10 = master_tq.groupby("symbol")["Close"].shift(-10).fillna(master_tq["Close"])
                 atr = master_tq.get("atr", 0.0010)
-                # If closed higher by 1.5 ATR, win_loss=1, else 0
                 master_tq["win_loss"] = np.where(forward_close_10 >= master_tq["Close"] + 1.5 * atr, 1, 0)
                 master_tq["trade_quality_score"] = np.clip((forward_close_10 - master_tq["Close"]) / (1.5 * atr + 1e-9) * 100.0, 0, 100.0)
             else:
@@ -1012,7 +1203,6 @@ def main():
                     all_levels.append(df)
         if all_levels:
             master_level = pd.concat(all_levels, ignore_index=True)
-            # Free individual DataFrames from memory immediately
             del all_levels
             import gc
             gc.collect()
@@ -1025,7 +1215,6 @@ def main():
             save_parquet_atomically(master_level, level_path)
             logger.info(f"Saved Consolidated Level Break Dataset to {level_path} ({len(master_level)} samples)")
 
-            # Validate
             report_lvl = validator.validate(master_level, expected_window_size=cfg["window_size"])
             logger.info(f"Level Break Dataset Integrity Validation status: {'PASS' if report_lvl['is_valid'] else 'FAIL'}")
 
@@ -1049,7 +1238,6 @@ def main():
         json.dump(meta, f, indent=4)
     logger.info(f"Saved central metadata log to {meta_path}")
 
-    # Clean up master frames
     del master_state, master_level
     import gc
     gc.collect()
