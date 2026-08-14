@@ -2,9 +2,9 @@
 input_dir: "Data/Historical"
 output_dir: "Data/ML/Datasets"
 timeframe: "M5"
-window_size: 35
+window_size: 600
 window_stride: 1
-max_workers: 4
+max_workers: 6
 use_multiprocessing: true
 clean_data: true
 drop_duplicates: true
