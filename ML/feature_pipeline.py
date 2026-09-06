@@ -477,22 +477,10 @@ class FeaturePipeline:
         return float(distance / atr) if pd.notna(distance) else -1.0
 
     def _extract_supply_width(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        self._prepare_msg_lookups(msg)
-        created = msg._supply_created_indices
-        broken = msg._supply_broken_indices
-        if len(created) > 0:
-            # Mask active zones chronologically up to idx
-            active_supplies = []
-            for i, (c_idx, b_idx) in enumerate(zip(created, broken)):
-                if c_idx <= idx and b_idx > idx:
-                    active_supplies.append(msg.supply_zones[i])
-            row = self._get_row(df, idx)
-            close = row["Close"]
-            valid_supplies = [z for z in active_supplies if z.lower > close]
-            if valid_supplies:
-                nearest = min(valid_supplies, key=lambda z: z.lower)
-                return float(nearest.width * 10000.0)  # Width in pips
-        return 0.0
+        row = self._get_row(df, idx)
+        close = row["Close"]
+        nearest = msg.get_nearest_supply_at(close, idx)
+        return float(nearest.width * 10000.0) if nearest else 0.0
 
     def _extract_supply_strength(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
         row = self._get_row(df, idx)
@@ -513,21 +501,10 @@ class FeaturePipeline:
         return float(distance / atr) if pd.notna(distance) else -1.0
 
     def _extract_demand_width(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
-        self._prepare_msg_lookups(msg)
-        created = msg._demand_created_indices
-        broken = msg._demand_broken_indices
-        if len(created) > 0:
-            active_demands = []
-            for i, (c_idx, b_idx) in enumerate(zip(created, broken)):
-                if c_idx <= idx and b_idx > idx:
-                    active_demands.append(msg.demand_zones[i])
-            row = self._get_row(df, idx)
-            close = row["Close"]
-            valid_demands = [z for z in active_demands if z.upper < close]
-            if valid_demands:
-                nearest = max(valid_demands, key=lambda z: z.upper)
-                return float(nearest.width * 10000.0)
-        return 0.0
+        row = self._get_row(df, idx)
+        close = row["Close"]
+        nearest = msg.get_nearest_demand_at(close, idx)
+        return float(nearest.width * 10000.0) if nearest else 0.0
 
     def _extract_demand_strength(self, df: pd.DataFrame, msg: MarketStructureGraph, idx: int) -> float:
         row = self._get_row(df, idx)

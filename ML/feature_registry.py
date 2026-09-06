@@ -17,6 +17,18 @@ from ML.feature_groups import ALL_DEFAULT_FEATURES, CATEGORIES
 
 logger = logging.getLogger("FeatureRegistry")
 
+# Reserved Target and Metadata Column Names (Forbidden from being registered as input features)
+TARGET_COLUMNS = {
+    "target", "label", "confidence", "future_market_state", "future_state_confidence",
+    "future_state_horizon", "level_event", "break_probability_target",
+    "level_bars_to_resolution", "level_event_confidence", "level_mae", "level_mfe",
+    "strategy_outcome", "r_multiple", "strategy_mae", "strategy_mfe",
+    "strategy_bars_to_resolution", "exit_reason", "win_loss", "trade_quality_score",
+    "reward", "action", "current_market_state", "anchor_index", "window_start",
+    "window_end", "window_size", "label_status", "ambiguity_reason"
+}
+
+
 class FeatureRegistry:
     """
     Purpose:
@@ -40,9 +52,12 @@ class FeatureRegistry:
     def register(self, feature: FeatureDefinition) -> None:
         """
         Register a feature definition in the registry.
+        Strictly prevents target leakage by forbidding target column names.
         """
         if self._frozen:
             raise RuntimeError("Cannot register feature: registry is frozen.")
+        if feature.name in TARGET_COLUMNS:
+            raise ValueError(f"Security Failure: Cannot register target column '{feature.name}' as an input feature in FeatureRegistry.")
         if feature.name in self._features:
             logger.warning(f"Feature '{feature.name}' is already registered. Overwriting.")
         self._features[feature.name] = feature
