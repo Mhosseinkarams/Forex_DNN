@@ -65,13 +65,17 @@ from Market_Data_Pipeline.structure_graph import MarketStructureGraph
 from Collecting_Data.indicators import IndicatorEngine
 
 # Configure Logging (MainProcess gets stdout & file, subprocesses get file only to prevent screen corruption)
+PathManager.ensure_all_dirs()
+log_file_path = PathManager.get_relative_path("logs", "process_data.log")
+os.makedirs(os.path.dirname(os.path.abspath(log_file_path)), exist_ok=True)
+
 if multiprocessing.current_process().name == 'MainProcess':
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8")
+            logging.FileHandler(log_file_path, encoding="utf-8")
         ]
     )
 else:
@@ -79,7 +83,7 @@ else:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
-            logging.FileHandler(PathManager.get_relative_path("logs", "process_data.log"), encoding="utf-8")
+            logging.FileHandler(log_file_path, encoding="utf-8")
         ]
     )
 
