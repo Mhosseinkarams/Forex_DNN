@@ -169,3 +169,36 @@ class MarketStructureGraph:
     def get_nearest_supply(self, price: float) -> Optional[Zone]:
         active_supplies = [z for z in self.supply_zones if not z.broken and z.lower > price]
         return min(active_supplies, key=lambda z: z.lower) if active_supplies else None
+
+    # Point-in-time Causal Query Methods
+    def get_active_demands(self, idx: int) -> List[Zone]:
+        """Returns demand zones that were created at or before idx and not yet broken by idx."""
+        return [
+            z for z in self.demand_zones
+            if z.created_idx <= idx and (z.broken_idx is None or z.broken_idx > idx)
+        ]
+
+    def get_active_supplies(self, idx: int) -> List[Zone]:
+        """Returns supply zones that were created at or before idx and not yet broken by idx."""
+        return [
+            z for z in self.supply_zones
+            if z.created_idx <= idx and (z.broken_idx is None or z.broken_idx > idx)
+        ]
+
+    def get_nearest_demand_at(self, price: float, idx: int) -> Optional[Zone]:
+        """Point-in-time query for nearest active demand zone below price at index idx."""
+        active = [z for z in self.get_active_demands(idx) if z.upper < price]
+        return max(active, key=lambda z: z.upper) if active else None
+
+    def get_nearest_supply_at(self, price: float, idx: int) -> Optional[Zone]:
+        """Point-in-time query for nearest active supply zone above price at index idx."""
+        active = [z for z in self.get_active_supplies(idx) if z.lower > price]
+        return min(active, key=lambda z: z.lower) if active else None
+
+    def get_confirmed_swings_high(self, idx: int) -> List[StructureLevel]:
+        """Point-in-time query for swing highs confirmed at or before index idx."""
+        return [s for s in self.swing_highs if s.confirmation_candle <= idx]
+
+    def get_confirmed_swings_low(self, idx: int) -> List[StructureLevel]:
+        """Point-in-time query for swing lows confirmed at or before index idx."""
+        return [s for s in self.swing_lows if s.confirmation_candle <= idx]

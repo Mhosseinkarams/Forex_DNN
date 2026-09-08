@@ -4,6 +4,9 @@ import numpy as np
 from typing import Tuple, List, Dict, Any, Optional
 from ML.feature_registry import FeatureRegistry
 from ML.feature_pipeline import FeaturePipeline
+from ML.market_state_labeler import MarketStateLabeler
+from ML.level_event_labeler import LevelEventLabeler
+from ML.strategy_outcome_evaluator import StrategyOutcomeEvaluator
 from Market_Data_Pipeline.structure_graph import MarketStructureGraph, Zone
 
 logger = logging.getLogger("DatasetBuilder")
@@ -11,12 +14,148 @@ logger = logging.getLogger("DatasetBuilder")
 class DatasetBuilder:
     """
     Purpose:
-        Automatically construct labeled datasets (Market State and Level Break)
+        Construct unified, multi-target, causal machine learning datasets
         from historical OHLCV data using MarketStructureGraph and analytical engines.
     """
-    def __init__(self, registry: Optional[FeatureRegistry] = None):
+    def __init__(
+        self,
+        registry: Optional[FeatureRegistry] = None,
+        window_size: int = 35,
+        market_state_horizon: int = 20,
+        level_event_horizon: int = 20,
+        strategy_horizon: int = 50
+    ):
         self.registry = registry or FeatureRegistry()
         self.pipeline = FeaturePipeline(self.registry)
+        self.window_size = window_size
+        self.market_state_horizon = market_state_horizon
+        self.level_event_horizon = level_event_horizon
+        self.strategy_horizon = strategy_horizon
+
+        self.market_state_labeler = MarketStateLabeler(future_horizon=market_state_horizon)
+        self.level_event_labeler = LevelEventLabeler(future_horizon=level_event_horizon)
+        self.strategy_outcome_evaluator = StrategyOutcomeEvaluator(future_horizon=strategy_horizon)
+
+    def build_multi_target_dataset(self, df: pd.DataFrame, msg: MarketStructureGraph) -> pd.DataFrame:
+        """
+        Build unified multi-target dataset anchored at time t.
+        Guarantees strict causal separation:
+          - Features use data <= t.
+          - Targets evaluate future candles > t.
+        """
+        rows = []
+        max_horizon = max(self.market_state_horizon, self.level_event_horizon, self.strategy_horizon)
+        warmup = max(100, self.window_size)
+
+        for t in range(warmup, len(df) - max_horizon):
+            feats = self.pipeline.extract_all(df, msg, idx=t)
+
+            # Causal Market State (Feature/Metadata)
+            curr_state, curr_conf, _ = self.market_state_labeler.evaluate_causal_current_state(
+                df, msg, t - self.window_size + 1, t
+            )
+
+            # Future Market State Target (> t)
+            fut_state, fut_conf, fut_info = self.market_state_labeler.label_window(
+                df, msg, t - self.window_size + 1, t
+            )
+
+            row_close = df.at[t, "Close"]
+            row_atr = df.at[t, "atr_14"] if "atr_14" in df.columns else 0.0001
+            if row_atr <= 0:
+                row_atr = 0.0001
+
+            # Level Event Target (> t)
+            near_supply = msg.get_nearest_supply_at(row_close, t)
+            near_demand = msg.get_nearest_demand_at(row_close, t)
+            target_zone = near_supply or near_demand
+
+            if target_zone:
+                lvl_res = self.level_event_labeler.evaluate_level_event(df, msg, t, target_zone)
+                lvl_type = target_zone.type
+                lvl_price = target_zone.mid
+                lvl_dist = (target_zone.lower - row_close) if lvl_type == "Supply" else (row_close - target_zone.upper)
+            else:
+                lvl_res = None
+                lvl_type = "NONE"
+                lvl_price = row_close
+                lvl_dist = 999.0
+
+            # Strategy Outcome Target (> t)
+            # Evaluate hypothetical trade setup based on trend direction
+            trend_val = df.at[t, "trend"] if "trend" in df.columns else 0
+            direction = 1 if trend_val >= 0 else -1
+            sl_price = row_close - (1.5 * row_atr) if direction == 1 else row_close + (1.5 * row_atr)
+            tp_price = row_close + (3.0 * row_atr) if direction == 1 else row_close - (3.0 * row_atr)
+
+            strat_res = self.strategy_outcome_evaluator.evaluate_outcome(
+                df, t, direction, row_close, sl_price, tp_price
+            )
+
+            row_dt = df.at[t, "Datetime"] if "Datetime" in df.columns else str(t)
+            dt_str = row_dt.isoformat() if isinstance(row_dt, pd.Timestamp) else str(row_dt)
+
+            row_data = {
+                # IDENTITY
+                "symbol": msg.symbol,
+                "timeframe": msg.timeframe,
+                "datetime": dt_str,
+                "anchor_index": t,
+                "dataset_version": "2.0.0-causal",
+
+                # INPUT METADATA
+                "window_start": t - self.window_size + 1,
+                "window_end": t,
+                "window_size": self.window_size,
+
+                # CAUSAL MARKET STATE
+                "current_market_state": curr_state or "TRANSITION",
+                "current_trend_direction": trend_val,
+
+                # FUTURE MARKET STATE TARGET
+                "future_market_state": fut_state or "AMBIGUOUS",
+                "future_state_confidence": fut_conf,
+                "future_state_horizon": self.market_state_horizon,
+
+                # LEVEL EVENT TARGET
+                "level_type": lvl_type,
+                "level_price": float(lvl_price),
+                "level_distance_at_anchor": float(lvl_dist / row_atr),
+                "level_event": lvl_res.event_type if lvl_res else "NO_INTERACTION",
+                "break_probability_target": lvl_res.break_probability_target if lvl_res else None,
+                "level_bars_to_resolution": lvl_res.bars_to_resolution if lvl_res else 0,
+                "level_event_confidence": lvl_res.confidence if lvl_res else 0.0,
+                "level_mae": lvl_res.mae if lvl_res else 0.0,
+                "level_mfe": lvl_res.mfe if lvl_res else 0.0,
+
+                # STRATEGY OUTCOME TARGET
+                "strategy_name": "SMC_Default",
+                "signal_type": "Candidate",
+                "direction": direction,
+                "entry_price": float(row_close),
+                "sl_price": float(sl_price),
+                "tp_price": float(tp_price),
+                "risk_distance": float(abs(row_close - sl_price) / row_atr),
+                "reward_distance": float(abs(tp_price - row_close) / row_atr),
+                "r_multiple": float(strat_res.r_multiple),
+                "strategy_mae": float(strat_res.mae_risk_ratio),
+                "strategy_mfe": float(strat_res.mfe_risk_ratio),
+                "strategy_bars_to_resolution": int(strat_res.bars_to_resolution),
+                "exit_reason": strat_res.exit_reason,
+                "strategy_outcome": strat_res.outcome,
+
+                # QUALITY
+                "label_status": "VALID" if fut_state is not None else "NO_LABEL",
+                "label_confidence": float(fut_conf),
+                "ambiguity_reason": fut_info.get("rule_fired", "none"),
+
+                # INPUT FEATURES (from FeaturePipeline)
+                **feats
+            }
+
+            rows.append(row_data)
+
+        return pd.DataFrame(rows)
 
     def build_market_state_dataset(self, df: pd.DataFrame, msg: MarketStructureGraph) -> pd.DataFrame:
         """

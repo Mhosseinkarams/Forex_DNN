@@ -41,7 +41,9 @@ class Trainer:
         dataset_hash: str = "unknown",
         model_save_path: Optional[str] = None,
         is_production: bool = False,
-        version: str = "1.0.0"
+        version: str = "1.0.0",
+        purge_window: int = 55,
+        embargo_window: int = 20
     ) -> Dict[str, Any]:
         """
         Runs the full training workflow:
@@ -95,18 +97,22 @@ class Trainer:
         else:
             unique_classes = sorted(list(pd.Series(y).dropna().unique()))
 
-        # 2. Split Data
+        # 2. Split Data with Purge and Embargo
         n_samples = len(df)
-        split_idx = int(n_samples * (1.0 - test_size))
+        val_size = int(n_samples * test_size)
 
         if chronological:
-            X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
-            y_train, y_val = y.iloc[:split_idx].to_numpy(), y.iloc[split_idx:].to_numpy()
+            train_end = max(1, n_samples - val_size - purge_window)
+            val_start = train_end + purge_window
+
+            X_train, X_val = X.iloc[:train_end], X.iloc[val_start:]
+            y_train, y_val = y.iloc[:train_end].to_numpy(), y.iloc[val_start:].to_numpy()
+            logger.info(f"Purged Chronological Split: Train [0..{train_end}] | PURGE GAP [{train_end}..{val_start}] ({purge_window} bars) | Val [{val_start}..{n_samples}]")
         else:
             indices = np.arange(n_samples)
             np.random.shuffle(indices)
-            train_indices = indices[:split_idx]
-            val_indices = indices[split_idx:]
+            train_indices = indices[:n_samples - val_size]
+            val_indices = indices[n_samples - val_size:]
             X_train, X_val = X.iloc[train_indices], X.iloc[val_indices]
             y_train, y_val = y.iloc[train_indices].to_numpy(), y.iloc[val_indices].to_numpy()
 
